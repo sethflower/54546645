@@ -1,4 +1,4 @@
-# tracking_app_tk_api.py
+# Descop.py
 # Tkinter UI "как в первой версии", но с логикой работы через REST API
 # API совместим с: https://tracking-api-b4jb.onrender.com
 # Вкладки: Сканування / Історія / Помилки / Довідка
