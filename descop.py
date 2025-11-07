@@ -378,8 +378,11 @@ class App:
         self.status_bar.pack(side="bottom", fill="x")
 
         # Доступ
-        self.user_access_level = int(CONFIG.get("access_level", 2))
-        self.token: Optional[str] = CONFIG.get("token")
+        self.user_access_level = 2
+        self.token = None
+        CONFIG["token"] = None
+        save_config(CONFIG)
+
 
         # Инициализация интерфейса
         self._build_scan_tab()
@@ -401,12 +404,8 @@ class App:
     # ---------- ЛОГИН ----------
 
     def _check_login(self) -> None:
-        if not self.token:
-            self._show_login_dialog()
-        else:
-            # Попросим имя оператора (если пустое)
-            if not CONFIG.get("user_name"):
-                self._prompt_user_name()
+    self._show_login_dialog()
+
 
     def _show_login_dialog(self) -> None:
         dlg = tk.Toplevel(self.window)
