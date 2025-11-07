@@ -29,6 +29,7 @@ CONFIG_PATH = APP_DIR / "config.json"
 HELP_PATH = APP_DIR / "help.txt"
 
 SYNC_INTERVAL_MS = 60_000  # 60 секунд
+HISTORY_REFRESH_MS = 5000  # обновление истории каждые 5 секунд
 
 
 # ------------------ Конфигурация ------------------
@@ -400,6 +401,10 @@ class App:
 
         # Открыть окно логина
         self._check_login()
+        
+        # Запускаем автообновление истории
+        self._schedule_history_refresh()
+
 
     # ---------- ЛОГИН ----------
 
@@ -931,6 +936,22 @@ class App:
 
     def _schedule_sync(self) -> None:
         self.window.after(SYNC_INTERVAL_MS, self._scheduled_sync_tick)
+        # ---------- Автообновление истории ----------
+
+    def _schedule_history_refresh(self) -> None:
+        """Планирует регулярное обновление истории в фоне"""
+        self.window.after(HISTORY_REFRESH_MS, self._auto_refresh_history)
+
+    def _auto_refresh_history(self) -> None:
+        """Загружает историю каждые несколько секунд"""
+        try:
+            if self.token:
+                self._load_history_from_api()
+        except Exception:
+            pass
+        finally:
+            self._schedule_history_refresh()
+
 
     def _scheduled_sync_tick(self) -> None:
         try:
