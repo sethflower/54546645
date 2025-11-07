@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -526,32 +527,42 @@ class App:
             return
 
         record = {"user_name": user_name, "boxid": boxid, "ttn": ttn}
-
-        if not self.token:
-            messagebox.showwarning("Сесія", "Потрібно увійти знову")
-            self._show_login_dialog()
-            return
-
-        try:
-            resp = API.add_record(self.token, record)
-            note = resp.get("note") if isinstance(resp, dict) else None
-            if note:
-                self.scan_status.config(text=f"Дублікат: {note}", fg="#ff4d4d")
-            else:
-                self.scan_status.config(text="Успішно додано", fg="#2b9e43")
-            # после успешного добавления — попытка синка офлайна
-            self._sync_offline()
-        except Exception:
-            # офлайн — запишем в очередь
-            enqueue_offline(record)
-            self.scan_status.config(text="Офлайн: запис збережено локально", fg="#ff9f2d")
-
         self.scan_entry.delete(0, tk.END)
         self.scan_label.config(text="Відскануйте BoxID:")
-        self.scan_entry.bind('<Return>', lambda evt: self._on_enter_boxid(evt, user_name))
-        self._refresh_offline_count()
-        # обновим историю (если откроют вкладку)
-        self._reload_history()
+
+        # моментально обновим интерфейс
+        self.scan_status.config(text="Відправка...", fg="#2b72ff")
+        self.window.update_idletasks()
+
+        def send_record():
+            if not self.token:
+                self.window.after(0, lambda: messagebox.showwarning("Сесія", "Потрібно увійти знову"))
+                self.window.after(0, self._show_login_dialog)
+                return
+
+            try:
+                resp = API.add_record(self.token, record)
+                note = resp.get("note") if isinstance(resp, dict) else None
+                if note:
+                    self.window.after(0, lambda: self.scan_status.config(text=f"Дублікат: {note}", fg="#ff4d4d"))
+                else:
+                    self.window.after(0, lambda: self.scan_status.config(text="Успішно додано", fg="#2b9e43"))
+                self._sync_offline()
+            except Exception:
+                enqueue_offline(record)
+                self.window.after(0, lambda: self.scan_status.config(
+                    text="Офлайн: запис збережено локально", fg="#ff9f2d"
+                ))
+
+            # после завершения возвращаемся к ожиданию BoxID
+            self.window.after(0, lambda: self.scan_entry.bind('<Return>', lambda evt: self._on_enter_boxid(evt, user_name)))
+            self.window.after(0, self._refresh_offline_count)
+
+        # запуск в отдельном потоке (чтобы не тормозил UI)
+        import threading
+        threading.Thread(target=send_record, daemon=True).start()
+
+    
 
     def _refresh_offline_count(self) -> None:
         self.offline_label.config(text=f"Офлайн записів: {pending_offline_count()}")
