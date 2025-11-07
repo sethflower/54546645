@@ -1,4 +1,4 @@
-name: build-windows-exe
+name: Build Windows EXE
 
 on: [push, workflow_dispatch]
 
@@ -26,4 +26,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TrackingApp-win
-          path: dist/tracking_app_tk_api.exe
+          path: dist/descop.exe
