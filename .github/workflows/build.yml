@@ -24,6 +24,10 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller==6.11.0
 
+      - name: Install dependencies
+        run: pip install requests
+
+
       # Если нужны дополнительные файлы в exe, задайте их в переменной DATA_SPEC
       # Формат: src_path;dest_subdir
       # Пример: "assets;assets"
