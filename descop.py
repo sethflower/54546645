@@ -404,8 +404,8 @@ class App:
     # ---------- ЛОГИН ----------
 
     def _check_login(self) -> None:
+    """Показывает окно входа всегда при запуске"""
     self._show_login_dialog()
-
 
     def _show_login_dialog(self) -> None:
         dlg = tk.Toplevel(self.window)
