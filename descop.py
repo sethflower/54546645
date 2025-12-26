@@ -956,30 +956,21 @@ class TrackingLoginFrame(tk.Frame):
         self.message.set("")
         
         if tab == "login":
-            self.login_tab_btn.config(fg=Colors.PRIMARY, font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"))
+            self.login_tab_btn.config(fg=Colors.SECONDARY, font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"))
             self.register_tab_btn.config(fg=Colors.TEXT_SECONDARY, font=(Fonts.FAMILY, Fonts.BODY_SIZE))
             self.register_form.pack_forget()
             self.login_form.pack(fill=tk.BOTH, expand=True)
         else:
-            self.register_tab_btn.config(fg=Colors.PRIMARY, font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"))
+            self.register_tab_btn.config(fg=Colors.SECONDARY, font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"))
             self.login_tab_btn.config(fg=Colors.TEXT_SECONDARY, font=(Fonts.FAMILY, Fonts.BODY_SIZE))
             self.login_form.pack_forget()
             self.register_form.pack(fill=tk.BOTH, expand=True)
     
     def _build_login_form(self):
-        self.login_surname_entry = ModernEntry(
-            self.login_form,
-            label="Прізвище",
-            icon="👤"
-        )
+        self.login_surname_entry = ModernEntry(self.login_form, label="Прізвище", icon="👤")
         self.login_surname_entry.pack(fill=tk.X, pady=Spacing.SM)
         
-        self.login_password_entry = ModernEntry(
-            self.login_form,
-            label="Пароль",
-            icon="🔒",
-            show="•"
-        )
+        self.login_password_entry = ModernEntry(self.login_form, label="Пароль", icon="🔒", show="•")
         self.login_password_entry.pack(fill=tk.X, pady=Spacing.SM)
         
         login_btn = ModernButton(
@@ -995,27 +986,13 @@ class TrackingLoginFrame(tk.Frame):
         self.login_password_entry.bind("<Return>", lambda e: self.handle_login())
     
     def _build_register_form(self):
-        self.register_surname_entry = ModernEntry(
-            self.register_form,
-            label="Прізвище",
-            icon="👤"
-        )
+        self.register_surname_entry = ModernEntry(self.register_form, label="Прізвище", icon="👤")
         self.register_surname_entry.pack(fill=tk.X, pady=Spacing.SM)
         
-        self.register_password_entry = ModernEntry(
-            self.register_form,
-            label="Пароль",
-            icon="🔒",
-            show="•"
-        )
+        self.register_password_entry = ModernEntry(self.register_form, label="Пароль", icon="🔒", show="•")
         self.register_password_entry.pack(fill=tk.X, pady=Spacing.SM)
         
-        self.register_confirm_entry = ModernEntry(
-            self.register_form,
-            label="Підтвердження пароля",
-            icon="🔒",
-            show="•"
-        )
+        self.register_confirm_entry = ModernEntry(self.register_form, label="Підтвердження пароля", icon="🔒", show="•")
         self.register_confirm_entry.pack(fill=tk.X, pady=Spacing.SM)
         
         register_btn = ModernButton(
@@ -1027,6 +1004,8 @@ class TrackingLoginFrame(tk.Frame):
             height=44
         )
         register_btn.pack(pady=(Spacing.LG, 0))
+        
+        self.register_confirm_entry.bind("<Return>", lambda e: self.handle_register())
     
     def handle_login(self) -> None:
         surname = self.login_surname_entry.get().strip()
@@ -1039,7 +1018,7 @@ class TrackingLoginFrame(tk.Frame):
         self.message.set("")
         
         def task() -> Dict[str, Any]:
-            return self.app.api.request_json(
+            return self.app.scanpak_api.request_json(
                 "POST", "/login", payload={"surname": surname, "password": password}
             )
         
@@ -1049,12 +1028,11 @@ class TrackingLoginFrame(tk.Frame):
                 self.message.set("Сервер не повернув токен")
                 return
             self.app.update_state({
-                "token": token,
-                "access_level": data.get("access_level"),
-                "user_name": data.get("surname", surname),
-                "user_role": data.get("role"),
+                "scanpak_token": token,
+                "scanpak_user_name": data.get("surname", surname),
+                "scanpak_user_role": data.get("role"),
             })
-            self.app.show_frame("TrackingMainFrame")
+            self.app.show_frame("ScanpakMainFrame")
         
         def on_error(exc: Exception) -> None:
             if isinstance(exc, ApiError):
@@ -1080,13 +1058,13 @@ class TrackingLoginFrame(tk.Frame):
             return
         
         def task() -> Any:
-            return self.app.api.request_json(
+            return self.app.scanpak_api.request_json(
                 "POST", "/register", payload={"surname": surname, "password": password}
             )
         
         def on_success(_: Any) -> None:
             self.message_label.config(fg=Colors.SUCCESS)
-            self.message.set("Заявку на реєстрацію відправлено. Дочекайтесь підтвердження.")
+            self.message.set("Заявку на реєстрацію відправлено.")
             self.register_surname_entry.set("")
             self.register_password_entry.set("")
             self.register_confirm_entry.set("")
@@ -1101,12 +1079,12 @@ class TrackingLoginFrame(tk.Frame):
         run_async(self, task, on_success, on_error)
     
     def open_admin_panel(self) -> None:
-        password = simple_prompt(self, "Пароль адміністратора")
+        password = simple_prompt(self, "Пароль адміністратора СканПак")
         if not password:
             return
         
         def task() -> Dict[str, Any]:
-            return self.app.api.request_json(
+            return self.app.scanpak_api.request_json(
                 "POST", "/admin_login", payload={"password": password}
             )
         
@@ -1115,7 +1093,7 @@ class TrackingLoginFrame(tk.Frame):
             if not token:
                 messagebox.showerror("Помилка", "Сервер не повернув токен")
                 return
-            AdminPanel(self, self.app, token)
+            ScanpakAdminPanel(self, self.app, token)
         
         def on_error(exc: Exception) -> None:
             if isinstance(exc, ApiError):
@@ -1127,497 +1105,1465 @@ class TrackingLoginFrame(tk.Frame):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ЭКРАН ВХОДА SCANPAK
+# ГЛАВНЫЙ ЭКРАН TRACKING
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class ScanpakLoginFrame(tk.Frame):
+class TrackingMainFrame(tk.Frame):
     def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
-        self.message = tk.StringVar(value="")
-        self.current_tab = "login"
+        self.status = tk.StringVar(value="")
+        self.user_label = tk.StringVar(value="")
+        self.role_label = tk.StringVar(value="")
+        self.access_level = None
+        
+        # Хедер
+        header = tk.Frame(self, bg=Colors.BG_SECONDARY, height=60)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        
+        header_content = tk.Frame(header, bg=Colors.BG_SECONDARY)
+        header_content.pack(fill=tk.BOTH, expand=True, padx=Spacing.LG)
+        
+        # Логотип
+        logo_frame = tk.Frame(header_content, bg=Colors.BG_SECONDARY)
+        logo_frame.pack(side=tk.LEFT, pady=Spacing.SM)
+        
+        tk.Label(
+            logo_frame,
+            text="📦",
+            font=(Fonts.FAMILY, 20),
+            bg=Colors.BG_SECONDARY
+        ).pack(side=tk.LEFT)
+        
+        tk.Label(
+            logo_frame,
+            text="TrackingApp",
+            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
+            fg=Colors.TEXT_PRIMARY,
+            bg=Colors.BG_SECONDARY
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        # Информация о пользователе (справа)
+        user_frame = tk.Frame(header_content, bg=Colors.BG_SECONDARY)
+        user_frame.pack(side=tk.RIGHT, pady=Spacing.SM)
+        
+        logout_btn = ModernButton(
+            user_frame,
+            text="🚪 Вийти",
+            command=self.logout,
+            variant="ghost",
+            width=90,
+            height=32
+        )
+        logout_btn.pack(side=tk.RIGHT, padx=Spacing.XS)
+        
+        self.role_badge = tk.Label(
+            user_frame,
+            textvariable=self.role_label,
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE, "bold"),
+            fg=Colors.PRIMARY,
+            bg=Colors.BG_TERTIARY,
+            padx=Spacing.SM,
+            pady=Spacing.XS
+        )
+        self.role_badge.pack(side=tk.RIGHT, padx=Spacing.SM)
+        
+        tk.Label(
+            user_frame,
+            textvariable=self.user_label,
+            font=(Fonts.FAMILY, Fonts.BODY_SIZE),
+            fg=Colors.TEXT_SECONDARY,
+            bg=Colors.BG_SECONDARY
+        ).pack(side=tk.RIGHT, padx=Spacing.SM)
+        
+        # Контент
+        content = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        content.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=Spacing.MD)
+        
+        # Notebook
+        self.notebook = ModernNotebook(content)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Вкладки
+        self.scan_tab = TrackingScanTab(self.notebook.content_frame, app, self.status)
+        self.history_tab = HistoryTab(self.notebook.content_frame, app)
+        self.errors_tab = ErrorsTab(self.notebook.content_frame, app)
+        self.stats_tab = StatisticsTab(self.notebook.content_frame, app)
+        
+        self.notebook.add_tab("scan", "📷 Сканер", self.scan_tab)
+        self.notebook.add_tab("history", "📋 Історія", self.history_tab)
+        self.notebook.add_tab("errors", "⚠️ Помилки", self.errors_tab)
+        self.notebook.add_tab("stats", "📊 Статистика", self.stats_tab)
+        
+        # Статус бар
+        status_bar = tk.Frame(self, bg=Colors.BG_SECONDARY, height=36)
+        status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        status_bar.pack_propagate(False)
+        
+        self.status_icon = tk.Label(
+            status_bar,
+            text="💡",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
+            bg=Colors.BG_SECONDARY
+        )
+        self.status_icon.pack(side=tk.LEFT, padx=(Spacing.MD, Spacing.XS), pady=Spacing.XS)
+        
+        tk.Label(
+            status_bar,
+            textvariable=self.status,
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
+            fg=Colors.TEXT_SECONDARY,
+            bg=Colors.BG_SECONDARY
+        ).pack(side=tk.LEFT, pady=Spacing.XS)
+    
+    def refresh(self) -> None:
+        user = self.app.state_data.get("user_name", "оператор")
+        role = self.app.state_data.get("user_role")
+        access_level = self.app.state_data.get("access_level")
+        self.access_level = access_level
+        
+        role_text = "👁 Перегляд"
+        if role == "admin" or access_level == 1:
+            role_text = "🔑 Адмін"
+        elif role == "operator" or access_level == 0:
+            role_text = "🧰 Оператор"
+        
+        self.user_label.set(f"👤 {user}")
+        self.role_label.set(role_text)
+        
+        self.scan_tab.refresh()
+        self.history_tab.refresh()
+        self.errors_tab.refresh()
+        self.stats_tab.refresh()
+    
+    def logout(self) -> None:
+        self.app.clear_state(["token", "access_level", "user_name", "user_role"])
+        self.app.show_frame("StartFrame")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ВКЛАДКА СКАНЕРА TRACKING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TrackingScanTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp, status: tk.StringVar) -> None:
+        super().__init__(parent, bg=Colors.BG_PRIMARY)
+        self.app = app
+        self.status = status
+        self.inflight = tk.IntVar(value=0)
         
         # Центральный контейнер
-        center_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        center_frame.place(relx=0.5, rely=0.5, anchor="center")
+        center = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        center.place(relx=0.5, rely=0.4, anchor="center")
+        
+        # Карточка сканера
+        card = ModernCard(center, title="📷 Сканування", padding=Spacing.XL)
+        card.pack()
+        
+        # Описание
+        tk.Label(
+            card.content,
+            text="Введіть дані для реєстрації відправлення",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
+            fg=Colors.TEXT_MUTED,
+            bg=Colors.BG_CARD
+        ).pack(anchor="w", pady=(0, Spacing.MD))
+        
+        # Поля ввода
+        self.box_entry = ModernEntry(card.content, label="BoxID", icon="📦")
+        self.box_entry.pack(fill=tk.X, pady=Spacing.SM)
+        
+        self.ttn_entry = ModernEntry(card.content, label="ТТН (номер накладної)", icon="🏷️")
+        self.ttn_entry.pack(fill=tk.X, pady=Spacing.SM)
+        
+        # Кнопки
+        btn_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
+        btn_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
+        
+        send_btn = ModernButton(
+            btn_frame,
+            text="📤 Надіслати",
+            command=self.send_record,
+            variant="primary",
+            width=150,
+            height=44
+        )
+        send_btn.pack(side=tk.LEFT)
+        
+        sync_btn = ModernButton(
+            btn_frame,
+            text="🔄 Синхронізувати",
+            command=self.sync_offline,
+            variant="secondary",
+            width=160,
+            height=44
+        )
+        sync_btn.pack(side=tk.LEFT, padx=Spacing.SM)
+        
+        # Счетчик офлайн
+        offline_card = tk.Frame(card.content, bg=Colors.BG_TERTIARY)
+        offline_card.pack(fill=tk.X, pady=(Spacing.LG, 0))
+        
+        offline_inner = tk.Frame(offline_card, bg=Colors.BG_TERTIARY)
+        offline_inner.pack(padx=Spacing.MD, pady=Spacing.SM)
+        
+        tk.Label(
+            offline_inner,
+            text="📴",
+            font=(Fonts.FAMILY, 16),
+            bg=Colors.BG_TERTIARY
+        ).pack(side=tk.LEFT)
+        
+        tk.Label(
+            offline_inner,
+            text="Записів в офлайн черзі:",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
+            fg=Colors.TEXT_SECONDARY,
+            bg=Colors.BG_TERTIARY
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        self.offline_count_label = tk.Label(
+            offline_inner,
+            textvariable=self.inflight,
+            font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"),
+            fg=Colors.WARNING,
+            bg=Colors.BG_TERTIARY
+        )
+        self.offline_count_label.pack(side=tk.LEFT)
+        
+        # Привязка клавиш
+        self.box_entry.bind("<Return>", lambda e: self.ttn_entry.focus())
+        self.ttn_entry.bind("<Return>", lambda e: self.send_record())
+    
+    def refresh(self) -> None:
+        count = len(self.app.tracking_offline.list())
+        self.inflight.set(count)
+        if count > 0:
+            self.offline_count_label.config(fg=Colors.WARNING)
+        else:
+            self.offline_count_label.config(fg=Colors.SUCCESS)
+    
+    def send_record(self) -> None:
+        token = self.app.state_data.get("token")
+        user_name = self.app.state_data.get("user_name", "operator")
+        boxid = "".join(filter(str.isdigit, self.box_entry.get()))
+        ttn = "".join(filter(str.isdigit, self.ttn_entry.get()))
+        
+        if not boxid or not ttn:
+            self.status.set("⚠️ Заповніть BoxID та ТТН")
+            return
+        
+        record = {"user_name": user_name, "boxid": boxid, "ttn": ttn}
+        self.box_entry.set("")
+        self.ttn_entry.set("")
+        self.box_entry.focus()
+        
+        def task() -> Dict[str, Any]:
+            if not token:
+                raise ApiError("Відсутній токен", 401)
+            return self.app.api.request_json("POST", "/add_record", token=token, payload=record)
+        
+        def on_success(data: Dict[str, Any]) -> None:
+            note = data.get("note") if isinstance(data, dict) else None
+            if note:
+                self.status.set(f"⚠️ Дублікат: {note}")
+            else:
+                self.status.set("✅ Успішно додано")
+            self.sync_offline()
+        
+        def on_error(exc: Exception) -> None:
+            self.app.tracking_offline.add(record)
+            self.inflight.set(len(self.app.tracking_offline.list()))
+            self.status.set("📦 Збережено локально (офлайн)")
+        
+        run_async(self, task, on_success, on_error)
+    
+    def sync_offline(self) -> None:
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        
+        pending = self.app.tracking_offline.list()
+        if not pending:
+            self.status.set("✅ Офлайн-черга порожня")
+            self.refresh()
+            return
+        
+        def task() -> int:
+            synced = 0
+            for record in pending:
+                try:
+                    self.app.api.request_json("POST", "/add_record", token=token, payload=record)
+                    synced += 1
+                except ApiError:
+                    break
+            return synced
+        
+        def on_success(count: int) -> None:
+            if count:
+                self.app.tracking_offline.clear()
+                self.status.set(f"✅ Синхронізовано {count} записів")
+            self.refresh()
+        
+        def on_error(_: Exception) -> None:
+            self.status.set("❌ Не вдалося синхронізувати")
+        
+        run_async(self, task, on_success, on_error)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ВКЛАДКА ИСТОРИИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class HistoryTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent, bg=Colors.BG_PRIMARY)
+        self.app = app
+        self.records: List[Dict[str, Any]] = []
+        self.filtered: List[Dict[str, Any]] = []
+        
+        # Фильтры
+        filters_card = ModernCard(self, title="🔍 Фільтри", padding=Spacing.MD)
+        filters_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        # Первая строка фильтров
+        row1 = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
+        row1.pack(fill=tk.X, pady=Spacing.XS)
+        
+        filter_frame1 = tk.Frame(row1, bg=Colors.BG_CARD)
+        filter_frame1.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.box_filter_entry = ModernEntry(filter_frame1, label="BoxID")
+        self.box_filter_entry.pack(fill=tk.X)
+        
+        filter_frame2 = tk.Frame(row1, bg=Colors.BG_CARD)
+        filter_frame2.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.ttn_filter_entry = ModernEntry(filter_frame2, label="ТТН")
+        self.ttn_filter_entry.pack(fill=tk.X)
+        
+        filter_frame3 = tk.Frame(row1, bg=Colors.BG_CARD)
+        filter_frame3.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.user_filter_entry = ModernEntry(filter_frame3, label="Оператор")
+        self.user_filter_entry.pack(fill=tk.X)
+        
+        # Вторая строка фильтров
+        row2 = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
+        row2.pack(fill=tk.X, pady=Spacing.XS)
+        
+        filter_frame4 = tk.Frame(row2, bg=Colors.BG_CARD)
+        filter_frame4.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.date_filter_entry = ModernEntry(filter_frame4, label="Дата (YYYY-MM-DD)")
+        self.date_filter_entry.pack(fill=tk.X)
+        
+        filter_frame5 = tk.Frame(row2, bg=Colors.BG_CARD)
+        filter_frame5.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.start_time_entry = ModernEntry(filter_frame5, label="Час від (HH:MM)")
+        self.start_time_entry.pack(fill=tk.X)
+        
+        filter_frame6 = tk.Frame(row2, bg=Colors.BG_CARD)
+        filter_frame6.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.end_time_entry = ModernEntry(filter_frame6, label="Час до (HH:MM)")
+        self.end_time_entry.pack(fill=tk.X)
+        
+        # Кнопки фильтров
+        btn_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
+        btn_row.pack(fill=tk.X, pady=(Spacing.MD, 0))
+        
+        ModernButton(
+            btn_row, text="🔍 Застосувати", command=self.apply_filters,
+            variant="primary", width=130, height=36
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            btn_row, text="🧹 Очистити", command=self.clear_filters,
+            variant="secondary", width=110, height=36
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            btn_row, text="🔄 Оновити", command=self.fetch_history,
+            variant="secondary", width=110, height=36
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            btn_row, text="🗑️ Очистити історію", command=self.clear_history,
+            variant="danger", width=160, height=36
+        ).pack(side=tk.RIGHT, padx=Spacing.XS)
+        
+        # Счетчик записей
+        self.count_label = tk.Label(
+            self,
+            text="Записів: 0",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
+            fg=Colors.TEXT_MUTED,
+            bg=Colors.BG_PRIMARY
+        )
+        self.count_label.pack(anchor="w", padx=Spacing.MD, pady=Spacing.XS)
+        
+        # Таблица
+        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
+        
+        self.tree = ModernTreeview(
+            table_frame,
+            columns=[
+                ("datetime", "Дата та час", 180),
+                ("user", "Оператор", 150),
+                ("boxid", "BoxID", 150),
+                ("ttn", "ТТН", 180),
+            ]
+        )
+        self.tree.pack(fill=tk.BOTH, expand=True)
+    
+    def refresh(self) -> None:
+        self.fetch_history()
+    
+    def fetch_history(self) -> None:
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.api.request_json("GET", "/get_history", token=token)
+            return data if isinstance(data, list) else []
+        
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.records = sorted(data, key=lambda item: item.get("datetime", ""), reverse=True)
+            self.apply_filters()
+        
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+        
+        run_async(self, task, on_success, on_error)
+    
+    def apply_filters(self) -> None:
+        filtered = list(self.records)
+        
+        box_filter = self.box_filter_entry.get().strip()
+        if box_filter:
+            filtered = [rec for rec in filtered if box_filter in str(rec.get("boxid", ""))]
+        
+        ttn_filter = self.ttn_filter_entry.get().strip()
+        if ttn_filter:
+            filtered = [rec for rec in filtered if ttn_filter in str(rec.get("ttn", ""))]
+        
+        user_filter = self.user_filter_entry.get().strip().lower()
+        if user_filter:
+            filtered = [rec for rec in filtered if user_filter in str(rec.get("user_name", "")).lower()]
+        
+        selected_date = parse_date(self.date_filter_entry.get().strip())
+        if selected_date:
+            filtered = [rec for rec in filtered if self._match_date(rec.get("datetime"), selected_date)]
+        
+        start_time = parse_time(self.start_time_entry.get().strip())
+        end_time = parse_time(self.end_time_entry.get().strip())
+        if start_time or end_time:
+            filtered = [rec for rec in filtered if self._match_time(rec.get("datetime"), start_time, end_time)]
+        
+        self.filtered = filtered
+        self.count_label.config(text=f"Записів: {len(filtered)}")
+        self._refresh_tree()
+    
+    def _match_date(self, value: Any, selected: date) -> bool:
+        try:
+            parsed = datetime.fromisoformat(str(value)).date()
+        except ValueError:
+            return False
+        return parsed == selected
+    
+    def _match_time(self, value: Any, start: Optional[time], end: Optional[time]) -> bool:
+        try:
+            parsed = datetime.fromisoformat(str(value)).time()
+        except ValueError:
+            return False
+        if start and parsed < start:
+            return False
+        if end and parsed > end:
+            return False
+        return True
+    
+    def _refresh_tree(self) -> None:
+        self.tree.clear()
+        for record in self.filtered:
+            self.tree.insert((
+                format_datetime(record.get("datetime", "")),
+                record.get("user_name", ""),
+                record.get("boxid", ""),
+                record.get("ttn", ""),
+            ))
+    
+    def clear_filters(self) -> None:
+        self.box_filter_entry.set("")
+        self.ttn_filter_entry.set("")
+        self.user_filter_entry.set("")
+        self.date_filter_entry.set("")
+        self.start_time_entry.set("")
+        self.end_time_entry.set("")
+        self.apply_filters()
+    
+    def clear_history(self) -> None:
+        role = self.app.state_data.get("user_role")
+        access_level = self.app.state_data.get("access_level")
+        if role != "admin" and access_level != 1:
+            messagebox.showinfo("Доступ", "Очистка доступна лише адміну")
+            return
+        
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        
+        if not messagebox.askyesno("Підтвердження", "Ви впевнені, що хочете очистити всю історію?"):
+            return
+        
+        def task() -> Any:
+            return self.app.api.request_json("DELETE", "/clear_tracking", token=token)
+        
+        def on_success(_: Any) -> None:
+            self.records = []
+            self.apply_filters()
+        
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+        
+        run_async(self, task, on_success, on_error)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ВКЛАДКА ОШИБОК
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ErrorsTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent, bg=Colors.BG_PRIMARY)
+        self.app = app
+        self.records: List[Dict[str, Any]] = []
+        
+        # Панель действий
+        actions_card = ModernCard(self, padding=Spacing.MD)
+        actions_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        actions = tk.Frame(actions_card.content, bg=Colors.BG_CARD)
+        actions.pack(fill=tk.X)
+        
+        ModernButton(
+            actions, text="🔄 Оновити", command=self.fetch_errors,
+            variant="primary", width=120, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            actions, text="🗑️ Очистити всі", command=self.clear_errors,
+            variant="danger", width=140, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            actions, text="❌ Видалити вибране", command=self.delete_selected,
+            variant="secondary", width=170, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        # Счетчик
+        self.count_label = tk.Label(
+            actions,
+            text="Помилок: 0",
+            font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"),
+            fg=Colors.ERROR,
+            bg=Colors.BG_CARD
+        )
+        self.count_label.pack(side=tk.RIGHT, padx=Spacing.MD)
+        
+        # Таблица
+        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
+        
+        self.tree = ModernTreeview(
+            table_frame,
+            columns=[
+                ("datetime", "Дата", 150),
+                ("user", "Оператор", 120),
+                ("boxid", "BoxID", 120),
+                ("ttn", "ТТН", 140),
+                ("note", "Примітка", 200),
+                ("id", "ID", 60),
+            ]
+        )
+        self.tree.pack(fill=tk.BOTH, expand=True)
+    
+    def refresh(self) -> None:
+        self.fetch_errors()
+    
+    def fetch_errors(self) -> None:
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.api.request_json("GET", "/get_errors", token=token)
+            return data if isinstance(data, list) else []
+        
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.records = data
+            self.count_label.config(text=f"Помилок: {len(data)}")
+            self.tree.clear()
+            for record in data:
+                self.tree.insert((
+                    format_datetime(record.get("datetime", "")),
+                    record.get("user_name", ""),
+                    record.get("boxid", ""),
+                    record.get("ttn", ""),
+                    record.get("note", ""),
+                    record.get("id", ""),
+                ))
+        
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+        
+        run_async(self, task, on_success, on_error)
+    
+    def clear_errors(self) -> None:
+        role = self.app.state_data.get("user_role")
+        access_level = self.app.state_data.get("access_level")
+        if role not in {"admin", "operator"} and access_level not in {0, 1}:
+            messagebox.showinfo("Доступ", "Недостатньо прав")
+            return
+        
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        
+        if not messagebox.askyesno("Підтвердження", "Очистити всі помилки?"):
+            return
+        
+        def task() -> Any:
+            return self.app.api.request_json("DELETE", "/clear_errors", token=token)
+        
+        def on_success(_: Any) -> None:
+            self.records = []
+            self.tree.clear()
+            self.count_label.config(text="Помилок: 0")
+        
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+        
+        run_async(self, task, on_success, on_error)
+    
+    def delete_selected(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showinfo("Помилка", "Оберіть запис для видалення")
+            return
+        
+        item = self.tree.item(selection[0])
+        record_id = item["values"][5]
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        
+        def task() -> Any:
+            return self.app.api.request_json("DELETE", f"/delete_error/{record_id}", token=token)
+        
+        def on_success(_: Any) -> None:
+            self.fetch_errors()
+        
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+        
+        run_async(self, task, on_success, on_error)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ВКЛАДКА СТАТИСТИКИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StatisticsTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent, bg=Colors.BG_PRIMARY)
+        self.app = app
+        self.history: List[Dict[str, Any]] = []
+        self.errors: List[Dict[str, Any]] = []
+        self.summary = tk.StringVar(value="")
+        
+        # Фильтры
+        filters_card = ModernCard(self, title="📅 Період", padding=Spacing.MD)
+        filters_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        filters_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
+        filters_row.pack(fill=tk.X)
+        
+        date_frame1 = tk.Frame(filters_row, bg=Colors.BG_CARD)
+        date_frame1.pack(side=tk.LEFT, padx=Spacing.XS)
+        self.start_date_entry = ModernEntry(date_frame1, label="Початок (YYYY-MM-DD)")
+        self.start_date_entry.pack()
+        
+        date_frame2 = tk.Frame(filters_row, bg=Colors.BG_CARD)
+        date_frame2.pack(side=tk.LEFT, padx=Spacing.XS)
+        self.end_date_entry = ModernEntry(date_frame2, label="Кінець (YYYY-MM-DD)")
+        self.end_date_entry.pack()
+        
+        ModernButton(
+            filters_row, text="📊 Оновити статистику", command=self.fetch_data,
+            variant="primary", width=180, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.MD)
+        
+        # Карточки со статистикой
+        stats_cards = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        stats_cards.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        # Карточка сканов
+        self.scans_card = self._create_stat_card(stats_cards, "📦", "Всього сканів", "0", Colors.PRIMARY)
+        self.scans_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        
+        # Карточка ошибок
+        self.errors_card = self._create_stat_card(stats_cards, "⚠️", "Помилок", "0", Colors.ERROR)
+        self.errors_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        
+        # Карточка топ оператора
+        self.top_card = self._create_stat_card(stats_cards, "🏆", "Топ оператор", "—", Colors.SUCCESS)
+        self.top_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        
+        # Таблица по операторам
+        table_label = tk.Label(
+            self,
+            text="📋 Статистика по операторах",
+            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
+            fg=Colors.TEXT_PRIMARY,
+            bg=Colors.BG_PRIMARY
+        )
+        table_label.pack(anchor="w", padx=Spacing.MD, pady=(Spacing.MD, Spacing.SM))
+        
+        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
+        
+        self.tree = ModernTreeview(
+            table_frame,
+            columns=[
+                ("user", "Оператор", 200),
+                ("scans", "Сканів", 150),
+                ("errors", "Помилок", 150),
+                ("efficiency", "Ефективність", 150),
+            ]
+        )
+        self.tree.pack(fill=tk.BOTH, expand=True)
+    
+    def _create_stat_card(self, parent, icon: str, title: str, value: str, color: str) -> tk.Frame:
+        card = tk.Frame(parent, bg=Colors.BG_CARD)
+        
+        inner = tk.Frame(card, bg=Colors.BG_CARD)
+        inner.pack(padx=Spacing.MD, pady=Spacing.MD)
+        
+        tk.Label(inner, text=icon, font=(Fonts.FAMILY, 24), bg=Colors.BG_CARD).pack()
+        tk.Label(inner, text=title, font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_MUTED, bg=Colors.BG_CARD).pack()
+        
+        value_label = tk.Label(inner, text=value, font=(Fonts.FAMILY, Fonts.HEADER_SIZE, "bold"), fg=color, bg=Colors.BG_CARD)
+        value_label.pack()
+        
+        card.value_label = value_label
+        return card
+    
+    def refresh(self) -> None:
+        role = self.app.state_data.get("user_role")
+        access_level = self.app.state_data.get("access_level")
+        if role != "admin" and access_level != 1:
+            self.scans_card.value_label.config(text="🔒")
+            self.errors_card.value_label.config(text="🔒")
+            self.top_card.value_label.config(text="Тільки для адмінів")
+            return
+        
+        if not self.start_date_entry.get() or not self.end_date_entry.get():
+            today = datetime.now().date()
+            self.start_date_entry.set(today.replace(day=1).isoformat())
+            self.end_date_entry.set(today.isoformat())
+        
+        self.fetch_data()
+    
+    def fetch_data(self) -> None:
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        
+        def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+            history = self.app.api.request_json("GET", "/get_history", token=token)
+            errors = self.app.api.request_json("GET", "/get_errors", token=token)
+            return (
+                history if isinstance(history, list) else [],
+                errors if isinstance(errors, list) else [],
+            )
+        
+        def on_success(data: Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]) -> None:
+            self.history, self.errors = data
+            self.apply_stats()
+        
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+        
+        run_async(self, task, on_success, on_error)
+    
+    def apply_stats(self) -> None:
+        start = parse_date(self.start_date_entry.get().strip())
+        end = parse_date(self.end_date_entry.get().strip())
+        
+        if not start or not end:
+            messagebox.showinfo("Фільтр", "Вкажіть коректні дати")
+            return
+        
+        def in_range(record: Dict[str, Any]) -> bool:
+            try:
+                dt = datetime.fromisoformat(record.get("datetime", "")).date()
+            except ValueError:
+                return False
+            return start <= dt <= end
+        
+        history = [rec for rec in self.history if in_range(rec)]
+        errors = [rec for rec in self.errors if in_range(rec)]
+        
+        counts: Dict[str, int] = {}
+        error_counts: Dict[str, int] = {}
+        
+        for rec in history:
+            user = rec.get("user_name", "—")
+            counts[user] = counts.get(user, 0) + 1
+        
+        for rec in errors:
+            user = rec.get("user_name", "—")
+            error_counts[user] = error_counts.get(user, 0) + 1
+        
+        total_scans = sum(counts.values())
+        total_errors = sum(error_counts.values())
+        top_user = max(counts.items(), key=lambda item: item[1], default=("—", 0))
+        
+        # Обновляем карточки
+        self.scans_card.value_label.config(text=str(total_scans))
+        self.errors_card.value_label.config(text=str(total_errors))
+        self.top_card.value_label.config(text=f"{top_user[0]} ({top_user[1]})")
+        
+        # Обновляем таблицу
+        self.tree.clear()
+        for user, scans in sorted(counts.items(), key=lambda item: item[1], reverse=True):
+            user_errors = error_counts.get(user, 0)
+            efficiency = f"{((scans - user_errors) / scans * 100):.1f}%" if scans > 0 else "—"
+            self.tree.insert((user, scans, user_errors, efficiency))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ГЛАВНЫЙ ЭКРАН SCANPAK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ScanpakMainFrame(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent, bg=Colors.BG_PRIMARY)
+        self.app = app
+        self.status = tk.StringVar(value="")
+        self.user_label = tk.StringVar(value="")
+        
+        # Хедер
+        header = tk.Frame(self, bg=Colors.BG_SECONDARY, height=60)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        
+        header_content = tk.Frame(header, bg=Colors.BG_SECONDARY)
+        header_content.pack(fill=tk.BOTH, expand=True, padx=Spacing.LG)
+        
+        # Логотип
+        logo_frame = tk.Frame(header_content, bg=Colors.BG_SECONDARY)
+        logo_frame.pack(side=tk.LEFT, pady=Spacing.SM)
+        
+        tk.Label(logo_frame, text="📱", font=(Fonts.FAMILY, 20), bg=Colors.BG_SECONDARY).pack(side=tk.LEFT)
+        tk.Label(
+            logo_frame, text="СканПак",
+            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
+            fg=Colors.SECONDARY, bg=Colors.BG_SECONDARY
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        # Пользователь
+        user_frame = tk.Frame(header_content, bg=Colors.BG_SECONDARY)
+        user_frame.pack(side=tk.RIGHT, pady=Spacing.SM)
+        
+        ModernButton(user_frame, text="🚪 Вийти", command=self.logout, variant="ghost", width=90, height=32).pack(side=tk.RIGHT, padx=Spacing.XS)
+        
+        tk.Label(
+            user_frame, textvariable=self.user_label,
+            font=(Fonts.FAMILY, Fonts.BODY_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_SECONDARY
+        ).pack(side=tk.RIGHT, padx=Spacing.SM)
+        
+        # Контент
+        content = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        content.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=Spacing.MD)
+        
+        self.notebook = ModernNotebook(content)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        self.scan_tab = ScanpakScanTab(self.notebook.content_frame, app, self.status)
+        self.history_tab = ScanpakHistoryTab(self.notebook.content_frame, app)
+        self.stats_tab = ScanpakStatsTab(self.notebook.content_frame, app)
+        
+        self.notebook.add_tab("scan", "📷 Сканування", self.scan_tab)
+        self.notebook.add_tab("history", "📋 Історія", self.history_tab)
+        self.notebook.add_tab("stats", "📊 Статистика", self.stats_tab)
+        
+        # Статус бар
+        status_bar = tk.Frame(self, bg=Colors.BG_SECONDARY, height=36)
+        status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        status_bar.pack_propagate(False)
+        
+        tk.Label(status_bar, text="💡", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), bg=Colors.BG_SECONDARY).pack(side=tk.LEFT, padx=(Spacing.MD, Spacing.XS))
+        tk.Label(status_bar, textvariable=self.status, font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_SECONDARY).pack(side=tk.LEFT)
+    
+    def refresh(self) -> None:
+        name = self.app.state_data.get("scanpak_user_name", "оператор")
+        role = self.app.state_data.get("scanpak_user_role", "")
+        role_label = "🔑 Адмін" if role == "admin" else "🧰 Оператор"
+        self.user_label.set(f"👤 {name} • {role_label}")
+        
+        self.scan_tab.refresh()
+        self.history_tab.refresh()
+        self.stats_tab.refresh()
+    
+    def logout(self) -> None:
+        self.app.clear_state(["scanpak_token", "scanpak_user_name", "scanpak_user_role"])
+        self.app.show_frame("StartFrame")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ВКЛАДКА СКАНЕРА SCANPAK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ScanpakScanTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp, status: tk.StringVar) -> None:
+        super().__init__(parent, bg=Colors.BG_PRIMARY)
+        self.app = app
+        self.status = status
+        self.offline_count = tk.IntVar(value=0)
+        
+        center = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        center.place(relx=0.5, rely=0.4, anchor="center")
+        
+        card = ModernCard(center, title="📷 Сканування відправлень", padding=Spacing.XL)
+        card.pack()
+        
+        tk.Label(
+            card.content, text="Введіть або відскануйте номер відправлення",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_MUTED, bg=Colors.BG_CARD
+        ).pack(anchor="w", pady=(0, Spacing.MD))
+        
+        self.number_entry = ModernEntry(card.content, label="Номер відправлення", icon="📦")
+        self.number_entry.pack(fill=tk.X, pady=Spacing.SM)
+        self.number_entry.bind("<Return>", lambda e: self.submit())
+        
+        btn_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
+        btn_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
+        
+        ModernButton(btn_frame, text="💾 Зберегти", command=self.submit, variant="primary", width=140, height=44).pack(side=tk.LEFT)
+        ModernButton(btn_frame, text="🔄 Синхронізувати", command=self.sync_offline, variant="secondary", width=160, height=44).pack(side=tk.LEFT, padx=Spacing.SM)
+        
+        # Офлайн счетчик
+        offline_card = tk.Frame(card.content, bg=Colors.BG_TERTIARY)
+        offline_card.pack(fill=tk.X, pady=(Spacing.LG, 0))
+        
+        offline_inner = tk.Frame(offline_card, bg=Colors.BG_TERTIARY)
+        offline_inner.pack(padx=Spacing.MD, pady=Spacing.SM)
+        
+        tk.Label(offline_inner, text="📴", font=(Fonts.FAMILY, 16), bg=Colors.BG_TERTIARY).pack(side=tk.LEFT)
+        tk.Label(offline_inner, text="В черзі офлайн:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_TERTIARY).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        self.offline_label = tk.Label(offline_inner, textvariable=self.offline_count, font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"), fg=Colors.WARNING, bg=Colors.BG_TERTIARY)
+        self.offline_label.pack(side=tk.LEFT)
+    
+    def refresh(self) -> None:
+        count = len(self.app.scanpak_offline.list())
+        self.offline_count.set(count)
+        self.offline_label.config(fg=Colors.WARNING if count > 0 else Colors.SUCCESS)
+    
+    def submit(self) -> None:
+        token = self.app.state_data.get("scanpak_token")
+        number = "".join(filter(str.isdigit, self.number_entry.get()))
+        
+        if not number:
+            self.status.set("⚠️ Введіть номер")
+            return
+        
+        if self.app.scanpak_offline.contains("parcel_number", number):
+            self.status.set("⚠️ Увага, це дублікат в офлайн черзі")
+            self.number_entry.set("")
+            return
+        
+        self.number_entry.set("")
+        self.number_entry.focus()
+        
+        def task() -> Dict[str, Any]:
+            if not token:
+                raise ApiError("Відсутній токен", 401)
+            return self.app.scanpak_api.request_json("POST", "/scans", token=token, payload={"parcel_number": number})
+        
+        def on_success(_: Dict[str, Any]) -> None:
+            self.status.set("✅ Збережено")
+            self.sync_offline()
+        
+        def on_error(exc: Exception) -> None:
+            self.app.scanpak_offline.add({"parcel_number": number})
+            self.refresh()
+            if isinstance(exc, ApiError):
+                self.status.set(f"⚠️ {exc.message}")
+            else:
+                self.status.set("📦 Збережено локально (офлайн)")
+        
+        run_async(self, task, on_success, on_error)
+    
+    def sync_offline(self) -> None:
+        token = self.app.state_data.get("scanpak_token")
+        if not token:
+            return
+        
+        pending = self.app.scanpak_offline.list()
+        if not pending:
+            self.status.set("✅ Офлайн-черга порожня")
+            self.refresh()
+            return
+        
+        def task() -> int:
+            synced = 0
+            for record in pending:
+                try:
+                    self.app.scanpak_api.request_json("POST", "/scans", token=token, payload=record)
+                    synced += 1
+                except ApiError:
+                    break
+            return synced
+        
+        def on_success(count: int) -> None:
+            if count:
+                self.app.scanpak_offline.clear()
+            self.refresh()
+            self.status.set(f"✅ Синхронізовано {count} записів")
+        
+        def on_error(_: Exception) -> None:
+            self.status.set("❌ Не вдалося синхронізувати")
+        
+        run_async(self, task, on_success, on_error)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ВКЛАДКА ИСТОРИИ SCANPAK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ScanpakHistoryTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent, bg=Colors.BG_PRIMARY)
+        self.app = app
+        self.records: List[Dict[str, Any]] = []
+        self.filtered: List[Dict[str, Any]] = []
+        
+        # Фильтры
+        filters_card = ModernCard(self, title="🔍 Фільтри", padding=Spacing.MD)
+        filters_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        filters_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
+        filters_row.pack(fill=tk.X)
+        
+        filter_frame1 = tk.Frame(filters_row, bg=Colors.BG_CARD)
+        filter_frame1.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.parcel_filter_entry = ModernEntry(filter_frame1, label="Номер відправлення")
+        self.parcel_filter_entry.pack(fill=tk.X)
+        
+        filter_frame2 = tk.Frame(filters_row, bg=Colors.BG_CARD)
+        filter_frame2.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.user_filter_entry = ModernEntry(filter_frame2, label="Оператор")
+        self.user_filter_entry.pack(fill=tk.X)
+        
+        filter_frame3 = tk.Frame(filters_row, bg=Colors.BG_CARD)
+        filter_frame3.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        self.date_filter_entry = ModernEntry(filter_frame3, label="Дата (YYYY-MM-DD)")
+        self.date_filter_entry.pack(fill=tk.X)
+        
+        # Кнопки
+        btn_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
+        btn_row.pack(fill=tk.X, pady=(Spacing.MD, 0))
+        
+        ModernButton(
+            btn_row, text="🔍 Застосувати", command=self.apply_filters,
+            variant="primary", width=130, height=36
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            btn_row, text="🧹 Очистити", command=self.clear_filters,
+            variant="secondary", width=110, height=36
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            btn_row, text="🔄 Оновити", command=self.fetch_history,
+            variant="secondary", width=110, height=36
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        # Счетчик записей
+        self.count_label = tk.Label(
+            self,
+            text="Записів: 0",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
+            fg=Colors.TEXT_MUTED,
+            bg=Colors.BG_PRIMARY
+        )
+        self.count_label.pack(anchor="w", padx=Spacing.MD, pady=Spacing.XS)
+        
+        # Таблица
+        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
+        
+        self.tree = ModernTreeview(
+            table_frame,
+            columns=[
+                ("datetime", "Дата та час", 200),
+                ("user", "Оператор", 180),
+                ("parcel", "Номер відправлення", 220),
+            ]
+        )
+        self.tree.pack(fill=tk.BOTH, expand=True)
+    
+    def refresh(self) -> None:
+        self.fetch_history()
+    
+    def fetch_history(self) -> None:
+        token = self.app.state_data.get("scanpak_token")
+        if not token:
+            return
+        
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.scanpak_api.request_json("GET", "/history", token=token)
+            return data if isinstance(data, list) else []
+        
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.records = sorted(data, key=lambda x: x.get("timestamp", x.get("datetime", "")), reverse=True)
+            self.apply_filters()
+        
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+        
+        run_async(self, task, on_success, on_error)
+    
+    def apply_filters(self) -> None:
+        filtered = list(self.records)
+        
+        parcel_filter = self.parcel_filter_entry.get().strip()
+        if parcel_filter:
+            filtered = [rec for rec in filtered if parcel_filter in str(rec.get("parcel_number", ""))]
+        
+        user_filter = self.user_filter_entry.get().strip().lower()
+        if user_filter:
+            filtered = [rec for rec in filtered if user_filter in str(rec.get("user", rec.get("user_name", ""))).lower()]
+        
+        selected_date = parse_date(self.date_filter_entry.get().strip())
+        if selected_date:
+            filtered = [rec for rec in filtered if self._match_date(rec.get("timestamp", rec.get("datetime")), selected_date)]
+        
+        self.filtered = filtered
+        self.count_label.config(text=f"Записів: {len(filtered)}")
+        self._refresh_tree()
+    
+    def _match_date(self, value: Any, selected: date) -> bool:
+        try:
+            parsed = datetime.fromisoformat(str(value)).date()
+        except ValueError:
+            return False
+        return parsed == selected
+    
+    def _refresh_tree(self) -> None:
+        self.tree.clear()
+        for record in self.filtered:
+            timestamp = record.get("timestamp", record.get("datetime", ""))
+            self.tree.insert((
+                format_datetime(str(timestamp)),
+                record.get("user", record.get("user_name", "")),
+                record.get("parcel_number", ""),
+            ))
+    
+    def clear_filters(self) -> None:
+        self.parcel_filter_entry.set("")
+        self.user_filter_entry.set("")
+        self.date_filter_entry.set("")
+        self.apply_filters()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ВКЛАДКА СТАТИСТИКИ SCANPAK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ScanpakStatsTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent, bg=Colors.BG_PRIMARY)
+        self.app = app
+        self.records: List[Dict[str, Any]] = []
+        
+        # Фильтры дат
+        filters_card = ModernCard(self, title="📅 Період", padding=Spacing.MD)
+        filters_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        filters_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
+        filters_row.pack(fill=tk.X)
+        
+        date_frame1 = tk.Frame(filters_row, bg=Colors.BG_CARD)
+        date_frame1.pack(side=tk.LEFT, padx=Spacing.XS)
+        self.start_date_entry = ModernEntry(date_frame1, label="Початок (YYYY-MM-DD)")
+        self.start_date_entry.pack()
+        
+        date_frame2 = tk.Frame(filters_row, bg=Colors.BG_CARD)
+        date_frame2.pack(side=tk.LEFT, padx=Spacing.XS)
+        self.end_date_entry = ModernEntry(date_frame2, label="Кінець (YYYY-MM-DD)")
+        self.end_date_entry.pack()
+        
+        ModernButton(
+            filters_row, text="📊 Оновити статистику", command=self.fetch_data,
+            variant="primary", width=180, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.MD)
+        
+        # Карточки статистики
+        stats_cards = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        stats_cards.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        self.scans_card = self._create_stat_card(stats_cards, "📦", "Всього сканів", "0", Colors.SECONDARY)
+        self.scans_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        
+        self.top_card = self._create_stat_card(stats_cards, "🏆", "Топ оператор", "—", Colors.SUCCESS)
+        self.top_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        
+        self.avg_card = self._create_stat_card(stats_cards, "📈", "Середнє/день", "0", Colors.INFO)
+        self.avg_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=Spacing.XS)
+        
+        # Таблица
+        table_label = tk.Label(
+            self,
+            text="📋 Статистика по операторах",
+            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
+            fg=Colors.TEXT_PRIMARY,
+            bg=Colors.BG_PRIMARY
+        )
+        table_label.pack(anchor="w", padx=Spacing.MD, pady=(Spacing.MD, Spacing.SM))
+        
+        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
+        
+        self.tree = ModernTreeview(
+            table_frame,
+            columns=[
+                ("user", "Оператор", 250),
+                ("count", "Кількість сканів", 200),
+                ("percent", "% від загального", 150),
+            ]
+        )
+        self.tree.pack(fill=tk.BOTH, expand=True)
+    
+    def _create_stat_card(self, parent, icon: str, title: str, value: str, color: str) -> tk.Frame:
+        card = tk.Frame(parent, bg=Colors.BG_CARD)
+        
+        inner = tk.Frame(card, bg=Colors.BG_CARD)
+        inner.pack(padx=Spacing.MD, pady=Spacing.MD)
+        
+        tk.Label(inner, text=icon, font=(Fonts.FAMILY, 24), bg=Colors.BG_CARD).pack()
+        tk.Label(inner, text=title, font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_MUTED, bg=Colors.BG_CARD).pack()
+        
+        value_label = tk.Label(inner, text=value, font=(Fonts.FAMILY, Fonts.HEADER_SIZE, "bold"), fg=color, bg=Colors.BG_CARD)
+        value_label.pack()
+        
+        card.value_label = value_label
+        return card
+    
+    def refresh(self) -> None:
+        if not self.start_date_entry.get() or not self.end_date_entry.get():
+            today = datetime.now().date()
+            self.start_date_entry.set(today.replace(day=1).isoformat())
+            self.end_date_entry.set(today.isoformat())
+        self.fetch_data()
+    
+    def fetch_data(self) -> None:
+        token = self.app.state_data.get("scanpak_token")
+        if not token:
+            return
+        
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.scanpak_api.request_json("GET", "/history", token=token)
+            return data if isinstance(data, list) else []
+        
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.records = data
+            self.apply_stats()
+        
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+        
+        run_async(self, task, on_success, on_error)
+    
+    def apply_stats(self) -> None:
+        start = parse_date(self.start_date_entry.get().strip())
+        end = parse_date(self.end_date_entry.get().strip())
+        
+        if not start or not end:
+            messagebox.showinfo("Фільтр", "Вкажіть коректні дати")
+            return
+        
+        counts: Dict[str, int] = {}
+        for record in self.records:
+            timestamp = record.get("timestamp", record.get("datetime", ""))
+            try:
+                rec_date = datetime.fromisoformat(str(timestamp)).date()
+            except ValueError:
+                continue
+            if start <= rec_date <= end:
+                user = record.get("user", record.get("user_name", "—"))
+                counts[user] = counts.get(user, 0) + 1
+        
+        total = sum(counts.values())
+        top = max(counts.items(), key=lambda item: item[1], default=("—", 0))
+        
+        # Расчет среднего за день
+        days = (end - start).days + 1
+        avg_per_day = total / days if days > 0 else 0
+        
+        # Обновляем карточки
+        self.scans_card.value_label.config(text=str(total))
+        self.top_card.value_label.config(text=f"{top[0]}")
+        self.avg_card.value_label.config(text=f"{avg_per_day:.1f}")
+        
+        # Обновляем таблицу
+        self.tree.clear()
+        for user, count in sorted(counts.items(), key=lambda item: item[1], reverse=True):
+            percent = f"{(count / total * 100):.1f}%" if total > 0 else "0%"
+            self.tree.insert((user, count, percent))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# АДМИН ПАНЕЛИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AdminPanel(tk.Toplevel):
+    def __init__(self, parent: tk.Misc, app: TrackingApp, token: str) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.token = token
+        self.title("🔐 Адмін панель TrackingApp")
+        self.geometry("1000x700")
+        self.configure(bg=Colors.BG_PRIMARY)
+        
+        # Центрируем окно
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - 1000) // 2
+        y = (self.winfo_screenheight() - 700) // 2
+        self.geometry(f"+{x}+{y}")
         
         # Заголовок
-        header = tk.Frame(center_frame, bg=Colors.BG_PRIMARY)
-        header.pack(pady=(0, Spacing.LG))
+        header = tk.Frame(self, bg=Colors.BG_SECONDARY, height=50)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
         
-        back_btn = ModernButton(
-            header,
-            text="← Назад",
-            command=lambda: app.show_frame("StartFrame"),
-            variant="ghost",
-            width=100,
-            height=36
-        )
-        back_btn.pack(side=tk.LEFT)
+        tk.Label(
+            header, text="🔐 Адмін панель TrackingApp",
+            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
+            fg=Colors.TEXT_PRIMARY, bg=Colors.BG_SECONDARY
+        ).pack(side=tk.LEFT, padx=Spacing.LG, pady=Spacing.SM)
         
-        title = tk.Label(
-            header,
-            text="📱 СканПак",
-            font=(Fonts.FAMILY, Fonts.HEADER_SIZE, "bold"),
-            fg=Colors.SECONDARY,
-            bg=Colors.BG_PRIMARY
-        )
-        title.pack(side=tk.LEFT, padx=Spacing.LG)
+        ModernButton(
+            header, text="✕ Закрити", command=self.destroy,
+            variant="ghost", width=100, height=32
+        ).pack(side=tk.RIGHT, padx=Spacing.MD, pady=Spacing.SM)
         
-        # Карточка
-        card = ModernCard(center_frame, padding=Spacing.XL)
-        card.pack()
+        # Контент
+        content = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        content.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=Spacing.MD)
         
-        # Переключатель вкладок
-        tab_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        tab_frame.pack(fill=tk.X, pady=(0, Spacing.LG))
+        self.notebook = ModernNotebook(content)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
         
-        self.login_tab_btn = tk.Label(
-            tab_frame,
-            text="Вхід",
-            font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"),
-            fg=Colors.SECONDARY,
-            bg=Colors.BG_CARD,
-            padx=Spacing.LG,
-            pady=Spacing.SM,
-            cursor="hand2"
-        )
-        self.login_tab_btn.pack(side=tk.LEFT)
-        self.login_tab_btn.bind("<Button-1>", lambda e: self._switch_tab("login"))
+        self.pending_tab = AdminPendingTab(self.notebook.content_frame, app, token)
+        self.users_tab = AdminUsersTab(self.notebook.content_frame, app, token)
+        self.password_tab = AdminPasswordsTab(self.notebook.content_frame, app, token)
         
-        self.register_tab_btn = tk.Label(
-            tab_frame,
-            text="Реєстрація",
-            font=(Fonts.FAMILY, Fonts.BODY_SIZE),
-            fg=Colors.TEXT_SECONDARY,
-            bg=Colors.BG_CARD,
-            padx=Spacing.LG,
-            pady=Spacing.SM,
-            cursor="hand2"
-        )
-        self.register_tab_btn.pack(side=tk.LEFT)
-        role_text = "👁 Перегляд"
-        if role == "admin" or access_level == 1:
-            role_text = "🔑 Адмін"
-        elif role == "operator" or access_level == 0:
-            role_text = "🧰 Оператор"
-        _label.set(f"👤 {user}")
-        self.role_label.set(role_text)
-        
-        self.scan_tab.refresh()
-        self.history_tab.refresh()
-        self.errors_tab.refresh()
-        self.stats_tab.refresh()
-    
-    def logout(self) -> None:
-        self.app.clear_state(["token", "access_level", "user_name", "user_role"])
-        self.app.show_frame("StartFrame")
+        self.notebook.add_tab("pending", "📝 Запити на реєстрацію", self.pending_tab)
+        self.notebook.add_tab("users", "👥 Користувачі", self.users_tab)
+        self.notebook.add_tab("passwords", "🔑 Паролі ролей", self.password_tab)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА СКАНЕРА TRACKING
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TrackingScanTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, status: tk.StringVar) -> None:
+class AdminPendingTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp, token: str) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
-        self.status = status
-        self.inflight = tk.IntVar(value=0)
+        self.token = token
+        self.requests: List[Dict[str, Any]] = []
         
-        # Центральный контейнер
-        center = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        center.place(relx=0.5, rely=0.4, anchor="center")
+        # Действия
+        actions_card = ModernCard(self, padding=Spacing.MD)
+        actions_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
         
-        # Карточка сканера
-        card = ModernCard(center, title="Сканування", padding=Spacing.XL)
-        card.pack()
+        actions = tk.Frame(actions_card.content, bg=Colors.BG_CARD)
+        actions.pack(fill=tk.X)
         
-        # Поля ввода
-        self.box_entry = ModernEntry(card.content, label="BoxID", icon="📦")
-        self.box_entry.pack(fill=tk.X, pady=Spacing.SM)
+        ModernButton(
+            actions, text="🔄 Оновити", command=self.fetch_requests,
+            variant="primary", width=120, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
         
-        self.ttn_entry = ModernEntry(card.content, label="ТТН", icon="🏷️")
-        self.ttn_entry.pack(fill=tk.X, pady=Spacing.SM)
+        ModernButton(
+            actions, text="✅ Підтвердити", command=self.approve_request,
+            variant="success", width=130, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
         
-        # Кнопки
-        btn_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        btn_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
+        ModernButton(
+            actions, text="❌ Відхилити", command=self.reject_request,
+            variant="danger", width=120, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
         
-        send_btn = ModernButton(
-            btn_frame,
-            text="📤 Надіслати",
-            command=self.send_record,
-            variant="primary",
-            width=150,
-            height=44
+        # Выбор роли
+        role_frame = tk.Frame(actions, bg=Colors.BG_CARD)
+        role_frame.pack(side=tk.LEFT, padx=Spacing.LG)
+        
+        tk.Label(
+            role_frame, text="Призначити роль:",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD
+        ).pack(side=tk.LEFT, padx=(0, Spacing.XS))
+        
+        self.role_var = tk.StringVar(value="operator")
+        
+        # Стилизация combobox
+        style = ttk.Style()
+        style.configure("Modern.TCombobox", padding=5)
+        
+        role_combo = ttk.Combobox(
+            role_frame, textvariable=self.role_var,
+            values=["admin", "operator", "viewer"],
+            width=12, state="readonly", style="Modern.TCombobox"
         )
-        send_btn.pack(side=tk.LEFT)
+        role_combo.pack(side=tk.LEFT)
         
-        sync_btn = ModernButton(
-            btn_frame,
-            text="🔄 Синхронізувати",
-            command=self.sync_offline,
-            variant="secondary",
-            width=150,
-            height=44
-        )
-        sync_btn.pack(side=tk.LEFT, padx=Spacing.SM)
-        
-        # Счетчик офлайн
-        offline_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        offline_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
-        
-        offline_icon = tk.Label(
-            offline_frame,
-            text="📴",
-            font=(Fonts.FAMILY, Fonts.BODY_SIZE),
-            bg=Colors.BG_CARD
-        )
-        offline_icon.pack(side=tk.LEFT)
-        
-        offline_label = tk.Label(
-            offline_frame,
-            text="В черзі офлайн:",
-            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
-            fg=Colors.TEXT_SECONDARY,
-            bg=Colors.BG_CARD
-        )
-        offline_label.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        offline_count = tk.Label(
-            offline_frame,
-            textvariable=self.inflight,
+        # Счетчик
+        self.count_label = tk.Label(
+            actions, text="Запитів: 0",
             font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"),
-            fg=Colors.WARNING,
-            bg=Colors.BG_CARD
+            fg=Colors.WARNING, bg=Colors.BG_CARD
         )
-        offline_count.pack(side=tk.LEFT)
-        
-        # Привязка клавиш
-        self.box_entry.bind("<Return>", lambda e: self.ttn_entry.focus())
-        self.ttn_entry.bind("<Return>", lambda e: self.send_record())
-    
-    def refresh(self) -> None:
-        self.inflight.set(len(self.app.tracking_offline.list()))
-    
-    def send_record(self) -> None:
-        token = self.app.state_data.get("token")
-        user_name = self.app.state_data.get("user_name", "operator")
-        boxid = "".join(filter(str.isdigit, self.box_entry.get()))
-        ttn = "".join(filter(str.isdigit, self.ttn_entry.get()))
-        
-        if not boxid or not ttn:
-            self.status.set("⚠️ Заповніть BoxID та ТТН")
-            return
-        
-        record = {"user_name": user_name, "boxid": boxid, "ttn": ttn}
-        self.box_entry.set("")
-        self.ttn_entry.set("")
-        self.box_entry.focus()
-        
-        def task() -> Dict[str, Any]:
-            if not token:
-                raise ApiError("Відсутній токен", 401)
-            return self.app.api.request_json("POST", "/add_record", token=token, payload=record)
-        
-        def on_success(data: Dict[str, Any]) -> None:
-            note = data.get("note") if isinstance(data, dict) else None
-            if note:
-                self.status.set(f"⚠️ Дублікат: {note}")
-            else:
-                self.status.set("✅ Успішно додано")
-            self.sync_offline()
-        
-        def on_error(exc: Exception) -> None:
-            self.app.tracking_offline.add(record)
-            self.inflight.set(len(self.app.tracking_offline.list()))
-            self.status.set("📦 Збережено локально (офлайн)")
-        
-        run_async(self, task, on_success, on_error)
-    
-    def sync_offline(self) -> None:
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        pending = self.app.tracking_offline.list()
-        if not pending:
-            self.status.set("✅ Офлайн-черга порожня")
-            return
-        
-        def task() -> int:
-            synced = 0
-            for record in pending:
-                try:
-                    self.app.api.request_json("POST", "/add_record", token=token, payload=record)
-                    synced += 1
-                except ApiError:
-                    break
-            return synced
-        
-        def on_success(count: int) -> None:
-            if count:
-                self.app.tracking_offline.clear()
-                self.status.set(f"✅ Синхронізовано {count} записів")
-            self.inflight.set(len(self.app.tracking_offline.list()))
-        
-        def on_error(_: Exception) -> None:
-            self.status.set("❌ Не вдалося синхронізувати")
-        
-        run_async(self, task, on_success, on_error)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА ИСТОРИИ
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class HistoryTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.records: List[Dict[str, Any]] = []
-        self.filtered: List[Dict[str, Any]] = []
-        
-        # Фильтры
-        filters_card = ModernCard(self, title="🔍 Фільтри", padding=Spacing.MD)
-        filters_card.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
-        
-        filters_grid = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
-        filters_grid.pack(fill=tk.X)
-        
-        # Первая строка фильтров
-        row1 = tk.Frame(filters_grid, bg=Colors.BG_CARD)
-        row1.pack(fill=tk.X, pady=Spacing.XS)
-        
-        self.box_filter_entry = ModernEntry(row1, label="BoxID")
-        self.box_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.ttn_filter_entry = ModernEntry(row1, label="ТТН")
-        self.ttn_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.user_filter_entry = ModernEntry(row1, label="Оператор")
-        self.user_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        # Вторая строка фильтров
-        row2 = tk.Frame(filters_grid, bg=Colors.BG_CARD)
-        row2.pack(fill=tk.X, pady=Spacing.XS)
-        
-        self.date_filter_entry = ModernEntry(row2, label="Дата (YYYY-MM-DD)")
-        self.date_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.start_time_entry = ModernEntry(row2, label="Час від (HH:MM)")
-        self.start_time_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.end_time_entry = ModernEntry(row2, label="Час до (HH:MM)")
-        self.end_time_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        # Кнопки фильтров
-        btn_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
-        btn_row.pack(fill=tk.X, pady=(Spacing.MD, 0))
-        
-        apply_btn = ModernButton(btn_row, text="Застосувати", command=self.apply_filters, variant="primary", width=120, height=36)
-        apply_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        clear_btn = ModernButton(btn_row, text="Очистити", command=self.clear_filters, variant="secondary", width=100, height=36)
-        clear_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        refresh_btn = ModernButton(btn_row, text="🔄 Оновити", command=self.fetch_history, variant="secondary", width=110, height=36)
-        refresh_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        clear_history_btn = ModernButton(btn_row, text="🗑️ Очистити історію", command=self.clear_history, variant="danger", width=150, height=36)
-        clear_history_btn.pack(side=tk.RIGHT, padx=Spacing.XS)
+        self.count_label.pack(side=tk.RIGHT, padx=Spacing.MD)
         
         # Таблица
         table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=(0, Spacing.MD))
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
         
         self.tree = ModernTreeview(
             table_frame,
             columns=[
-                ("datetime", "Дата", 180),
-                ("user", "Оператор", 150),
-                ("boxid", "BoxID", 150),
-                ("ttn", "ТТН", 180),
+                ("id", "ID", 80),
+                ("surname", "Прізвище", 200),
+                ("created", "Дата створення", 200),
             ]
         )
         self.tree.pack(fill=tk.BOTH, expand=True)
-    
-    def refresh(self) -> None:
-        self.fetch_history()
-    
-    def fetch_history(self) -> None:
-        token = self.app.state_data.get("token")
-        if not token:
-            return
         
+        self.fetch_requests()
+    
+    def fetch_requests(self) -> None:
         def task() -> List[Dict[str, Any]]:
-            data = self.app.api.request_json("GET", "/get_history", token=token)
+            data = self.app.api.request_json("GET", "/admin/registration_requests", token=self.token)
             return data if isinstance(data, list) else []
         
         def on_success(data: List[Dict[str, Any]]) -> None:
-            self.records = sorted(data, key=lambda item: item.get("datetime", ""), reverse=True)
-            self.apply_filters()
-        
-        def on_error(exc: Exception) -> None:
-            messagebox.showerror("Помилка", str(exc))
-        
-        run_async(self, task, on_success, on_error)
-    
-    def apply_filters(self) -> None:
-        filtered = list(self.records)
-        
-        box_filter = self.box_filter_entry.get().strip()
-        if box_filter:
-            filtered = [rec for rec in filtered if box_filter in str(rec.get("boxid", ""))]
-        
-        ttn_filter = self.ttn_filter_entry.get().strip()
-        if ttn_filter:
-            filtered = [rec for rec in filtered if ttn_filter in str(rec.get("ttn", ""))]
-        
-        user_filter = self.user_filter_entry.get().strip().lower()
-        if user_filter:
-            filtered = [rec for rec in filtered if user_filter in str(rec.get("user_name", "")).lower()]
-        
-        selected_date = parse_date(self.date_filter_entry.get().strip())
-        if selected_date:
-            filtered = [rec for rec in filtered if self._match_date(rec.get("datetime"), selected_date)]
-        
-        start_time = parse_time(self.start_time_entry.get().strip())
-        end_time = parse_time(self.end_time_entry.get().strip())
-        if start_time or end_time:
-            filtered = [rec for rec in filtered if self._match_time(rec.get("datetime"), start_time, end_time)]
-        
-        self.filtered = filtered
-        self._refresh_tree()
-    
-    def _match_date(self, value: Any, selected: date) -> bool:
-        try:
-            parsed = datetime.fromisoformat(str(value)).date()
-        except ValueError:
-            return False
-        return parsed == selected
-    
-    def _match_time(self, value: Any, start: Optional[time], end: Optional[time]) -> bool:
-        try:
-            parsed = datetime.fromisoformat(str(value)).time()
-        except ValueError:
-            return False
-        if start and parsed < start:
-            return False
-        if end and parsed > end:
-            return False
-        return True
-    
-    def _refresh_tree(self) -> None:
-        self.tree.clear()
-        for record in self.filtered:
-            self.tree.insert((
-                format_datetime(record.get("datetime", "")),
-                record.get("user_name", ""),
-                record.get("boxid", ""),
-                record.get("ttn", ""),
-            ))
-    
-    def clear_filters(self) -> None:
-        self.box_filter_entry.set("")
-        self.ttn_filter_entry.set("")
-        self.user_filter_entry.set("")
-        self.date_filter_entry.set("")
-        self.start_time_entry.set("")
-        self.end_time_entry.set("")
-        self.apply_filters()
-    
-    def clear_history(self) -> None:
-        role = self.app.state_data.get("user_role")
-        access_level = self.app.state_data.get("access_level")
-        if role != "admin" and access_level != 1:
-            messagebox.showinfo("Доступ", "Очистка доступна лише адміну")
-            return
-        
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        if not messagebox.askyesno("Підтвердження", "Очистити історію?"):
-            return
-        
-        def task() -> Any:
-            return self.app.api.request_json("DELETE", "/clear_tracking", token=token)
-        
-        def on_success(_: Any) -> None:
-            self.records = []
-            self.apply_filters()
-        
-        def on_error(exc: Exception) -> None:
-            messagebox.showerror("Помилка", str(exc))
-        
-        run_async(self, task, on_success, on_error)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА ОШИБОК
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ErrorsTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.records: List[Dict[str, Any]] = []
-        
-        # Панель действий
-        actions = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        actions.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
-        
-        refresh_btn = ModernButton(actions, text="🔄 Оновити", command=self.fetch_errors, variant="primary", width=120, height=40)
-        refresh_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        clear_btn = ModernButton(actions, text="🗑️ Очистити всі", command=self.clear_errors, variant="danger", width=140, height=40)
-        clear_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        delete_btn = ModernButton(actions, text="❌ Видалити вибране", command=self.delete_selected, variant="secondary", width=160, height=40)
-        delete_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        # Таблица
-        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=(0, Spacing.MD))
-        
-        self.tree = ModernTreeview(
-            table_frame,
-            columns=[
-                ("datetime", "Дата", 160),
-                ("user", "Оператор", 120),
-                ("boxid", "BoxID", 120),
-                ("ttn", "ТТН", 140),
-                ("note", "Примітка", 200),
-                ("id", "ID", 60),
-            ]
-        )
-        self.tree.pack(fill=tk.BOTH, expand=True)
-    
-    def refresh(self) -> None:
-        self.fetch_errors()
-    
-    def fetch_errors(self) -> None:
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        def task() -> List[Dict[str, Any]]:
-            data = self.app.api.request_json("GET", "/get_errors", token=token)
-            return data if isinstance(data, list) else []
-        
-        def on_success(data: List[Dict[str, Any]]) -> None:
-            self.records = data
+            self.requests = data
+            self.count_label.config(text=f"Запитів: {len(data)}")
             self.tree.clear()
-            for record in data:
+            for req in data:
                 self.tree.insert((
-                    format_datetime(record.get("datetime", "")),
-                    record.get("user_name", ""),
-                    record.get("boxid", ""),
-                    record.get("ttn", ""),
-                    record.get("note", ""),
-                    record.get("id", ""),
+                    req.get("id"),
+                    req.get("surname", ""),
+                    format_datetime(req.get("created_at", ""))
                 ))
         
         def on_error(exc: Exception) -> None:
@@ -1625,767 +2571,53 @@ class ErrorsTab(tk.Frame):
         
         run_async(self, task, on_success, on_error)
     
-    def clear_errors(self) -> None:
-        role = self.app.state_data.get("user_role")
-        access_level = self.app.state_data.get("access_level")
-        if role not in {"admin", "operator"} and access_level not in {0, 1}:
-            messagebox.showinfo("Доступ", "Недостатньо прав")
-            return
-        
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        if not messagebox.askyesno("Підтвердження", "Очистити всі помилки?"):
-            return
-        
-        def task() -> Any:
-            return self.app.api.request_json("DELETE", "/clear_errors", token=token)
-        
-        def on_success(_: Any) -> None:
-            self.records = []
-            self.tree.clear()
-        
-        def on_error(exc: Exception) -> None:
-            messagebox.showerror("Помилка", str(exc))
-        
-        run_async(self, task, on_success, on_error)
-    
-    def delete_selected(self) -> None:
+    def _selected_id(self) -> Optional[int]:
         selection = self.tree.selection()
         if not selection:
-            messagebox.showinfo("Помилка", "Оберіть запис для видалення")
+            return None
+        return int(self.tree.item(selection[0])["values"][0])
+    
+    def approve_request(self) -> None:
+        request_id = self._selected_id()
+        if request_id is None:
+            messagebox.showinfo("Увага", "Оберіть запит зі списку")
             return
         
-        item = self.tree.item(selection[0])
-        record_id = item["values"][5]
-        token = self.app.state_data.get("token")
-        if not token:
-            return
+        role = self.role_var.get()
         
         def task() -> Any:
-            return self.app.api.request_json("DELETE", f"/delete_error/{record_id}", token=token)
-        
-        def on_success(_: Any) -> None:
-            self.fetch_errors()
-        
-        def on_error(exc: Exception) -> None:
-            messagebox.showerror("Помилка", str(exc))
-        
-        run_async(self, task, on_success, on_error)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА СТАТИСТИКИ
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class StatisticsTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.history: List[Dict[str, Any]] = []
-        self.errors: List[Dict[str, Any]] = []
-        self.summary = tk.StringVar(value="")
-        
-        # Фильтры дат
-        filters = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        filters.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
-        
-        self.start_date_entry = ModernEntry(filters, label="Початок (YYYY-MM-DD)")
-        self.start_date_entry.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        self.end_date_entry = ModernEntry(filters, label="Кінець (YYYY-MM-DD)")
-        self.end_date_entry.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        refresh_btn = ModernButton(filters, text="📊 Оновити", command=self.fetch_data, variant="primary", width=120, height=40)
-        refresh_btn.pack(side=tk.LEFT, padx=Spacing.MD)
-        
-        # Карточки статистики
-        stats_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        stats_frame.pack(fill=tk.X, padx=Spacing.MD)
-        
-        self.summary_label = tk.Label(
-            stats_frame,
-            textvariable=self.summary,
-            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE),
-            fg=Colors.TEXT_PRIMARY,
-            bg=Colors.BG_PRIMARY
-        )
-        self.summary_label.pack(anchor="w", pady=Spacing.MD)
-        
-        # Таблица операторов
-        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=(0, Spacing.MD))
-        
-        self.tree = ModernTreeview(
-            table_frame,
-            columns=[
-                ("user", "Оператор", 200),
-                ("scans", "Сканів", 150),
-                ("errors", "Помилок", 150),
-            ]
-        )
-        self.tree.pack(fill=tk.BOTH, expand=True)
-    
-    def refresh(self) -> None:
-        role = self.app.state_data.get("user_role")
-        access_level = self.app.state_data.get("access_level")
-        if role != "admin" and access_level != 1:
-            self.summary.set("🔒 Доступ до статистики лише для адміністраторів")
-            return
-        
-        if not self.start_date_entry.get() or not self.end_date_entry.get():
-            today = datetime.now().date()
-            self.start_date_entry.set(today.replace(day=1).isoformat())
-            self.end_date_entry.set(today.isoformat())
-        
-        self.fetch_data()
-    
-    def fetch_data(self) -> None:
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-            history = self.app.api.request_json("GET", "/get_history", token=token)
-            errors = self.app.api.request_json("GET", "/get_errors", token=token)
-            return (
-                history if isinstance(history, list) else [],
-                errors if isinstance(errors, list) else [],
+            return self.app.api.request_json(
+                "POST", f"/admin/registration_requests/{request_id}/approve",
+                token=self.token, payload={"role": role}
             )
         
-        def on_success(data: Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]) -> None:
-            self.history, self.errors = data
-            self.apply_stats()
+        def on_success(_: Any) -> None:
+            messagebox.showinfo("Успіх", "Запит підтверджено")
+            self.fetch_requests()
         
         def on_error(exc: Exception) -> None:
             messagebox.showerror("Помилка", str(exc))
         
         run_async(self, task, on_success, on_error)
     
-    def apply_stats(self) -> None:
-        start = parse_date(self.start_date_entry.get().strip())
-        end = parse_date(self.end_date_entry.get().strip())
-        
-        if not start or not end:
-            messagebox.showinfo("Фільтр", "Вкажіть коректні дати")
+    def reject_request(self) -> None:
+        request_id = self._selected_id()
+        if request_id is None:
+            messagebox.showinfo("Увага", "Оберіть запит зі списку")
             return
         
-        def in_range(record: Dict[str, Any]) -> bool:
-            try:
-                dt = datetime.fromisoformat(record.get("datetime", "")).date()
-            except ValueError:
-                return False
-            return start <= dt <= end
-        
-        history = [rec for rec in self.history if in_range(rec)]
-        errors = [rec for rec in self.errors if in_range(rec)]
-        
-        counts: Dict[str, int] = {}
-        error_counts: Dict[str, int] = {}
-        
-        for rec in history:
-            user = rec.get("user_name", "—")
-            counts[user] = counts.get(user, 0) + 1
-        
-        for rec in errors:
-            user = rec.get("user_name", "—")
-            error_counts[user] = error_counts.get(user, 0) + 1
-        
-        total_scans = sum(counts.values())
-        total_errors = sum(error_counts.values())
-        top_user = max(counts.items(), key=lambda item: item[1], default=("—", 0))
-        
-        self.summary.set(f"📈 Сканів: {total_scans} | ⚠️ Помилок: {total_errors} | 🏆 Топ оператор: {top_user[0]}")
-        
-        self.tree.clear()
-        for user, scans in sorted(counts.items(), key=lambda item: item[1], reverse=True):
-            self.tree.insert((user, scans, error_counts.get(user, 0)))
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ГЛАВНЫЙ ЭКРАН SCANPAK
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ScanpakMainFrame(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.status = tk.StringVar(value="")
-        self.user_label = tk.StringVar(value="")
-        
-        # Хедер
-        header = tk.Frame(self, bg=Colors.BG_SECONDARY, height=60)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        
-        header_content = tk.Frame(header, bg=Colors.BG_SECONDARY)
-        header_content.pack(fill=tk.BOTH, expand=True, padx=Spacing.LG)
-        
-        logo = tk.Label(
-            header_content,
-            text="📱 СканПак",
-            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
-            fg=Colors.SECONDARY,
-            bg=Colors.BG_SECONDARY
-        )
-        logo.pack(side=tk.LEFT, pady=Spacing.MD)
-        
-        user_frame = tk.Frame(header_content, bg=Colors.BG_SECONDARY)
-        user_frame.pack(side=tk.RIGHT, pady=Spacing.SM)
-        
-        user_info = tk.Label(
-            user_frame,
-            textvariable=self.user_label,
-            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
-            fg=Colors.TEXT_SECONDARY,
-            bg=Colors.BG_SECONDARY
-        )
-        user_info.pack(side=tk.LEFT, padx=Spacing.SM)
-        
-        logout_btn = ModernButton(user_frame, text="Вийти", command=self.logout, variant="ghost", width=80, height=32)
-        logout_btn.pack(side=tk.LEFT, padx=Spacing.SM)
-        
-        # Контент
-        content = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        content.pack(fill=tk.BOTH, expand=True, padx=Spacing.LG, pady=Spacing.MD)
-        
-        self.notebook = ModernNotebook(content)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-        
-        self.scan_tab = ScanpakScanTab(self.notebook.content_frame, app, self.status)
-        self.history_tab = ScanpakHistoryTab(self.notebook.content_frame, app)
-        self.stats_tab = ScanpakStatsTab(self.notebook.content_frame, app)
-        
-        self.notebook.add_tab("scan", "📷 Сканування", self.scan_tab)
-        self.notebook.add_tab("history", "📋 Історія", self.history_tab)
-        self.notebook.add_tab("stats", "📊 Статистика", self.stats_tab)
-        
-        # Статус бар
-        status_bar = tk.Frame(self, bg=Colors.BG_SECONDARY, height=40)
-        status_bar.pack(fill=tk.X, side=tk.BOTTOM)
-        status_bar.pack_propagate(False)
-        
-        status_label = tk.Label(
-            status_bar,
-            textvariable=self.status,
-            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
-            fg=Colors.TEXT_SECONDARY,
-            bg=Colors.BG_SECONDARY
-        )
-        status_label.pack(side=tk.LEFT, padx=Spacing.LG, pady=Spacing.SM)
-    
-    def refresh(self) -> None:
-        name = self.app.state_data.get("scanpak_user_name", "оператор")
-        role = self.app.state_data.get("scanpak_user_role", "")
-        role_label = "🔑 Адмін" if role == "admin" else "🧰 Оператор"
-        self.user_label.set(f"👤 {name} • {role_label}")
-        
-        self.scan_tab.refresh()
-        self.history_tab.refresh()
-        self.stats_tab.refresh()
-    
-    def logout(self) -> None:
-        self.app.clear_state(["scanpak_token", "scanpak_user_name", "scanpak_user_role"])
-        self.app.show_frame("StartFrame")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА СКАНЕРА SCANPAK
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ScanpakScanTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, status: tk.StringVar) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.status = status
-        self.offline_count = tk.IntVar(value=0)
-        
-        center = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        center.place(relx=0.5, rely=0.4, anchor="center")
-        
-        card = ModernCard(center, title="Сканування відправлень", padding=Spacing.XL)
-        card.pack()
-        
-        self.number_entry = ModernEntry(card.content, label="Номер відправлення", icon="📦")
-        self.number_entry.pack(fill=tk.X, pady=Spacing.SM)
-        self.number_entry.bind("<Return>", lambda e: self.submit())
-        
-        btn_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        btn_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
-        
-        save_btn = ModernButton(btn_frame, text="💾 Зберегти", command=self.submit, variant="primary", width=140, height=44)
-        save_btn.pack(side=tk.LEFT)
-        
-        sync_btn = ModernButton(btn_frame, text="🔄 Синхронізувати", command=self.sync_offline, variant="secondary", width=150, height=44)
-        sync_btn.pack(side=tk.LEFT, padx=Spacing.SM)
-        
-        offline_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        offline_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
-        
-        tk.Label(offline_frame, text="📴 В черзі офлайн:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD).pack(side=tk.LEFT)
-        tk.Label(offline_frame, textvariable=self.offline_count, font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"), fg=Colors.WARNING, bg=Colors.BG_CARD).pack(side=tk.LEFT, padx=Spacing.XS)
-    
-    def refresh(self) -> None:
-        self.offline_count.set(len(self.app.scanpak_offline.list()))
-    
-    def submit(self) -> None:
-        token = self.app.state_data.get("scanpak_token")
-        number = "".join(filter(str.isdigit, self.number_entry.get()))
-        
-        if not number:
-            self.status.set("⚠️ Введіть номер")
-            return
-        
-        if self.app.scanpak_offline.contains("parcel_number", number):
-            self.status.set("⚠️ Увага, це дублікат в офлайн черзі")
-            self.number_entry.set("")
-            return
-        
-        self.number_entry.set("")
-        
-        def task() -> Dict[str, Any]:
-            if not token:
-                raise ApiError("Відсутній токен", 401)
-            return self.app.scanpak_api.request_json("POST", "/scans", token=token, payload={"parcel_number": number})
-        
-        def on_success(_: Dict[str, Any]) -> None:
-            self.status.set("✅ Збережено")
-            self.sync_offline()
-        
-        def on_error(exc: Exception) -> None:
-            self.app.scanpak_offline.add({"parcel_number": number})
-            self.offline_count.set(len(self.app.scanpak_offline.list()))
-            if isinstance(exc, ApiError):
-                self.status.set(exc.message)
-            else:
-                self.status.set("📦 Збережено локально (офлайн)")
-        
-        run_async(self, task, on_success, on_error)
-    
-    def sync_offline(self) -> None:
-        token = self.app.state_data.get("scanpak_token")
-        if not token:
-            return
-        
-        pending = self.app.scanpak_offline.list()
-        if not pending:
-            self.status.set("✅ Офлайн-черга порожня")
-            return
-        
-        def task() -> int:
-            synced = 0
-            for record in pending:
-                try:
-                    self.app.scanpak_api.request_json("POST", "/scans", token=token, payload=record)
-                    synced += 1
-                except ApiError:
-                    break
-            return synced
-        
-        def on_success(count: int) -> None:
-            if count:
-                self.app.scanpak_offline.clear()
-            self.offline_count.set(len(self.app.scanpak_offline.list()))
-            self.status.set(f"✅ Синхронізовано {count} записів")
-        
-        def on_error(_: Exception) -> None:
-            self.status.set("❌ Не вдалося синхронізувати")
-        
-        run_async(self, task, on_success, on_error)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА ИСТОРИИ SCANPAK
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ScanpakHistoryTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.records: List[Dict[str, Any]] = []
-        self.filtered: List[Dict[str, Any]] = []
-        
-        # Фильтры
-        filters_card = ModernCard(self, title="🔍 Фільтри", padding=Spacing.MD)
-        filters_card.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
-        
-        filters_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
-        filters_row.pack(fill=tk.X)
-        
-        self.parcel_filter_entry = ModernEntry(filters_row, label="Відправлення")
-        self.parcel_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.user_filter_entry = ModernEntry(filters_row, label="Оператор")
-        self.user_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.date_filter_entry = ModernEntry(filters_row, label="Дата (YYYY-MM-DD)")
-        self.date_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        btn_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
-        btn_row.pack(fill=tk.X, pady=(Spacing.MD, 0))
-        
-        ModernButton(btn_row, text="Застосувати", command=self.apply_filters, variant="primary", width=120, height=36).pack(side=tk.LEFT, padx=Spacing.XS)
-        ModernButton(btn_row, text="Очистити", command=self.clear_filters, variant="secondary", width=100, height=36).pack(side=tk.LEFT, padx=Spacing.XS)
-        ModernButton(btn_row, text="🔄 Оновити", command=self.fetch_history, variant="secondary", width=110, height=36).pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        # Таблица
-        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=(0, Spacing.MD))
-        
-        self.tree = ModernTreeview(table_frame, columns=[
-        role_text = "👁 Перегляд"
-        if role == "admin" or access_level == 1:
-            role_text = "🔑 Адмін"
-        elif role == "operator" or access_level == 0:
-            role_text = "🧰 Оператор"
-        _label.set(f"👤 {user}")
-        self.role_label.set(role_text)
-        
-        self.scan_tab.refresh()
-        self.history_tab.refresh()
-        self.errors_tab.refresh()
-        self.stats_tab.refresh()
-    
-    def logout(self) -> None:
-        self.app.clear_state(["token", "access_level", "user_name", "user_role"])
-        self.app.show_frame("StartFrame")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА СКАНЕРА TRACKING
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TrackingScanTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, status: tk.StringVar) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.status = status
-        self.inflight = tk.IntVar(value=0)
-        
-        # Центральный контейнер
-        center = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        center.place(relx=0.5, rely=0.4, anchor="center")
-        
-        # Карточка сканера
-        card = ModernCard(center, title="Сканування", padding=Spacing.XL)
-        card.pack()
-        
-        # Поля ввода
-        self.box_entry = ModernEntry(card.content, label="BoxID", icon="📦")
-        self.box_entry.pack(fill=tk.X, pady=Spacing.SM)
-        
-        self.ttn_entry = ModernEntry(card.content, label="ТТН", icon="🏷️")
-        self.ttn_entry.pack(fill=tk.X, pady=Spacing.SM)
-        
-        # Кнопки
-        btn_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        btn_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
-        
-        send_btn = ModernButton(
-            btn_frame,
-            text="📤 Надіслати",
-            command=self.send_record,
-            variant="primary",
-            width=150,
-            height=44
-        )
-        send_btn.pack(side=tk.LEFT)
-        
-        sync_btn = ModernButton(
-            btn_frame,
-            text="🔄 Синхронізувати",
-            command=self.sync_offline,
-            variant="secondary",
-            width=150,
-            height=44
-        )
-        sync_btn.pack(side=tk.LEFT, padx=Spacing.SM)
-        
-        # Счетчик офлайн
-        offline_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        offline_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
-        
-        offline_icon = tk.Label(
-            offline_frame,
-            text="📴",
-            font=(Fonts.FAMILY, Fonts.BODY_SIZE),
-            bg=Colors.BG_CARD
-        )
-        offline_icon.pack(side=tk.LEFT)
-        
-        offline_label = tk.Label(
-            offline_frame,
-            text="В черзі офлайн:",
-            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
-            fg=Colors.TEXT_SECONDARY,
-            bg=Colors.BG_CARD
-        )
-        offline_label.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        offline_count = tk.Label(
-            offline_frame,
-            textvariable=self.inflight,
-            font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"),
-            fg=Colors.WARNING,
-            bg=Colors.BG_CARD
-        )
-        offline_count.pack(side=tk.LEFT)
-        
-        # Привязка клавиш
-        self.box_entry.bind("<Return>", lambda e: self.ttn_entry.focus())
-        self.ttn_entry.bind("<Return>", lambda e: self.send_record())
-    
-    def refresh(self) -> None:
-        self.inflight.set(len(self.app.tracking_offline.list()))
-    
-    def send_record(self) -> None:
-        token = self.app.state_data.get("token")
-        user_name = self.app.state_data.get("user_name", "operator")
-        boxid = "".join(filter(str.isdigit, self.box_entry.get()))
-        ttn = "".join(filter(str.isdigit, self.ttn_entry.get()))
-        
-        if not boxid or not ttn:
-            self.status.set("⚠️ Заповніть BoxID та ТТН")
-            return
-        
-        record = {"user_name": user_name, "boxid": boxid, "ttn": ttn}
-        self.box_entry.set("")
-        self.ttn_entry.set("")
-        self.box_entry.focus()
-        
-        def task() -> Dict[str, Any]:
-            if not token:
-                raise ApiError("Відсутній токен", 401)
-            return self.app.api.request_json("POST", "/add_record", token=token, payload=record)
-        
-        def on_success(data: Dict[str, Any]) -> None:
-            note = data.get("note") if isinstance(data, dict) else None
-            if note:
-                self.status.set(f"⚠️ Дублікат: {note}")
-            else:
-                self.status.set("✅ Успішно додано")
-            self.sync_offline()
-        
-        def on_error(exc: Exception) -> None:
-            self.app.tracking_offline.add(record)
-            self.inflight.set(len(self.app.tracking_offline.list()))
-            self.status.set("📦 Збережено локально (офлайн)")
-        
-        run_async(self, task, on_success, on_error)
-    
-    def sync_offline(self) -> None:
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        pending = self.app.tracking_offline.list()
-        if not pending:
-            self.status.set("✅ Офлайн-черга порожня")
-            return
-        
-        def task() -> int:
-            synced = 0
-            for record in pending:
-                try:
-                    self.app.api.request_json("POST", "/add_record", token=token, payload=record)
-                    synced += 1
-                except ApiError:
-                    break
-            return synced
-        
-        def on_success(count: int) -> None:
-            if count:
-                self.app.tracking_offline.clear()
-                self.status.set(f"✅ Синхронізовано {count} записів")
-            self.inflight.set(len(self.app.tracking_offline.list()))
-        
-        def on_error(_: Exception) -> None:
-            self.status.set("❌ Не вдалося синхронізувати")
-        
-        run_async(self, task, on_success, on_error)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА ИСТОРИИ
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class HistoryTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.records: List[Dict[str, Any]] = []
-        self.filtered: List[Dict[str, Any]] = []
-        
-        # Фильтры
-        filters_card = ModernCard(self, title="🔍 Фільтри", padding=Spacing.MD)
-        filters_card.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
-        
-        filters_grid = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
-        filters_grid.pack(fill=tk.X)
-        
-        # Первая строка фильтров
-        row1 = tk.Frame(filters_grid, bg=Colors.BG_CARD)
-        row1.pack(fill=tk.X, pady=Spacing.XS)
-        
-        self.box_filter_entry = ModernEntry(row1, label="BoxID")
-        self.box_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.ttn_filter_entry = ModernEntry(row1, label="ТТН")
-        self.ttn_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.user_filter_entry = ModernEntry(row1, label="Оператор")
-        self.user_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        # Вторая строка фильтров
-        row2 = tk.Frame(filters_grid, bg=Colors.BG_CARD)
-        row2.pack(fill=tk.X, pady=Spacing.XS)
-        
-        self.date_filter_entry = ModernEntry(row2, label="Дата (YYYY-MM-DD)")
-        self.date_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.start_time_entry = ModernEntry(row2, label="Час від (HH:MM)")
-        self.start_time_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.end_time_entry = ModernEntry(row2, label="Час до (HH:MM)")
-        self.end_time_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        # Кнопки фильтров
-        btn_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
-        btn_row.pack(fill=tk.X, pady=(Spacing.MD, 0))
-        
-        apply_btn = ModernButton(btn_row, text="Застосувати", command=self.apply_filters, variant="primary", width=120, height=36)
-        apply_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        clear_btn = ModernButton(btn_row, text="Очистити", command=self.clear_filters, variant="secondary", width=100, height=36)
-        clear_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        refresh_btn = ModernButton(btn_row, text="🔄 Оновити", command=self.fetch_history, variant="secondary", width=110, height=36)
-        refresh_btn.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        clear_history_btn = ModernButton(btn_row, text="🗑️ Очистити історію", command=self.clear_history, variant="danger", width=150, height=36)
-        clear_history_btn.pack(side=tk.RIGHT, padx=Spacing.XS)
-        
-        # Таблица
-        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=(0, Spacing.MD))
-        
-        self.tree = ModernTreeview(
-            table_frame,
-            columns=[
-                ("datetime", "Дата", 180),
-                ("user", "Оператор", 150),
-                ("boxid", "BoxID", 150),
-                ("ttn", "ТТН", 180),
-            ]
-        )
-        self.tree.pack(fill=tk.BOTH, expand=True)
-    
-    def refresh(self) -> None:
-        self.fetch_history()
-    
-    def fetch_history(self) -> None:
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        def task() -> List[Dict[str, Any]]:
-            data = self.app.api.request_json("GET", "/get_history", token=token)
-            return data if isinstance(data, list) else []
-        
-        def on_success(data: List[Dict[str, Any]]) -> None:
-            self.records = sorted(data, key=lambda item: item.get("datetime", ""), reverse=True)
-            self.apply_filters()
-        
-        def on_error(exc: Exception) -> None:
-            messagebox.showerror("Помилка", str(exc))
-        
-        run_async(self, task, on_success, on_error)
-    
-    def apply_filters(self) -> None:
-        filtered = list(self.records)
-        
-        box_filter = self.box_filter_entry.get().strip()
-        if box_filter:
-            filtered = [rec for rec in filtered if box_filter in str(rec.get("boxid", ""))]
-        
-        ttn_filter = self.ttn_filter_entry.get().strip()
-        if ttn_filter:
-            filtered = [rec for rec in filtered if ttn_filter in str(rec.get("ttn", ""))]
-        
-        user_filter = self.user_filter_entry.get().strip().lower()
-        if user_filter:
-            filtered = [rec for rec in filtered if user_filter in str(rec.get("user_name", "")).lower()]
-        
-        selected_date = parse_date(self.date_filter_entry.get().strip())
-        if selected_date:
-            filtered = [rec for rec in filtered if self._match_date(rec.get("datetime"), selected_date)]
-        
-        start_time = parse_time(self.start_time_entry.get().strip())
-        end_time = parse_time(self.end_time_entry.get().strip())
-        if start_time or end_time:
-            filtered = [rec for rec in filtered if self._match_time(rec.get("datetime"), start_time, end_time)]
-        
-        self.filtered = filtered
-        self._refresh_tree()
-    
-    def _match_date(self, value: Any, selected: date) -> bool:
-        try:
-            parsed = datetime.fromisoformat(str(value)).date()
-        except ValueError:
-            return False
-        return parsed == selected
-    
-    def _match_time(self, value: Any, start: Optional[time], end: Optional[time]) -> bool:
-        try:
-            parsed = datetime.fromisoformat(str(value)).time()
-        except ValueError:
-            return False
-        if start and parsed < start:
-            return False
-        if end and parsed > end:
-            return False
-        return True
-    
-    def _refresh_tree(self) -> None:
-        self.tree.clear()
-        for record in self.filtered:
-            self.tree.insert((
-                format_datetime(record.get("datetime", "")),
-                record.get("user_name", ""),
-                record.get("boxid", ""),
-                record.get("ttn", ""),
-            ))
-    
-    def clear_filters(self) -> None:
-        self.box_filter_entry.set("")
-        self.ttn_filter_entry.set("")
-        self.user_filter_entry.set("")
-        self.date_filter_entry.set("")
-        self.start_time_entry.set("")
-        self.end_time_entry.set("")
-        self.apply_filters()
-    
-    def clear_history(self) -> None:
-        role = self.app.state_data.get("user_role")
-        access_level = self.app.state_data.get("access_level")
-        if role != "admin" and access_level != 1:
-            messagebox.showinfo("Доступ", "Очистка доступна лише адміну")
-            return
-        
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        if not messagebox.askyesno("Підтвердження", "Очистити історію?"):
+        if not messagebox.askyesno("Підтвердження", "Відхилити цей запит?"):
             return
         
         def task() -> Any:
-            return self.app.api.request_json("DELETE", "/clear_tracking", token=token)
+            return self.app.api.request_json(
+                "POST", f"/admin/registration_requests/{request_id}/reject",
+                token=self.token
+            )
         
         def on_success(_: Any) -> None:
-            self.records = []
-            self.apply_filters()
+            messagebox.showinfo("Успіх", "Запит відхилено")
+            self.fetch_requests()
         
         def on_error(exc: Exception) -> None:
             messagebox.showerror("Помилка", str(exc))
@@ -2393,69 +2625,77 @@ class HistoryTab(tk.Frame):
         run_async(self, task, on_success, on_error)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА ОШИБОК
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ErrorsTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+class AdminUsersTab(tk.Frame):
+    def __init__(self, parent: tk.Frame, app: TrackingApp, token: str) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
-        self.records: List[Dict[str, Any]] = []
+        self.token = token
         
-        # Панель действий
-        actions = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        actions.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
+        # Действия
+        actions_card = ModernCard(self, padding=Spacing.MD)
+        actions_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
         
-        refresh_btn = ModernButton(actions, text="🔄 Оновити", command=self.fetch_errors, variant="primary", width=120, height=40)
-        refresh_btn.pack(side=tk.LEFT, padx=Spacing.XS)
+        actions = tk.Frame(actions_card.content, bg=Colors.BG_CARD)
+        actions.pack(fill=tk.X)
         
-        clear_btn = ModernButton(actions, text="🗑️ Очистити всі", command=self.clear_errors, variant="danger", width=140, height=40)
-        clear_btn.pack(side=tk.LEFT, padx=Spacing.XS)
+        ModernButton(
+            actions, text="🔄 Оновити", command=self.fetch_users,
+            variant="primary", width=120, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
         
-        delete_btn = ModernButton(actions, text="❌ Видалити вибране", command=self.delete_selected, variant="secondary", width=160, height=40)
-        delete_btn.pack(side=tk.LEFT, padx=Spacing.XS)
+        ModernButton(
+            actions, text="🔄 Змінити роль", command=self.change_role,
+            variant="secondary", width=140, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            actions, text="⚡ Змінити активність", command=self.toggle_active,
+            variant="secondary", width=170, height=40
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        # Параметры
+        params_frame = tk.Frame(actions, bg=Colors.BG_CARD)
+        params_frame.pack(side=tk.LEFT, padx=Spacing.LG)
+        
+        tk.Label(params_frame, text="Роль:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD).pack(side=tk.LEFT)
+        self.role_var = tk.StringVar(value="operator")
+        ttk.Combobox(params_frame, textvariable=self.role_var, values=["admin", "operator", "viewer"], width=10, state="readonly").pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        tk.Label(params_frame, text="Активний:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD).pack(side=tk.LEFT, padx=(Spacing.MD, 0))
+        self.active_var = tk.StringVar(value="true")
+        ttk.Combobox(params_frame, textvariable=self.active_var, values=["true", "false"], width=8, state="readonly").pack(side=tk.LEFT, padx=Spacing.XS)
         
         # Таблица
         table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=(0, Spacing.MD))
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
         
         self.tree = ModernTreeview(
             table_frame,
             columns=[
-                ("datetime", "Дата", 160),
-                ("user", "Оператор", 120),
-                ("boxid", "BoxID", 120),
-                ("ttn", "ТТН", 140),
-                ("note", "Примітка", 200),
                 ("id", "ID", 60),
+                ("surname", "Прізвище", 180),
+                ("role", "Роль", 120),
+                ("active", "Статус", 100),
             ]
         )
         self.tree.pack(fill=tk.BOTH, expand=True)
-    
-    def refresh(self) -> None:
-        self.fetch_errors()
-    
-    def fetch_errors(self) -> None:
-        token = self.app.state_data.get("token")
-        if not token:
-            return
         
+        self.fetch_users()
+    
+    def fetch_users(self) -> None:
         def task() -> List[Dict[str, Any]]:
-            data = self.app.api.request_json("GET", "/get_errors", token=token)
+            data = self.app.api.request_json("GET", "/admin/users", token=self.token)
             return data if isinstance(data, list) else []
         
         def on_success(data: List[Dict[str, Any]]) -> None:
-            self.records = data
             self.tree.clear()
-            for record in data:
+            for user in data:
+                status = "✅ Активний" if user.get("is_active", False) else "❌ Неактивний"
                 self.tree.insert((
-                    format_datetime(record.get("datetime", "")),
-                    record.get("user_name", ""),
-                    record.get("boxid", ""),
-                    record.get("ttn", ""),
-                    record.get("note", ""),
-                    record.get("id", ""),
+                    user.get("id"),
+                    user.get("surname"),
+                    user.get("role"),
+                    status
                 ))
         
         def on_error(exc: Exception) -> None:
@@ -2463,419 +2703,52 @@ class ErrorsTab(tk.Frame):
         
         run_async(self, task, on_success, on_error)
     
-    def clear_errors(self) -> None:
-        role = self.app.state_data.get("user_role")
-        access_level = self.app.state_data.get("access_level")
-        if role not in {"admin", "operator"} and access_level not in {0, 1}:
-            messagebox.showinfo("Доступ", "Недостатньо прав")
-            return
-        
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        if not messagebox.askyesno("Підтвердження", "Очистити всі помилки?"):
-            return
-        
-        def task() -> Any:
-            return self.app.api.request_json("DELETE", "/clear_errors", token=token)
-        
-        def on_success(_: Any) -> None:
-            self.records = []
-            self.tree.clear()
-        
-        def on_error(exc: Exception) -> None:
-            messagebox.showerror("Помилка", str(exc))
-        
-        run_async(self, task, on_success, on_error)
-    
-    def delete_selected(self) -> None:
+    def _selected_id(self) -> Optional[int]:
         selection = self.tree.selection()
         if not selection:
-            messagebox.showinfo("Помилка", "Оберіть запис для видалення")
+            return None
+        return int(self.tree.item(selection[0])["values"][0])
+    
+    def change_role(self) -> None:
+        user_id = self._selected_id()
+        if user_id is None:
+            messagebox.showinfo("Увага", "Оберіть користувача")
             return
         
-        item = self.tree.item(selection[0])
-        record_id = item["values"][5]
-        token = self.app.state_data.get("token")
-        if not token:
-            return
+        role = self.role_var.get()
         
         def task() -> Any:
-            return self.app.api.request_json("DELETE", f"/delete_error/{record_id}", token=token)
-        
-        def on_success(_: Any) -> None:
-            self.fetch_errors()
-        
-        def on_error(exc: Exception) -> None:
-            messagebox.showerror("Помилка", str(exc))
-        
-        run_async(self, task, on_success, on_error)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА СТАТИСТИКИ
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class StatisticsTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.history: List[Dict[str, Any]] = []
-        self.errors: List[Dict[str, Any]] = []
-        self.summary = tk.StringVar(value="")
-        
-        # Фильтры дат
-        filters = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        filters.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
-        
-        self.start_date_entry = ModernEntry(filters, label="Початок (YYYY-MM-DD)")
-        self.start_date_entry.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        self.end_date_entry = ModernEntry(filters, label="Кінець (YYYY-MM-DD)")
-        self.end_date_entry.pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        refresh_btn = ModernButton(filters, text="📊 Оновити", command=self.fetch_data, variant="primary", width=120, height=40)
-        refresh_btn.pack(side=tk.LEFT, padx=Spacing.MD)
-        
-        # Карточки статистики
-        stats_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        stats_frame.pack(fill=tk.X, padx=Spacing.MD)
-        
-        self.summary_label = tk.Label(
-            stats_frame,
-            textvariable=self.summary,
-            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE),
-            fg=Colors.TEXT_PRIMARY,
-            bg=Colors.BG_PRIMARY
-        )
-        self.summary_label.pack(anchor="w", pady=Spacing.MD)
-        
-        # Таблица операторов
-        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=(0, Spacing.MD))
-        
-        self.tree = ModernTreeview(
-            table_frame,
-            columns=[
-                ("user", "Оператор", 200),
-                ("scans", "Сканів", 150),
-                ("errors", "Помилок", 150),
-            ]
-        )
-        self.tree.pack(fill=tk.BOTH, expand=True)
-    
-    def refresh(self) -> None:
-        role = self.app.state_data.get("user_role")
-        access_level = self.app.state_data.get("access_level")
-        if role != "admin" and access_level != 1:
-            self.summary.set("🔒 Доступ до статистики лише для адміністраторів")
-            return
-        
-        if not self.start_date_entry.get() or not self.end_date_entry.get():
-            today = datetime.now().date()
-            self.start_date_entry.set(today.replace(day=1).isoformat())
-            self.end_date_entry.set(today.isoformat())
-        
-        self.fetch_data()
-    
-    def fetch_data(self) -> None:
-        token = self.app.state_data.get("token")
-        if not token:
-            return
-        
-        def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-            history = self.app.api.request_json("GET", "/get_history", token=token)
-            errors = self.app.api.request_json("GET", "/get_errors", token=token)
-            return (
-                history if isinstance(history, list) else [],
-                errors if isinstance(errors, list) else [],
+            return self.app.api.request_json(
+                "PATCH", f"/admin/users/{user_id}",
+                token=self.token, payload={"role": role}
             )
         
-        def on_success(data: Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]) -> None:
-            self.history, self.errors = data
-            self.apply_stats()
+        def on_success(_: Any) -> None:
+            messagebox.showinfo("Успіх", f"Роль змінено на {role}")
+            self.fetch_users()
         
         def on_error(exc: Exception) -> None:
             messagebox.showerror("Помилка", str(exc))
         
         run_async(self, task, on_success, on_error)
     
-    def apply_stats(self) -> None:
-        start = parse_date(self.start_date_entry.get().strip())
-        end = parse_date(self.end_date_entry.get().strip())
-        
-        if not start or not end:
-            messagebox.showinfo("Фільтр", "Вкажіть коректні дати")
+    def toggle_active(self) -> None:
+        user_id = self._selected_id()
+        if user_id is None:
+            messagebox.showinfo("Увага", "Оберіть користувача")
             return
         
-        def in_range(record: Dict[str, Any]) -> bool:
-            try:
-                dt = datetime.fromisoformat(record.get("datetime", "")).date()
-            except ValueError:
-                return False
-            return start <= dt <= end
+        is_active = self.active_var.get().lower() == "true"
         
-        history = [rec for rec in self.history if in_range(rec)]
-        errors = [rec for rec in self.errors if in_range(rec)]
-        
-        counts: Dict[str, int] = {}
-        error_counts: Dict[str, int] = {}
-        
-        for rec in history:
-            user = rec.get("user_name", "—")
-            counts[user] = counts.get(user, 0) + 1
-        
-        for rec in errors:
-            user = rec.get("user_name", "—")
-            error_counts[user] = error_counts.get(user, 0) + 1
-        
-        total_scans = sum(counts.values())
-        total_errors = sum(error_counts.values())
-        top_user = max(counts.items(), key=lambda item: item[1], default=("—", 0))
-        
-        self.summary.set(f"📈 Сканів: {total_scans} | ⚠️ Помилок: {total_errors} | 🏆 Топ оператор: {top_user[0]}")
-        
-        self.tree.clear()
-        for user, scans in sorted(counts.items(), key=lambda item: item[1], reverse=True):
-            self.tree.insert((user, scans, error_counts.get(user, 0)))
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ГЛАВНЫЙ ЭКРАН SCANPAK
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ScanpakMainFrame(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.status = tk.StringVar(value="")
-        self.user_label = tk.StringVar(value="")
-        
-        # Хедер
-        header = tk.Frame(self, bg=Colors.BG_SECONDARY, height=60)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        
-        header_content = tk.Frame(header, bg=Colors.BG_SECONDARY)
-        header_content.pack(fill=tk.BOTH, expand=True, padx=Spacing.LG)
-        
-        logo = tk.Label(
-            header_content,
-            text="📱 СканПак",
-            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
-            fg=Colors.SECONDARY,
-            bg=Colors.BG_SECONDARY
-        )
-        logo.pack(side=tk.LEFT, pady=Spacing.MD)
-        
-        user_frame = tk.Frame(header_content, bg=Colors.BG_SECONDARY)
-        user_frame.pack(side=tk.RIGHT, pady=Spacing.SM)
-        
-        user_info = tk.Label(
-            user_frame,
-            textvariable=self.user_label,
-            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
-            fg=Colors.TEXT_SECONDARY,
-            bg=Colors.BG_SECONDARY
-        )
-        user_info.pack(side=tk.LEFT, padx=Spacing.SM)
-        
-        logout_btn = ModernButton(user_frame, text="Вийти", command=self.logout, variant="ghost", width=80, height=32)
-        logout_btn.pack(side=tk.LEFT, padx=Spacing.SM)
-        
-        # Контент
-        content = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        content.pack(fill=tk.BOTH, expand=True, padx=Spacing.LG, pady=Spacing.MD)
-        
-        self.notebook = ModernNotebook(content)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-        
-        self.scan_tab = ScanpakScanTab(self.notebook.content_frame, app, self.status)
-        self.history_tab = ScanpakHistoryTab(self.notebook.content_frame, app)
-        self.stats_tab = ScanpakStatsTab(self.notebook.content_frame, app)
-        
-        self.notebook.add_tab("scan", "📷 Сканування", self.scan_tab)
-        self.notebook.add_tab("history", "📋 Історія", self.history_tab)
-        self.notebook.add_tab("stats", "📊 Статистика", self.stats_tab)
-        
-        # Статус бар
-        status_bar = tk.Frame(self, bg=Colors.BG_SECONDARY, height=40)
-        status_bar.pack(fill=tk.X, side=tk.BOTTOM)
-        status_bar.pack_propagate(False)
-        
-        status_label = tk.Label(
-            status_bar,
-            textvariable=self.status,
-            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
-            fg=Colors.TEXT_SECONDARY,
-            bg=Colors.BG_SECONDARY
-        )
-        status_label.pack(side=tk.LEFT, padx=Spacing.LG, pady=Spacing.SM)
-    
-    def refresh(self) -> None:
-        name = self.app.state_data.get("scanpak_user_name", "оператор")
-        role = self.app.state_data.get("scanpak_user_role", "")
-        role_label = "🔑 Адмін" if role == "admin" else "🧰 Оператор"
-        self.user_label.set(f"👤 {name} • {role_label}")
-        
-        self.scan_tab.refresh()
-        self.history_tab.refresh()
-        self.stats_tab.refresh()
-    
-    def logout(self) -> None:
-        self.app.clear_state(["scanpak_token", "scanpak_user_name", "scanpak_user_role"])
-        self.app.show_frame("StartFrame")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА СКАНЕРА SCANPAK
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ScanpakScanTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, status: tk.StringVar) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.status = status
-        self.offline_count = tk.IntVar(value=0)
-        
-        center = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        center.place(relx=0.5, rely=0.4, anchor="center")
-        
-        card = ModernCard(center, title="Сканування відправлень", padding=Spacing.XL)
-        card.pack()
-        
-        self.number_entry = ModernEntry(card.content, label="Номер відправлення", icon="📦")
-        self.number_entry.pack(fill=tk.X, pady=Spacing.SM)
-        self.number_entry.bind("<Return>", lambda e: self.submit())
-        
-        btn_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        btn_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
-        
-        save_btn = ModernButton(btn_frame, text="💾 Зберегти", command=self.submit, variant="primary", width=140, height=44)
-        save_btn.pack(side=tk.LEFT)
-        
-        sync_btn = ModernButton(btn_frame, text="🔄 Синхронізувати", command=self.sync_offline, variant="secondary", width=150, height=44)
-        sync_btn.pack(side=tk.LEFT, padx=Spacing.SM)
-        
-        offline_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        offline_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
-        
-        tk.Label(offline_frame, text="📴 В черзі офлайн:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD).pack(side=tk.LEFT)
-        tk.Label(offline_frame, textvariable=self.offline_count, font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"), fg=Colors.WARNING, bg=Colors.BG_CARD).pack(side=tk.LEFT, padx=Spacing.XS)
-    
-    def refresh(self) -> None:
-        self.offline_count.set(len(self.app.scanpak_offline.list()))
-    
-    def submit(self) -> None:
-        token = self.app.state_data.get("scanpak_token")
-        number = "".join(filter(str.isdigit, self.number_entry.get()))
-        
-        if not number:
-            self.status.set("⚠️ Введіть номер")
-            return
-        
-        if self.app.scanpak_offline.contains("parcel_number", number):
-            self.status.set("⚠️ Увага, це дублікат в офлайн черзі")
-            self.number_entry.set("")
-            return
-        
-        self.number_entry.set("")
-        
-        def task() -> Dict[str, Any]:
-            if not token:
-                raise ApiError("Відсутній токен", 401)
-            return self.app.scanpak_api.request_json("POST", "/scans", token=token, payload={"parcel_number": number})
-        
-        def on_success(_: Dict[str, Any]) -> None:
-            self.status.set("✅ Збережено")
-            self.sync_offline()
-        
-        def on_error(exc: Exception) -> None:
-            self.app.scanpak_offline.add({"parcel_number": number})
-            self.offline_count.set(len(self.app.scanpak_offline.list()))
-            if isinstance(exc, ApiError):
-                self.status.set(exc.message)
-            else:
-                self.status.set("📦 Збережено локально (офлайн)")
-        
-        run_async(self, task, on_success, on_error)
-    
-    def sync_offline(self) -> None:
-        token = self.app.state_data.get("scanpak_token")
-        if not token:
-            return
-        
-        pending = self.app.scanpak_offline.list()
-        if not pending:
-            self.status.set("✅ Офлайн-черга порожня")
-            return
-        
-        def task() -> int:
-            synced = 0
-            for record in pending:
-                try:
-                    self.app.scanpak_api.request_json("POST", "/scans", token=token, payload=record)
-                    synced += 1
-                except ApiError:
-                    break
-            return synced
-        
-        def on_success(count: int) -> None:
-            if count:
-                self.app.scanpak_offline.clear()
-            self.offline_count.set(len(self.app.scanpak_offline.list()))
-            self.status.set(f"✅ Синхронізовано {count} записів")
-        
-        def on_error(_: Exception) -> None:
-            self.status.set("❌ Не вдалося синхронізувати")
-        
-        run_async(self, task, on_success, on_error)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ВКЛАДКА ИСТОРИИ SCANPAK
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ScanpakHistoryTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
-        super().__init__(parent, bg=Colors.BG_PRIMARY)
-        self.app = app
-        self.records: List[Dict[str, Any]] = []
-        self.filtered: List[Dict[str, Any]] = []
-        
-        # Фильтры
-        filters_card = ModernCard(self, title="🔍 Фільтри", padding=Spacing.MD)
-        filters_card.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
-        
-        filters_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
-        filters_row.pack(fill=tk.X)
-        
-        self.parcel_filter_entry = ModernEntry(filters_row, label="Відправлення")
-        self.parcel_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.user_filter_entry = ModernEntry(filters_row, label="Оператор")
-        self.user_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        self.date_filter_entry = ModernEntry(filters_row, label="Дата (YYYY-MM-DD)")
-        self.date_filter_entry.pack(side=tk.LEFT, padx=Spacing.XS, expand=True, fill=tk.X)
-        
-        btn_row = tk.Frame(filters_card.content, bg=Colors.BG_CARD)
-        btn_row.pack(fill=tk.X, pady=(Spacing.MD, 0))
-        
-        ModernButton(btn_row, text="Застосувати", command=self.apply_filters, variant="primary", width=120, height=36).pack(side=tk.LEFT, padx=Spacing.XS)
-        ModernButton(btn_row, text="Очистити", command=self.clear_filters, variant="secondary", width=100, height=36).pack(side=tk.LEFT, padx=Spacing.XS)
-        ModernButton(btn_row, text="🔄 Оновити", command=self.fetch_history, variant="secondary", width=110, height=36).pack(side=tk.LEFT, padx=Spacing.XS)
-        
-        # Таблица
-        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.MD, pady=(0, Spacing.MD))
-        
-        self.tree = ModernTreeview(table_frame, columns=[
         def task() -> Any:
-            return self.app.api.request_json("PATCH", f"/admin/users/{user_id}", token=self.token, payload={"is_active": is_active})
+            return self.app.api.request_json(
+                "PATCH", f"/admin/users/{user_id}",
+                token=self.token, payload={"is_active": is_active}
+            )
         
         def on_success(_: Any) -> None:
+            status = "активовано" if is_active else "деактивовано"
+            messagebox.showinfo("Успіх", f"Користувача {status}")
             self.fetch_users()
         
         def on_error(exc: Exception) -> None:
@@ -2891,37 +2764,81 @@ class AdminPasswordsTab(tk.Frame):
         self.token = token
         self.passwords: Dict[str, str] = {}
         
-        # Карточка настроек
-        card = ModernCard(self, title="🔑 Паролі для ролей", padding=Spacing.LG)
-        card.pack(fill=tk.X, padx=Spacing.MD, pady=Spacing.MD)
+        # Карточка
+        card = ModernCard(self, title="🔑 Управління паролями ролей", padding=Spacing.XL)
+        card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        tk.Label(
+            card.content,
+            text="Тут ви можете змінити паролі для різних ролей користувачів",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
+            fg=Colors.TEXT_MUTED,
+            bg=Colors.BG_CARD
+        ).pack(anchor="w", pady=(0, Spacing.MD))
         
         # Выбор роли
         role_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
         role_frame.pack(fill=tk.X, pady=Spacing.SM)
         
-        tk.Label(role_frame, text="Роль:", font=(Fonts.FAMILY, Fonts.BODY_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD).pack(side=tk.LEFT)
+        tk.Label(
+            role_frame, text="Оберіть роль:",
+            font=(Fonts.FAMILY, Fonts.BODY_SIZE),
+            fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD
+        ).pack(side=tk.LEFT)
         
         self.role_var = tk.StringVar(value="operator")
-        role_combo = ttk.Combobox(role_frame, textvariable=self.role_var, values=["admin", "operator", "viewer"], width=15, state="readonly")
+        role_combo = ttk.Combobox(
+            role_frame, textvariable=self.role_var,
+            values=["admin", "operator", "viewer"],
+            width=15, state="readonly"
+        )
         role_combo.pack(side=tk.LEFT, padx=Spacing.SM)
         role_combo.bind("<<ComboboxSelected>>", lambda e: self._on_role_change())
         
         # Поле пароля
-        self.password_entry = ModernEntry(card.content, label="Новий пароль", icon="🔒", show="•")
-        self.password_entry.pack(fill=tk.X, pady=Spacing.SM)
+        self.password_entry = ModernEntry(card.content, label="Новий пароль для обраної ролі", icon="🔒", show="•")
+        self.password_entry.pack(fill=tk.X, pady=Spacing.MD)
         
         # Кнопки
         btn_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
-        btn_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
+        btn_frame.pack(fill=tk.X, pady=(Spacing.MD, 0))
         
-        ModernButton(btn_frame, text="🔄 Оновити", command=self.fetch_passwords, variant="secondary", width=120, height=40).pack(side=tk.LEFT, padx=Spacing.XS)
-        ModernButton(btn_frame, text="💾 Зберегти", command=self.update_password, variant="primary", width=120, height=40).pack(side=tk.LEFT, padx=Spacing.XS)
+        ModernButton(
+            btn_frame, text="🔄 Завантажити поточні", command=self.fetch_passwords,
+            variant="secondary", width=180, height=44
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        ModernButton(
+            btn_frame, text="💾 Зберегти пароль", command=self.update_password,
+            variant="primary", width=160, height=44
+        ).pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        # Информационное сообщение
+        info_frame = tk.Frame(self, bg=Colors.BG_TERTIARY)
+        info_frame.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.MD)
+        
+        info_inner = tk.Frame(info_frame, bg=Colors.BG_TERTIARY)
+        info_inner.pack(padx=Spacing.MD, pady=Spacing.MD)
+        
+        tk.Label(
+            info_inner, text="ℹ️",
+            font=(Fonts.FAMILY, 16), bg=Colors.BG_TERTIARY
+        ).pack(side=tk.LEFT)
+        
+        tk.Label(
+            info_inner,
+            text="Паролі ролей використовуються для додаткової верифікації при виконанні певних дій",
+            font=(Fonts.FAMILY, Fonts.SMALL_SIZE),
+            fg=Colors.TEXT_SECONDARY, bg=Colors.BG_TERTIARY,
+            wraplength=500
+        ).pack(side=tk.LEFT, padx=Spacing.SM)
         
         self.fetch_passwords()
     
     def _on_role_change(self) -> None:
         role = self.role_var.get()
-        self.password_entry.set(self.passwords.get(role, ""))
+        current_password = self.passwords.get(role, "")
+        self.password_entry.set(current_password)
     
     def fetch_passwords(self) -> None:
         def task() -> Dict[str, Any]:
@@ -2942,15 +2859,22 @@ class AdminPasswordsTab(tk.Frame):
         password = self.password_entry.get().strip()
         
         if not password:
-            messagebox.showinfo("Помилка", "Введіть пароль")
+            messagebox.showinfo("Увага", "Введіть новий пароль")
+            return
+        
+        if len(password) < 4:
+            messagebox.showinfo("Увага", "Пароль занадто короткий (мінімум 4 символи)")
             return
         
         def task() -> Any:
-            return self.app.api.request_json("POST", f"/admin/role-passwords/{role}", token=self.token, payload={"password": password})
+            return self.app.api.request_json(
+                "POST", f"/admin/role-passwords/{role}",
+                token=self.token, payload={"password": password}
+            )
         
         def on_success(_: Any) -> None:
-            messagebox.showinfo("Успіх", "Пароль оновлено")
-            self.fetch_passwords()
+            self.passwords[role] = password
+            messagebox.showinfo("Успіх", f"Пароль для ролі '{role}' оновлено")
         
         def on_error(exc: Exception) -> None:
             messagebox.showerror("Помилка", str(exc))
@@ -2968,8 +2892,14 @@ class ScanpakAdminPanel(tk.Toplevel):
         self.app = app
         self.token = token
         self.title("🔐 Адмін панель СканПак")
-        self.geometry("950x650")
+        self.geometry("1000x700")
         self.configure(bg=Colors.BG_PRIMARY)
+        
+        # Центрируем
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - 1000) // 2
+        y = (self.winfo_screenheight() - 700) // 2
+        self.geometry(f"+{x}+{y}")
         
         # Заголовок
         header = tk.Frame(self, bg=Colors.BG_SECONDARY, height=50)
@@ -2977,12 +2907,15 @@ class ScanpakAdminPanel(tk.Toplevel):
         header.pack_propagate(False)
         
         tk.Label(
-            header,
-            text="🔐 Адмін панель СканПак",
+            header, text="🔐 Адмін панель СканПак",
             font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
-            fg=Colors.SECONDARY,
-            bg=Colors.BG_SECONDARY
+            fg=Colors.SECONDARY, bg=Colors.BG_SECONDARY
         ).pack(side=tk.LEFT, padx=Spacing.LG, pady=Spacing.SM)
+        
+        ModernButton(
+            header, text="✕ Закрити", command=self.destroy,
+            variant="ghost", width=100, height=32
+        ).pack(side=tk.RIGHT, padx=Spacing.MD, pady=Spacing.SM)
         
         # Контент
         content = tk.Frame(self, bg=Colors.BG_PRIMARY)
@@ -2994,7 +2927,7 @@ class ScanpakAdminPanel(tk.Toplevel):
         self.pending_tab = ScanpakAdminPendingTab(self.notebook.content_frame, app, token)
         self.users_tab = ScanpakAdminUsersTab(self.notebook.content_frame, app, token)
         
-        self.notebook.add_tab("pending", "📝 Запити", self.pending_tab)
+        self.notebook.add_tab("pending", "📝 Запити на реєстрацію", self.pending_tab)
         self.notebook.add_tab("users", "👥 Користувачі", self.users_tab)
 
 
@@ -3005,29 +2938,33 @@ class ScanpakAdminPendingTab(tk.Frame):
         self.token = token
         
         # Действия
-        actions = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        actions.pack(fill=tk.X, pady=Spacing.MD)
+        actions_card = ModernCard(self, padding=Spacing.MD)
+        actions_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        actions = tk.Frame(actions_card.content, bg=Colors.BG_CARD)
+        actions.pack(fill=tk.X)
         
         ModernButton(actions, text="🔄 Оновити", command=self.fetch_requests, variant="primary", width=120, height=40).pack(side=tk.LEFT, padx=Spacing.XS)
         ModernButton(actions, text="✅ Підтвердити", command=self.approve_request, variant="success", width=130, height=40).pack(side=tk.LEFT, padx=Spacing.XS)
         ModernButton(actions, text="❌ Відхилити", command=self.reject_request, variant="danger", width=120, height=40).pack(side=tk.LEFT, padx=Spacing.XS)
         
-        # Выбор роли
-        role_frame = tk.Frame(actions, bg=Colors.BG_PRIMARY)
+        # Роль
+        role_frame = tk.Frame(actions, bg=Colors.BG_CARD)
         role_frame.pack(side=tk.LEFT, padx=Spacing.LG)
         
-        tk.Label(role_frame, text="Роль:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_PRIMARY).pack(side=tk.LEFT)
-        
+        tk.Label(role_frame, text="Роль:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD).pack(side=tk.LEFT)
         self.role_var = tk.StringVar(value="operator")
         ttk.Combobox(role_frame, textvariable=self.role_var, values=["admin", "operator"], width=12, state="readonly").pack(side=tk.LEFT, padx=Spacing.XS)
         
+        self.count_label = tk.Label(actions, text="Запитів: 0", font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"), fg=Colors.WARNING, bg=Colors.BG_CARD)
+        self.count_label.pack(side=tk.RIGHT, padx=Spacing.MD)
+        
         # Таблица
-        self.tree = ModernTreeview(self, columns=[
-            ("id", "ID", 80),
-            ("surname", "Прізвище", 180),
-            ("created", "Дата", 200),
-        ])
-        self.tree.pack(fill=tk.BOTH, expand=True, pady=(Spacing.MD, 0))
+        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
+        
+        self.tree = ModernTreeview(table_frame, columns=[("id", "ID", 80), ("surname", "Прізвище", 200), ("created", "Дата", 200)])
+        self.tree.pack(fill=tk.BOTH, expand=True)
         
         self.fetch_requests()
     
@@ -3037,6 +2974,7 @@ class ScanpakAdminPendingTab(tk.Frame):
             return data if isinstance(data, list) else []
         
         def on_success(data: List[Dict[str, Any]]) -> None:
+            self.count_label.config(text=f"Запитів: {len(data)}")
             self.tree.clear()
             for req in data:
                 self.tree.insert((req.get("id"), req.get("surname", ""), format_datetime(req.get("created_at", ""))))
@@ -3055,7 +2993,7 @@ class ScanpakAdminPendingTab(tk.Frame):
     def approve_request(self) -> None:
         request_id = self._selected_id()
         if request_id is None:
-            messagebox.showinfo("Помилка", "Оберіть запит")
+            messagebox.showinfo("Увага", "Оберіть запит")
             return
         
         role = self.role_var.get()
@@ -3064,6 +3002,7 @@ class ScanpakAdminPendingTab(tk.Frame):
             return self.app.scanpak_api.request_json("POST", f"/admin/registration_requests/{request_id}/approve", token=self.token, payload={"role": role})
         
         def on_success(_: Any) -> None:
+            messagebox.showinfo("Успіх", "Запит підтверджено")
             self.fetch_requests()
         
         def on_error(exc: Exception) -> None:
@@ -3074,13 +3013,14 @@ class ScanpakAdminPendingTab(tk.Frame):
     def reject_request(self) -> None:
         request_id = self._selected_id()
         if request_id is None:
-            messagebox.showinfo("Помилка", "Оберіть запит")
+            messagebox.showinfo("Увага", "Оберіть запит")
             return
         
         def task() -> Any:
             return self.app.scanpak_api.request_json("POST", f"/admin/registration_requests/{request_id}/reject", token=self.token)
         
         def on_success(_: Any) -> None:
+            messagebox.showinfo("Успіх", "Запит відхилено")
             self.fetch_requests()
         
         def on_error(exc: Exception) -> None:
@@ -3096,31 +3036,34 @@ class ScanpakAdminUsersTab(tk.Frame):
         self.token = token
         
         # Действия
-        actions = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        actions.pack(fill=tk.X, pady=Spacing.MD)
+        actions_card = ModernCard(self, padding=Spacing.MD)
+        actions_card.pack(fill=tk.X, padx=Spacing.SM, pady=Spacing.SM)
+        
+        actions = tk.Frame(actions_card.content, bg=Colors.BG_CARD)
+        actions.pack(fill=tk.X)
         
         ModernButton(actions, text="🔄 Оновити", command=self.fetch_users, variant="primary", width=120, height=40).pack(side=tk.LEFT, padx=Spacing.XS)
         ModernButton(actions, text="🔄 Змінити роль", command=self.change_role, variant="secondary", width=140, height=40).pack(side=tk.LEFT, padx=Spacing.XS)
         ModernButton(actions, text="⚡ Активність", command=self.toggle_active, variant="secondary", width=130, height=40).pack(side=tk.LEFT, padx=Spacing.XS)
         
-        # Роль и активность
+        # Параметры
+        params = tk.Frame(actions, bg=Colors.BG_CARD)
+        params.pack(side=tk.LEFT, padx=Spacing.LG)
+        
+        tk.Label(params, text="Роль:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD).pack(side=tk.LEFT)
         self.role_var = tk.StringVar(value="operator")
+        ttk.Combobox(params, textvariable=self.role_var, values=["admin", "operator"], width=10, state="readonly").pack(side=tk.LEFT, padx=Spacing.XS)
+        
+        tk.Label(params, text="Активний:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_CARD).pack(side=tk.LEFT, padx=(Spacing.MD, 0))
         self.active_var = tk.StringVar(value="true")
-        
-        tk.Label(actions, text="Роль:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_PRIMARY).pack(side=tk.LEFT, padx=(Spacing.LG, Spacing.XS))
-        ttk.Combobox(actions, textvariable=self.role_var, values=["admin", "operator"], width=12, state="readonly").pack(side=tk.LEFT)
-        
-        tk.Label(actions, text="Активність:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_PRIMARY).pack(side=tk.LEFT, padx=(Spacing.LG, Spacing.XS))
-        ttk.Combobox(actions, textvariable=self.active_var, values=["true", "false"], width=8, state="readonly").pack(side=tk.LEFT)
+        ttk.Combobox(params, textvariable=self.active_var, values=["true", "false"], width=8, state="readonly").pack(side=tk.LEFT, padx=Spacing.XS)
         
         # Таблица
-        self.tree = ModernTreeview(self, columns=[
-            ("id", "ID", 80),
-            ("surname", "Прізвище", 180),
-            ("role", "Роль", 120),
-            ("active", "Активний", 100),
-        ])
-        self.tree.pack(fill=tk.BOTH, expand=True, pady=(Spacing.MD, 0))
+        table_frame = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=Spacing.SM, pady=(0, Spacing.SM))
+        
+        self.tree = ModernTreeview(table_frame, columns=[("id", "ID", 60), ("surname", "Прізвище", 180), ("role", "Роль", 120), ("active", "Статус", 100)])
+        self.tree.pack(fill=tk.BOTH, expand=True)
         
         self.fetch_users()
     
@@ -3132,12 +3075,8 @@ class ScanpakAdminUsersTab(tk.Frame):
         def on_success(data: List[Dict[str, Any]]) -> None:
             self.tree.clear()
             for user in data:
-                self.tree.insert((
-                    user.get("id"),
-                    user.get("surname"),
-                    user.get("role"),
-                    "✅" if user.get("is_active", False) else "❌"
-                ))
+                status = "✅ Активний" if user.get("is_active", False) else "❌ Неактивний"
+                self.tree.insert((user.get("id"), user.get("surname"), user.get("role"), status))
         
         def on_error(exc: Exception) -> None:
             messagebox.showerror("Помилка", str(exc))
@@ -3153,7 +3092,7 @@ class ScanpakAdminUsersTab(tk.Frame):
     def change_role(self) -> None:
         user_id = self._selected_id()
         if user_id is None:
-            messagebox.showinfo("Помилка", "Оберіть користувача")
+            messagebox.showinfo("Увага", "Оберіть користувача")
             return
         
         role = self.role_var.get()
@@ -3172,7 +3111,7 @@ class ScanpakAdminUsersTab(tk.Frame):
     def toggle_active(self) -> None:
         user_id = self._selected_id()
         if user_id is None:
-            messagebox.showinfo("Помилка", "Оберіть користувача")
+            messagebox.showinfo("Увага", "Оберіть користувача")
             return
         
         is_active = self.active_var.get().lower() == "true"
@@ -3194,41 +3133,34 @@ class ScanpakAdminUsersTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def simple_prompt(root: tk.Misc, prompt: str) -> Optional[str]:
-    """Современное диалоговое окно для ввода пароля"""
+    """Современное диалоговое окно для ввода"""
     dialog = tk.Toplevel(root)
-    dialog.title("Введення")
-    dialog.geometry("400x200")
+    dialog.title("Введення даних")
+    dialog.geometry("420x220")
     dialog.configure(bg=Colors.BG_PRIMARY)
     dialog.resizable(False, False)
+    dialog.transient(root)
     dialog.grab_set()
     
-    # Центрируем окно
+    # Центрируем
     dialog.update_idletasks()
-    x = (dialog.winfo_screenwidth() - 400) // 2
-    y = (dialog.winfo_screenheight() - 200) // 2
+    x = (dialog.winfo_screenwidth() - 420) // 2
+    y = (dialog.winfo_screenheight() - 220) // 2
     dialog.geometry(f"+{x}+{y}")
     
     # Контент
     content = tk.Frame(dialog, bg=Colors.BG_PRIMARY)
     content.pack(fill=tk.BOTH, expand=True, padx=Spacing.LG, pady=Spacing.LG)
     
-    # Иконка и заголовок
+    # Заголовок
     header = tk.Frame(content, bg=Colors.BG_PRIMARY)
     header.pack(fill=tk.X)
     
+    tk.Label(header, text="🔐", font=(Fonts.FAMILY, 28), bg=Colors.BG_PRIMARY).pack(side=tk.LEFT)
     tk.Label(
-        header,
-        text="🔐",
-        font=(Fonts.FAMILY, 24),
-        bg=Colors.BG_PRIMARY
-    ).pack(side=tk.LEFT)
-    
-    tk.Label(
-        header,
-        text=prompt,
-        font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE),
-        fg=Colors.TEXT_PRIMARY,
-        bg=Colors.BG_PRIMARY
+        header, text=prompt,
+        font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
+        fg=Colors.TEXT_PRIMARY, bg=Colors.BG_PRIMARY
     ).pack(side=tk.LEFT, padx=Spacing.SM)
     
     # Поле ввода
@@ -3239,8 +3171,10 @@ def simple_prompt(root: tk.Misc, prompt: str) -> Optional[str]:
     result: List[Optional[str]] = [None]
     
     def submit() -> None:
-        result[0] = password_entry.get().strip()
-        dialog.destroy()
+        value = password_entry.get().strip()
+        if value:
+            result[0] = value
+            dialog.destroy()
     
     def cancel() -> None:
         dialog.destroy()
@@ -3249,12 +3183,15 @@ def simple_prompt(root: tk.Misc, prompt: str) -> Optional[str]:
     btn_frame = tk.Frame(content, bg=Colors.BG_PRIMARY)
     btn_frame.pack(fill=tk.X, pady=(Spacing.MD, 0))
     
-    ModernButton(btn_frame, text="Скасувати", command=cancel, variant="secondary", width=100, height=40).pack(side=tk.LEFT)
-    ModernButton(btn_frame, text="OK", command=submit, variant="primary", width=100, height=40).pack(side=tk.RIGHT)
+    ModernButton(btn_frame, text="Скасувати", command=cancel, variant="secondary", width=110, height=40).pack(side=tk.LEFT)
+    ModernButton(btn_frame, text="Підтвердити", command=submit, variant="primary", width=120, height=40).pack(side=tk.RIGHT)
     
-    # Привязки клавиш
+    # Привязки
     password_entry.bind("<Return>", lambda e: submit())
     dialog.bind("<Escape>", lambda e: cancel())
+    
+    # Фокус на поле
+    dialog.after(100, lambda: password_entry.focus())
     
     dialog.wait_window()
     return result[0]
@@ -3267,3 +3204,5 @@ def simple_prompt(root: tk.Misc, prompt: str) -> Optional[str]:
 if __name__ == "__main__":
     app = TrackingApp()
     app.mainloop()
+
+        
