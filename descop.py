@@ -14,11 +14,7 @@ from tkinter import messagebox, ttk
 BASE_URL = "http://173.242.53.38:10000"
 APP_NAME = "TrackingApp"
 
-winsound = None
-if sys.platform == "win32":
-    import winsound as winsound_module
 
-    winsound = winsound_module
     
 # ═══════════════════════════════════════════════════════════════════════════════
 # ЦВЕТОВАЯ СХЕМА И КОНСТАНТЫ ДИЗАЙНА
