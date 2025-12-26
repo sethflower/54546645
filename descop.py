@@ -1,1718 +1,2312 @@
 import json
 import os
-import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime, date, time
+from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import flet as ft
 import requests
 from platformdirs import user_data_dir
+import tkinter as tk
+from tkinter import messagebox, ttk
 
-APP_NAME = "TrackingApp"
-APP_VENDOR = "TrackingApp"
-
-TRACKING_API_HOST = "173.242.53.38"
-TRACKING_API_PORT = 10000
-
-SCANPAK_API_HOST = "173.242.53.38"
-SCANPAK_API_PORT = 10000
+BASE_URL = "http://173.242.53.38:1000"
 SCANPAK_BASE_PATH = "/scanpak"
-
-
-def api_base_url() -> str:
-    return f"http://{TRACKING_API_HOST}:{TRACKING_API_PORT}"
-
-
-def scanpak_base_url() -> str:
-    return f"http://{SCANPAK_API_HOST}:{SCANPAK_API_PORT}{SCANPAK_BASE_PATH}"
-
-
-class Settings:
-    def __init__(self) -> None:
-        self._path = os.path.join(user_data_dir(APP_NAME, APP_VENDOR), "settings.json")
-        os.makedirs(os.path.dirname(self._path), exist_ok=True)
-        self._data = self._load()
-
-    def _load(self) -> Dict[str, Any]:
-        if not os.path.exists(self._path):
-            return {}
-        try:
-            with open(self._path, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except (json.JSONDecodeError, OSError):
-            return {}
-
-    def save(self) -> None:
-        with open(self._path, "w", encoding="utf-8") as handle:
-            json.dump(self._data, handle, ensure_ascii=False, indent=2)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
-
-    def set(self, key: str, value: Any) -> None:
-        self._data[key] = value
-        self.save()
-
-    def remove(self, key: str) -> None:
-        if key in self._data:
-            del self._data[key]
-            self.save()
-
-    def clear(self, keys: List[str]) -> None:
-        for key in keys:
-            self._data.pop(key, None)
-        self.save()
-
-
-class OfflineStore:
-    def __init__(self) -> None:
-        self._path = os.path.join(user_data_dir(APP_NAME, APP_VENDOR), "offline_queue.db")
-        os.makedirs(os.path.dirname(self._path), exist_ok=True)
-        self._init_db()
-
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._path)
-
-    def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS offline_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_name TEXT NOT NULL,
-                    boxid TEXT NOT NULL,
-                    ttn TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS scanpak_offline_scans (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    parcel_number TEXT NOT NULL,
-                    stored_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.commit()
-
-    def add_tracking_record(self, record: Dict[str, str]) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO offline_records (user_name, boxid, ttn, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    record["user_name"],
-                    record["boxid"],
-                    record["ttn"],
-                    datetime.utcnow().isoformat(),
-                ),
-            )
-            conn.commit()
-
-    def list_tracking_records(self) -> List[Dict[str, str]]:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT id, user_name, boxid, ttn, created_at FROM offline_records"
-            )
-            rows = cursor.fetchall()
-        return [
-            {
-                "id": str(row[0]),
-                "user_name": row[1],
-                "boxid": row[2],
-                "ttn": row[3],
-                "created_at": row[4],
-            }
-            for row in rows
-        ]
-
-    def clear_tracking_records(self, ids: Optional[List[int]] = None) -> None:
-        with self._connect() as conn:
-            if ids:
-                conn.executemany(
-                    "DELETE FROM offline_records WHERE id = ?",
-                    [(item,) for item in ids],
-                )
-            else:
-                conn.execute("DELETE FROM offline_records")
-            conn.commit()
-
-    def add_scanpak_record(self, digits: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO scanpak_offline_scans (parcel_number, stored_at)
-                VALUES (?, ?)
-                """,
-                (digits, datetime.utcnow().isoformat()),
-            )
-            conn.commit()
-
-    def list_scanpak_records(self) -> List[Dict[str, str]]:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT id, parcel_number, stored_at FROM scanpak_offline_scans"
-            )
-            rows = cursor.fetchall()
-        return [
-            {
-                "id": str(row[0]),
-                "parcel_number": row[1],
-                "stored_at": row[2],
-            }
-            for row in rows
-        ]
-
-    def remove_scanpak_record(self, record_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM scanpak_offline_scans WHERE id = ?", (record_id,))
-            conn.commit()
-
-    def scanpak_contains(self, digits: str) -> bool:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT 1 FROM scanpak_offline_scans WHERE parcel_number = ? LIMIT 1",
-                (digits,),
-            )
-            return cursor.fetchone() is not None
+APP_NAME = "TrackingApp"
 
 
 @dataclass
-class UserRoleInfo:
-    label: str
-    level: int
-    can_clear_history: bool
-    can_clear_errors: bool
-    is_admin: bool
+class ApiError(Exception):
+    message: str
+    status_code: int
 
 
-def parse_user_role(raw: Optional[str], level: Optional[int]) -> UserRoleInfo:
-    if raw == "admin" or level == 1:
-        return UserRoleInfo(
-            label="🔑 Адмін",
-            level=1,
-            can_clear_history=True,
-            can_clear_errors=True,
-            is_admin=True,
+class LocalStore:
+    def __init__(self) -> None:
+        self.base_dir = user_data_dir(APP_NAME, "Tracking")
+        os.makedirs(self.base_dir, exist_ok=True)
+        self.state_path = os.path.join(self.base_dir, "state.json")
+        self.tracking_offline_path = os.path.join(
+            self.base_dir, "offline_records.json"
         )
-    if raw == "operator" or level == 0:
-        return UserRoleInfo(
-            label="🧰 Оператор",
-            level=0,
-            can_clear_history=False,
-            can_clear_errors=True,
-            is_admin=False,
+        self.scanpak_offline_path = os.path.join(
+            self.base_dir, "scanpak_offline_scans.json"
         )
-    return UserRoleInfo(
-        label="👁 Перегляд",
-        level=2,
-        can_clear_history=False,
-        can_clear_errors=False,
-        is_admin=False,
-    )
 
-
-def run_in_thread(fn: Callable[[], Any], on_success: Callable[[Any], None], on_error: Callable[[str], None]) -> None:
-    def runner() -> None:
+    def load_state(self) -> Dict[str, Any]:
+        if not os.path.exists(self.state_path):
+            return {}
         try:
-            result = fn()
-            on_success(result)
-        except Exception as exc:  # pylint: disable=broad-except
-            on_error(str(exc))
+            with open(self.state_path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return {}
 
-    threading.Thread(target=runner, daemon=True).start()
+    def save_state(self, data: Dict[str, Any]) -> None:
+        try:
+            with open(self.state_path, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+        except OSError:
+            messagebox.showwarning(
+                "Помилка", "Не вдалося зберегти локальні налаштування."
+            )
+
+    def load_offline_records(self, path: str) -> List[Dict[str, Any]]:
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, list):
+                return [record for record in data if isinstance(record, dict)]
+        except (OSError, json.JSONDecodeError):
+            pass
+        return []
+
+    def save_offline_records(self, path: str, records: List[Dict[str, Any]]) -> None:
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(records, handle, ensure_ascii=False, indent=2)
+        except OSError:
+            messagebox.showwarning(
+                "Помилка", "Не вдалося зберегти офлайн-чергу."
+            )
 
 
-def sanitize_digits(value: str) -> str:
-    return "".join(ch for ch in value if ch.isdigit())
+class ApiClient:
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        token: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> requests.Response:
+        url = f"{self.base_url}{path}"
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        response = requests.request(
+            method,
+            url,
+            headers=headers,
+            json=payload,
+            timeout=12,
+        )
+        return response
+
+    @staticmethod
+    def _extract_message(response: requests.Response) -> str:
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                detail = body.get("detail") or body.get("message")
+                if isinstance(detail, str) and detail:
+                    return detail
+        except ValueError:
+            pass
+        return f"Помилка сервера ({response.status_code})"
+
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        token: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        response = self._request(method, path, token=token, payload=payload)
+        if response.status_code != 200:
+            raise ApiError(self._extract_message(response), response.status_code)
+        if response.text:
+            try:
+                return response.json()
+            except ValueError:
+                raise ApiError("Некоректна відповідь сервера", response.status_code)
+        return None
 
 
-def format_iso_datetime(value: Any) -> str:
-    if not isinstance(value, str):
-        return str(value or "")
+class OfflineQueue:
+    def __init__(self, store: LocalStore, path: str) -> None:
+        self.store = store
+        self.path = path
+
+    def add(self, record: Dict[str, Any]) -> None:
+        records = self.store.load_offline_records(self.path)
+        records.append(record)
+        self.store.save_offline_records(self.path, records)
+
+    def contains(self, key: str, value: str) -> bool:
+        records = self.store.load_offline_records(self.path)
+        return any(str(item.get(key, "")).strip() == value for item in records)
+
+    def list(self) -> List[Dict[str, Any]]:
+        return self.store.load_offline_records(self.path)
+
+    def clear(self) -> None:
+        self.store.save_offline_records(self.path, [])
+
+
+def parse_date(value: str) -> Optional[date]:
     try:
-        return datetime.fromisoformat(value).astimezone().strftime("%d.%m.%Y %H:%M:%S")
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def parse_time(value: str) -> Optional[time]:
+    try:
+        return datetime.strptime(value, "%H:%M").time()
+    except ValueError:
+        return None
+
+
+def format_datetime(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value)
+        return parsed.astimezone().strftime("%d.%m.%Y %H:%M:%S")
     except ValueError:
         return value
 
 
-class AppState:
+def run_async(
+    root: tk.Misc,
+    func: Callable[[], Any],
+    on_success: Callable[[Any], None],
+    on_error: Callable[[Exception], None],
+) -> None:
+    def worker() -> None:
+        try:
+            result = func()
+            root.after(0, lambda: on_success(result))
+        except Exception as exc:  # noqa: BLE001
+            root.after(0, lambda: on_error(exc))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+class TrackingApp(tk.Tk):
     def __init__(self) -> None:
-        self.settings = Settings()
-        self.store = OfflineStore()
+        super().__init__()
+        self.title("TrackingApp")
+        self.geometry("1200x760")
+        self.minsize(1080, 680)
+        self.store = LocalStore()
+        self.state_data = self.store.load_state()
+        self.api = ApiClient(BASE_URL)
+        self.scanpak_api = ApiClient(f"{BASE_URL}{SCANPAK_BASE_PATH}")
+        self.tracking_offline = OfflineQueue(self.store, self.store.tracking_offline_path)
+        self.scanpak_offline = OfflineQueue(self.store, self.store.scanpak_offline_path)
+        self._init_style()
+
+        self.container = ttk.Frame(self, padding=16)
+        self.container.pack(fill=tk.BOTH, expand=True)
+
+        self.frames: Dict[str, ttk.Frame] = {}
+        for frame_class in (
+            StartFrame,
+            TrackingLoginFrame,
+            ScanpakLoginFrame,
+            TrackingMainFrame,
+            ScanpakMainFrame,
+        ):
+            frame = frame_class(self.container, self)
+            self.frames[frame_class.__name__] = frame
+            frame.grid(row=0, column=0, sticky="nsew")
+
+        self.show_frame("StartFrame")
+
+    def _init_style(self) -> None:
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        self.configure(bg="#F2F5FA")
+        style.configure("TFrame", background="#F2F5FA")
+        style.configure("Card.TFrame", background="#FFFFFF", relief="flat")
+        style.configure(
+            "Accent.TButton",
+            background="#2563EB",
+            foreground="#FFFFFF",
+            padding=10,
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", "#1D4ED8"), ("disabled", "#94A3B8")],
+        )
+        style.configure(
+            "Secondary.TButton",
+            background="#E2E8F0",
+            foreground="#1E293B",
+            padding=8,
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#CBD5F5")],
+        )
+        style.configure("Title.TLabel", font=("Segoe UI", 22, "bold"))
+        style.configure("Subtitle.TLabel", font=("Segoe UI", 12))
+        style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"))
+        style.configure("Status.TLabel", font=("Segoe UI", 11))
+        style.configure("Treeview", font=("Segoe UI", 10), rowheight=24)
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+
+    def show_frame(self, name: str) -> None:
+        frame = self.frames[name]
+        frame.tkraise()
+        if hasattr(frame, "refresh"):
+            frame.refresh()
+
+    def update_state(self, updates: Dict[str, Any]) -> None:
+        self.state_data.update(updates)
+        self.store.save_state(self.state_data)
+
+    def clear_state(self, keys: List[str]) -> None:
+        for key in keys:
+            self.state_data.pop(key, None)
+        self.store.save_state(self.state_data)
 
 
-class TrackingAppUI:
-    def __init__(self, page: ft.Page) -> None:
-        self.page = page
-        self.state = AppState()
-        self.page.title = "TrackingApp"
-        self.page.theme_mode = ft.ThemeMode.LIGHT
-        self.page.theme = ft.Theme(color_scheme_seed=ft.colors.BLUE)
-        self.page.window_width = 1200
-        self.page.window_height = 800
-        self.page.scroll = ft.ScrollMode.AUTO
-        self._build()
+class StartFrame(ttk.Frame):
+    def __init__(self, parent: ttk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent)
+        self.app = app
+        card = ttk.Frame(self, style="Card.TFrame", padding=40)
+        card.place(relx=0.5, rely=0.5, anchor="center")
 
-    def _build(self) -> None:
-        self.page.controls.clear()
-        self._show_start()
+        ttk.Label(card, text="TrackingApp", style="Title.TLabel").pack(pady=(0, 10))
+        ttk.Label(
+            card,
+            text="Оберіть модуль для роботи",
+            style="Subtitle.TLabel",
+        ).pack(pady=(0, 30))
 
-    def _show_start(self) -> None:
-        self.page.controls = [
-            ft.Container(
-                expand=True,
-                alignment=ft.alignment.center,
-                content=ft.Column(
-                    width=420,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Text("Оберіть режим", size=28, weight=ft.FontWeight.BOLD),
-                        ft.ElevatedButton(
-                            text="Увійти в TrackingApp",
-                            width=300,
-                            on_click=lambda _: self._show_tracking_login(),
-                        ),
-                        ft.ElevatedButton(
-                            text="Увійти в СканПак",
-                            width=300,
-                            on_click=lambda _: self._show_scanpak_login(),
-                        ),
-                    ],
-                ),
-            )
-        ]
-        self.page.update()
+        ttk.Button(
+            card,
+            text="Вхід до TrackingApp",
+            style="Accent.TButton",
+            command=lambda: app.show_frame("TrackingLoginFrame"),
+        ).pack(fill=tk.X, pady=6)
 
-    def _show_tracking_login(self) -> None:
-        self._show_login(
-            title="TrackingApp",
-            on_login=self._tracking_login,
-            on_register=self._tracking_register,
-            on_admin=self._open_admin_panel,
+        ttk.Button(
+            card,
+            text="Вхід до СканПак",
+            style="Secondary.TButton",
+            command=lambda: app.show_frame("ScanpakLoginFrame"),
+        ).pack(fill=tk.X, pady=6)
+
+
+class TrackingLoginFrame(ttk.Frame):
+    def __init__(self, parent: ttk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.is_busy = tk.BooleanVar(value=False)
+        self.message = tk.StringVar(value="")
+
+        card = ttk.Frame(self, style="Card.TFrame", padding=40)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        ttk.Label(card, text="TrackingApp", style="Title.TLabel").pack()
+        ttk.Label(
+            card,
+            text="Авторизація та реєстрація операторів",
+            style="Subtitle.TLabel",
+        ).pack(pady=(0, 20))
+
+        self.tabs = ttk.Notebook(card)
+        self.tabs.pack(fill=tk.BOTH, expand=True)
+
+        self.login_tab = ttk.Frame(self.tabs, padding=20)
+        self.register_tab = ttk.Frame(self.tabs, padding=20)
+        self.tabs.add(self.login_tab, text="Вхід")
+        self.tabs.add(self.register_tab, text="Реєстрація")
+
+        self.login_surname = tk.StringVar()
+        self.login_password = tk.StringVar()
+
+        self.register_surname = tk.StringVar()
+        self.register_password = tk.StringVar()
+        self.register_confirm = tk.StringVar()
+
+        self._build_login()
+        self._build_register()
+
+        ttk.Label(card, textvariable=self.message, foreground="#DC2626").pack(
+            pady=8
         )
 
-    def _show_scanpak_login(self) -> None:
-        self._show_login(
-            title="СканПак",
-            on_login=self._scanpak_login,
-            on_register=self._scanpak_register,
-            on_admin=self._open_scanpak_admin_panel,
+        buttons = ttk.Frame(card)
+        buttons.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(
+            buttons,
+            text="Назад",
+            style="Secondary.TButton",
+            command=lambda: app.show_frame("StartFrame"),
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            buttons,
+            text="Адмін панель",
+            style="Secondary.TButton",
+            command=self.open_admin_panel,
+        ).pack(side=tk.RIGHT)
+
+    def _build_login(self) -> None:
+        ttk.Label(self.login_tab, text="Прізвище").grid(row=0, column=0, sticky="w")
+        ttk.Entry(self.login_tab, textvariable=self.login_surname).grid(
+            row=1, column=0, sticky="ew", pady=(0, 12)
         )
+        ttk.Label(self.login_tab, text="Пароль").grid(row=2, column=0, sticky="w")
+        ttk.Entry(self.login_tab, textvariable=self.login_password, show="*").grid(
+            row=3, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Button(
+            self.login_tab,
+            text="Увійти",
+            style="Accent.TButton",
+            command=self.handle_login,
+        ).grid(row=4, column=0, sticky="ew")
+        self.login_tab.columnconfigure(0, weight=1)
 
-    def _show_login(
-        self,
-        title: str,
-        on_login: Callable[[str, str, ft.Text], None],
-        on_register: Callable[[str, str, ft.Text], None],
-        on_admin: Callable[[], None],
-    ) -> None:
-        surname = ft.TextField(label="Прізвище", width=320)
-        password = ft.TextField(label="Пароль", password=True, width=320)
-        confirm = ft.TextField(label="Підтвердіть пароль", password=True, width=320, visible=False)
-        status = ft.Text("")
-        is_register = {"value": False}
+    def _build_register(self) -> None:
+        ttk.Label(self.register_tab, text="Прізвище").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(self.register_tab, textvariable=self.register_surname).grid(
+            row=1, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Label(self.register_tab, text="Пароль").grid(row=2, column=0, sticky="w")
+        ttk.Entry(self.register_tab, textvariable=self.register_password, show="*").grid(
+            row=3, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Label(self.register_tab, text="Підтвердження пароля").grid(
+            row=4, column=0, sticky="w"
+        )
+        ttk.Entry(self.register_tab, textvariable=self.register_confirm, show="*").grid(
+            row=5, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Button(
+            self.register_tab,
+            text="Надіслати заявку",
+            style="Accent.TButton",
+            command=self.handle_register,
+        ).grid(row=6, column=0, sticky="ew")
+        self.register_tab.columnconfigure(0, weight=1)
 
-        def toggle_mode(_: ft.ControlEvent) -> None:
-            is_register["value"] = not is_register["value"]
-            confirm.visible = is_register["value"]
-            submit.text = "Зареєструватися" if is_register["value"] else "Увійти"
-            toggle.text = "Повернутися до входу" if is_register["value"] else "Зареєструватися"
-            status.value = ""
-            self.page.update()
+    def _set_busy(self, busy: bool) -> None:
+        self.is_busy.set(busy)
 
-        def submit_action(_: ft.ControlEvent) -> None:
-            if not surname.value or not password.value:
-                status.value = "Заповніть прізвище та пароль."
-                self.page.update()
-                return
-            if is_register["value"]:
-                if len(password.value) < 6:
-                    status.value = "Пароль має містити мінімум 6 символів."
-                    self.page.update()
-                    return
-                if password.value != confirm.value:
-                    status.value = "Паролі не співпадають."
-                    self.page.update()
-                    return
-                on_register(surname.value.strip(), password.value.strip(), status)
-            else:
-                on_login(surname.value.strip(), password.value.strip(), status)
+    def handle_login(self) -> None:
+        surname = self.login_surname.get().strip()
+        password = self.login_password.get().strip()
+        if not surname or not password:
+            self.message.set("Введіть прізвище та пароль")
+            return
 
-        submit = ft.ElevatedButton(text="Увійти", width=320, on_click=submit_action)
-        toggle = ft.TextButton(text="Зареєструватися", on_click=toggle_mode)
-
-        self.page.controls = [
-            ft.Container(
-                expand=True,
-                alignment=ft.alignment.center,
-                content=ft.Column(
-                    width=420,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Text(title, size=30, weight=ft.FontWeight.BOLD),
-                        surname,
-                        password,
-                        confirm,
-                        status,
-                        submit,
-                        toggle,
-                        ft.TextButton(text="Адмін-панель", on_click=lambda _: on_admin()),
-                        ft.TextButton(text="Назад", on_click=lambda _: self._show_start()),
-                    ],
-                ),
-            )
-        ]
-        self.page.update()
-
-    def _tracking_login(self, surname: str, password: str, status: ft.Text) -> None:
-        status.value = "Вхід..."
-        self.page.update()
+        self.message.set("")
+        self._set_busy(True)
 
         def task() -> Dict[str, Any]:
-            resp = requests.post(
-                f"{api_base_url()}/login",
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                data=json.dumps({"surname": surname, "password": password}),
-                timeout=10,
+            return self.app.api.request_json(
+                "POST", "/login", payload={"surname": surname, "password": password}
             )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-            return resp.json()
 
-        def success(data: Dict[str, Any]) -> None:
+        def on_success(data: Dict[str, Any]) -> None:
+            self._set_busy(False)
             token = str(data.get("token", ""))
             if not token:
-                status.value = "Сервер не повернув токен"
-                self.page.update()
+                self.message.set("Сервер не повернув токен")
                 return
-            self.state.settings.set("token", token)
-            self.state.settings.set("user_name", data.get("surname") or surname)
-            self.state.settings.set("access_level", data.get("access_level"))
-            self.state.settings.set("user_role", data.get("role"))
-            self._show_tracking_dashboard()
-
-        def error(msg: str) -> None:
-            status.value = msg
-            self.page.update()
-
-        run_in_thread(task, success, error)
-
-    def _tracking_register(self, surname: str, password: str, status: ft.Text) -> None:
-        status.value = "Надсилання..."
-        self.page.update()
-
-        def task() -> None:
-            resp = requests.post(
-                f"{api_base_url()}/register",
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                data=json.dumps({"surname": surname, "password": password}),
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-
-        def success(_: Any) -> None:
-            status.value = "Заявку на реєстрацію відправлено."
-            self.page.update()
-
-        def error(msg: str) -> None:
-            status.value = msg
-            self.page.update()
-
-        run_in_thread(task, success, error)
-
-    def _scanpak_login(self, surname: str, password: str, status: ft.Text) -> None:
-        status.value = "Вхід..."
-        self.page.update()
-
-        def task() -> Dict[str, Any]:
-            resp = requests.post(
-                f"{scanpak_base_url()}/login",
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                data=json.dumps({"surname": surname, "password": password}),
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-            return resp.json()
-
-        def success(data: Dict[str, Any]) -> None:
-            token = str(data.get("token", ""))
-            if not token:
-                status.value = "Сервер не повернув токен"
-                self.page.update()
-                return
-            self.state.settings.set("scanpak_token", token)
-            self.state.settings.set("scanpak_user_name", data.get("surname") or surname)
-            self.state.settings.set("scanpak_user_role", data.get("role"))
-            self._show_scanpak_home()
-
-        def error(msg: str) -> None:
-            status.value = msg
-            self.page.update()
-
-        run_in_thread(task, success, error)
-
-    def _scanpak_register(self, surname: str, password: str, status: ft.Text) -> None:
-        status.value = "Надсилання..."
-        self.page.update()
-
-        def task() -> None:
-            resp = requests.post(
-                f"{scanpak_base_url()}/register",
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                data=json.dumps({"surname": surname, "password": password}),
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-
-        def success(_: Any) -> None:
-            status.value = "Заявку на реєстрацію відправлено."
-            self.page.update()
-
-        def error(msg: str) -> None:
-            status.value = msg
-            self.page.update()
-
-        run_in_thread(task, success, error)
-
-    def _show_tracking_dashboard(self) -> None:
-        role_info = parse_user_role(
-            self.state.settings.get("user_role"), self.state.settings.get("access_level")
-        )
-        header = ft.Row(
-            controls=[
-                ft.Text(f"Оператор: {self.state.settings.get('user_name', 'operator')}", size=16),
-                ft.Text(role_info.label, weight=ft.FontWeight.BOLD),
-                ft.Container(expand=True),
-                ft.TextButton(text="Вийти", on_click=lambda _: self._logout_tracking()),
-            ]
-        )
-        tabs = [
-            ft.Tab(text="Сканер", content=self._tracking_scanner_tab()),
-            ft.Tab(text="Історія", content=self._tracking_history_tab(role_info)),
-            ft.Tab(text="Помилки", content=self._tracking_errors_tab(role_info)),
-        ]
-        if role_info.is_admin:
-            tabs.append(ft.Tab(text="Статистика", content=self._tracking_stats_tab()))
-
-        self.page.controls = [
-            ft.Container(
-                padding=20,
-                expand=True,
-                content=ft.Column(
-                    controls=[
-                        header,
-                        ft.Tabs(tabs=tabs, expand=True),
-                    ],
-                ),
-            )
-        ]
-        self.page.update()
-
-    def _logout_tracking(self) -> None:
-        self.state.settings.clear(["token", "access_level", "user_name", "user_role"])
-        self._show_start()
-
-    def _tracking_scanner_tab(self) -> ft.Control:
-        boxid = ft.TextField(label="BoxID", width=240)
-        ttn = ft.TextField(label="TTN", width=240)
-        status = ft.Text("")
-
-        def send(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("token")
-            if not token:
-                status.value = "Відсутній токен. Увійдіть знову."
-                self.page.update()
-                return
-            box_value = sanitize_digits(boxid.value or "")
-            ttn_value = sanitize_digits(ttn.value or "")
-            if not box_value or not ttn_value:
-                status.value = "Заповніть BoxID і TTN"
-                self.page.update()
-                return
-
-            record = {
-                "user_name": self.state.settings.get("user_name", "operator"),
-                "boxid": box_value,
-                "ttn": ttn_value,
-            }
-
-            def task() -> str:
-                resp = requests.post(
-                    f"{api_base_url()}/add_record",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                    },
-                    data=json.dumps(record),
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    return "ok"
-                raise RuntimeError(resp.text)
-
-            def success(_: Any) -> None:
-                status.value = "✅ Запис надіслано"
-                boxid.value = ""
-                ttn.value = ""
-                self.page.update()
-
-            def error(_: str) -> None:
-                status.value = "⚠️ Немає зв'язку, запис збережено офлайн"
-                self.state.store.add_tracking_record(record)
-                self.page.update()
-
-            status.value = "Надсилання..."
-            self.page.update()
-            run_in_thread(task, success, error)
-
-        def sync(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("token")
-            if not token:
-                status.value = "Відсутній токен. Увійдіть знову."
-                self.page.update()
-                return
-
-            def task() -> str:
-                records = self.state.store.list_tracking_records()
-                if not records:
-                    return "Немає офлайн записів"
-                sent_ids: List[int] = []
-                for record in records:
-                    resp = requests.post(
-                        f"{api_base_url()}/add_record",
-                        headers={
-                            "Authorization": f"Bearer {token}",
-                            "Content-Type": "application/json",
-                        },
-                        data=json.dumps(
-                            {
-                                "user_name": record["user_name"],
-                                "boxid": record["boxid"],
-                                "ttn": record["ttn"],
-                            }
-                        ),
-                        timeout=10,
-                    )
-                    if resp.status_code == 200:
-                        sent_ids.append(int(record["id"]))
-                if sent_ids:
-                    self.state.store.clear_tracking_records(sent_ids)
-                return f"Синхронізовано: {len(sent_ids)}"
-
-            def success(message: str) -> None:
-                status.value = message
-                self.page.update()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            status.value = "Синхронізація..."
-            self.page.update()
-            run_in_thread(task, success, error)
-
-        return ft.Column(
-            controls=[
-                ft.Row(controls=[boxid, ttn]),
-                ft.Row(
-                    controls=[
-                        ft.ElevatedButton(text="Надіслати", on_click=send),
-                        ft.OutlinedButton(text="Синхронізувати офлайн", on_click=sync),
-                    ]
-                ),
-                status,
-            ]
-        )
-
-    def _tracking_history_tab(self, role_info: UserRoleInfo) -> ft.Control:
-        box_filter = ft.TextField(label="BoxID")
-        ttn_filter = ft.TextField(label="TTN")
-        user_filter = ft.TextField(label="Користувач")
-        date_filter = ft.DatePicker(on_change=lambda _: None)
-        date_button = ft.ElevatedButton(
-            text="Дата", on_click=lambda _: self.page.show_date_picker(date_filter)
-        )
-        start_time = ft.TimePicker()
-        start_button = ft.ElevatedButton(
-            text="Початок", on_click=lambda _: self.page.show_time_picker(start_time)
-        )
-        end_time = ft.TimePicker()
-        end_button = ft.ElevatedButton(
-            text="Кінець", on_click=lambda _: self.page.show_time_picker(end_time)
-        )
-        status = ft.Text("")
-
-        table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("BoxID")),
-                ft.DataColumn(ft.Text("TTN")),
-                ft.DataColumn(ft.Text("Оператор")),
-                ft.DataColumn(ft.Text("Дата")),
-            ],
-            rows=[],
-        )
-        records: List[Dict[str, Any]] = []
-
-        def apply_filters(_: Any = None) -> None:
-            filtered = list(records)
-            if box_filter.value:
-                filtered = [
-                    item for item in filtered if box_filter.value in str(item.get("boxid", ""))
-                ]
-            if ttn_filter.value:
-                filtered = [
-                    item for item in filtered if ttn_filter.value in str(item.get("ttn", ""))
-                ]
-            if user_filter.value:
-                filtered = [
-                    item
-                    for item in filtered
-                    if user_filter.value.lower()
-                    in str(item.get("user_name", "")).lower()
-                ]
-            if date_filter.value:
-                selected = date_filter.value
-                filtered = [
-                    item
-                    for item in filtered
-                    if item.get("datetime")
-                    and datetime.fromisoformat(item["datetime"]).date() == selected
-                ]
-
-            if start_time.value or end_time.value:
-                start_val = start_time.value or ft.Time(0, 0)
-                end_val = end_time.value or ft.Time(23, 59)
-                start_dt = datetime.combine(date.today(), datetime.strptime(str(start_val), "%H:%M").time())
-                end_dt = datetime.combine(date.today(), datetime.strptime(str(end_val), "%H:%M").time())
-
-                def within(item: Dict[str, Any]) -> bool:
-                    if not item.get("datetime"):
-                        return False
-                    try:
-                        parsed = datetime.fromisoformat(item["datetime"]).astimezone()
-                    except ValueError:
-                        return False
-                    return start_dt.time() <= parsed.time() <= end_dt.time()
-
-                filtered = [item for item in filtered if within(item)]
-
-            table.rows = [
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text(str(item.get("boxid", "")))),
-                        ft.DataCell(ft.Text(str(item.get("ttn", "")))),
-                        ft.DataCell(ft.Text(str(item.get("user_name", "")))),
-                        ft.DataCell(ft.Text(format_iso_datetime(item.get("datetime")))),
-                    ]
-                )
-                for item in filtered
-            ]
-            self.page.update()
-
-        def fetch(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("token")
-            if not token:
-                return
-
-            def task() -> List[Dict[str, Any]]:
-                resp = requests.get(
-                    f"{api_base_url()}/get_history",
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                data.sort(
-                    key=lambda item: datetime.fromisoformat(
-                        item.get("datetime") or "1970-01-01T00:00:00"
-                    ),
-                    reverse=True,
-                )
-                return data
-
-            def success(data: List[Dict[str, Any]]) -> None:
-                records.clear()
-                records.extend(data)
-                status.value = f"Записів: {len(records)}"
-                apply_filters()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            run_in_thread(task, success, error)
-
-        def clear_filters(_: ft.ControlEvent) -> None:
-            box_filter.value = ""
-            ttn_filter.value = ""
-            user_filter.value = ""
-            date_filter.value = None
-            start_time.value = None
-            end_time.value = None
-            apply_filters()
-
-        def clear_history(_: ft.ControlEvent) -> None:
-            if not role_info.can_clear_history:
-                return
-            token = self.state.settings.get("token")
-            if not token:
-                return
-
-            def task() -> str:
-                resp = requests.delete(
-                    f"{api_base_url()}/clear_tracking",
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=10,
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(resp.text)
-                return "Історію очищено"
-
-            def success(message: str) -> None:
-                records.clear()
-                status.value = message
-                apply_filters()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            run_in_thread(task, success, error)
-
-        buttons = [
-            ft.ElevatedButton(text="Оновити", on_click=fetch),
-            ft.OutlinedButton(text="Застосувати фільтри", on_click=lambda _: apply_filters()),
-            ft.TextButton(text="Скинути", on_click=clear_filters),
-        ]
-        if role_info.can_clear_history:
-            buttons.append(ft.TextButton(text="Очистити історію", on_click=clear_history))
-
-        return ft.Column(
-            controls=[
-                ft.Row(controls=[box_filter, ttn_filter, user_filter]),
-                ft.Row(controls=[date_button, start_button, end_button]),
-                ft.Row(controls=buttons),
-                status,
-                table,
-            ]
-        )
-
-    def _tracking_errors_tab(self, role_info: UserRoleInfo) -> ft.Control:
-        status = ft.Text("")
-        table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("ID")),
-                ft.DataColumn(ft.Text("BoxID")),
-                ft.DataColumn(ft.Text("TTN")),
-                ft.DataColumn(ft.Text("Дата")),
-            ],
-            rows=[],
-        )
-        errors: List[Dict[str, Any]] = []
-
-        def fetch(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("token")
-            if not token:
-                return
-
-            def task() -> List[Dict[str, Any]]:
-                resp = requests.get(
-                    f"{api_base_url()}/get_errors",
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                data.sort(
-                    key=lambda item: datetime.fromisoformat(
-                        item.get("datetime") or "1970-01-01T00:00:00"
-                    ),
-                    reverse=True,
-                )
-                return data
-
-            def success(data: List[Dict[str, Any]]) -> None:
-                errors.clear()
-                errors.extend(data)
-                table.rows = [
-                    ft.DataRow(
-                        cells=[
-                            ft.DataCell(ft.Text(str(item.get("id", "")))),
-                            ft.DataCell(ft.Text(str(item.get("boxid", "")))),
-                            ft.DataCell(ft.Text(str(item.get("ttn", "")))),
-                            ft.DataCell(ft.Text(format_iso_datetime(item.get("datetime")))),
-                        ]
-                    )
-                    for item in errors
-                ]
-                status.value = f"Помилок: {len(errors)}"
-                self.page.update()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            run_in_thread(task, success, error)
-
-        def clear_errors(_: ft.ControlEvent) -> None:
-            if not role_info.can_clear_errors:
-                return
-            token = self.state.settings.get("token")
-            if not token:
-                return
-
-            def task() -> str:
-                resp = requests.delete(
-                    f"{api_base_url()}/clear_errors",
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=10,
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(resp.text)
-                return "Журнал очищено"
-
-            def success(message: str) -> None:
-                errors.clear()
-                table.rows = []
-                status.value = message
-                self.page.update()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            run_in_thread(task, success, error)
-
-        def delete_selected(_: ft.ControlEvent) -> None:
-            if not role_info.can_clear_errors:
-                return
-            if not table.rows:
-                return
-            selected = None
-            for row in table.rows:
-                if row.selected:
-                    selected = row
-                    break
-            if not selected:
-                status.value = "Оберіть рядок"
-                self.page.update()
-                return
-            error_id = selected.cells[0].content.value
-            token = self.state.settings.get("token")
-            if not token:
-                return
-
-            def task() -> str:
-                resp = requests.delete(
-                    f"{api_base_url()}/delete_error/{error_id}",
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=10,
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(resp.text)
-                return "Помилку видалено"
-
-            def success(message: str) -> None:
-                status.value = message
-                fetch(ft.ControlEvent(None))
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            run_in_thread(task, success, error)
-
-        buttons = [ft.ElevatedButton(text="Оновити", on_click=fetch)]
-        if role_info.can_clear_errors:
-            buttons.extend(
-                [
-                    ft.TextButton(text="Очистити журнал", on_click=clear_errors),
-                    ft.TextButton(text="Видалити вибраний", on_click=delete_selected),
-                ]
-            )
-
-        return ft.Column(controls=[ft.Row(controls=buttons), status, table])
-
-    def _tracking_stats_tab(self) -> ft.Control:
-        status = ft.Text("")
-        summary = ft.Text("", selectable=True)
-        table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("Дата")),
-                ft.DataColumn(ft.Text("Сканів")),
-                ft.DataColumn(ft.Text("Помилок")),
-            ],
-            rows=[],
-        )
-
-        start_date = ft.DatePicker(value=date.today())
-        end_date = ft.DatePicker(value=date.today())
-        start_button = ft.ElevatedButton(
-            text="Початок", on_click=lambda _: self.page.show_date_picker(start_date)
-        )
-        end_button = ft.ElevatedButton(
-            text="Кінець", on_click=lambda _: self.page.show_date_picker(end_date)
-        )
-
-        def fetch(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("token")
-            if not token:
-                return
-
-            def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-                headers = {"Authorization": f"Bearer {token}"}
-                history_resp = requests.get(
-                    f"{api_base_url()}/get_history", headers=headers, timeout=10
-                )
-                errors_resp = requests.get(
-                    f"{api_base_url()}/get_errors", headers=headers, timeout=10
-                )
-                history_resp.raise_for_status()
-                errors_resp.raise_for_status()
-                return history_resp.json(), errors_resp.json()
-
-            def success(data: Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]) -> None:
-                history, errors = data
-                start_val = start_date.value or date.today()
-                end_val = end_date.value or date.today()
-                if start_val > end_val:
-                    start_val, end_val = end_val, start_val
-
-                def within(item: Dict[str, Any]) -> bool:
-                    if not item.get("datetime"):
-                        return False
-                    try:
-                        dt = datetime.fromisoformat(item["datetime"]).astimezone().date()
-                    except ValueError:
-                        return False
-                    return start_val <= dt <= end_val
-
-                history_filtered = [item for item in history if within(item)]
-                errors_filtered = [item for item in errors if within(item)]
-
-                scan_counts: Dict[str, int] = {}
-                error_counts: Dict[str, int] = {}
-                daily_scans: Dict[date, int] = {}
-                daily_errors: Dict[date, int] = {}
-
-                for item in history_filtered:
-                    user = str(item.get("user_name", "—"))
-                    scan_counts[user] = scan_counts.get(user, 0) + 1
-                    try:
-                        dt = datetime.fromisoformat(item["datetime"]).astimezone().date()
-                        daily_scans[dt] = daily_scans.get(dt, 0) + 1
-                    except ValueError:
-                        continue
-
-                for item in errors_filtered:
-                    user = str(item.get("user_name", "—"))
-                    error_counts[user] = error_counts.get(user, 0) + 1
-                    try:
-                        dt = datetime.fromisoformat(item["datetime"]).astimezone().date()
-                        daily_errors[dt] = daily_errors.get(dt, 0) + 1
-                    except ValueError:
-                        continue
-
-                top_user, top_count = self._top_item(scan_counts)
-                top_error_user, top_error_count = self._top_item(error_counts)
-
-                summary.value = (
-                    f"Усього сканів: {sum(scan_counts.values())}\n"
-                    f"Унікальних операторів: {len(scan_counts)}\n"
-                    f"Усього помилок: {sum(error_counts.values())}\n"
-                    f"Найактивніший оператор: {top_user} ({top_count})\n"
-                    f"Оператор з найбільшою кількістю помилок: {top_error_user} ({top_error_count})"
-                )
-
-                all_dates = sorted(set(daily_scans.keys()) | set(daily_errors.keys()))
-                table.rows = [
-                    ft.DataRow(
-                        cells=[
-                            ft.DataCell(ft.Text(day.strftime("%d.%m.%Y"))),
-                            ft.DataCell(ft.Text(str(daily_scans.get(day, 0)))),
-                            ft.DataCell(ft.Text(str(daily_errors.get(day, 0)))),
-                        ]
-                    )
-                    for day in all_dates
-                ]
-                status.value = "Оновлено"
-                self.page.update()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            run_in_thread(task, success, error)
-
-        return ft.Column(
-            controls=[
-                ft.Row(controls=[start_button, end_button, ft.ElevatedButton(text="Оновити", on_click=fetch)]),
-                status,
-                summary,
-                table,
-            ]
-        )
-
-    def _top_item(self, data: Dict[str, int]) -> Tuple[str, int]:
-        if not data:
-            return "—", 0
-        top_user = max(data.items(), key=lambda item: item[1])
-        return top_user[0], top_user[1]
-
-    def _show_scanpak_home(self) -> None:
-        header = ft.Row(
-            controls=[
-                ft.Text(
-                    f"Оператор: {self.state.settings.get('scanpak_user_name', '—')}",
-                    size=16,
-                ),
-                ft.Container(expand=True),
-                ft.TextButton(text="Вийти", on_click=lambda _: self._logout_scanpak()),
-            ]
-        )
-
-        tabs = ft.Tabs(
-            tabs=[
-                ft.Tab(text="Сканування", content=self._scanpak_scan_tab()),
-                ft.Tab(text="Історія", content=self._scanpak_history_tab()),
-                ft.Tab(text="Статистика", content=self._scanpak_stats_tab()),
-            ],
-            expand=True,
-        )
-
-        self.page.controls = [
-            ft.Container(
-                padding=20,
-                expand=True,
-                content=ft.Column(controls=[header, tabs]),
-            )
-        ]
-        self.page.update()
-
-    def _logout_scanpak(self) -> None:
-        self.state.settings.clear(["scanpak_token", "scanpak_user_name", "scanpak_user_role"])
-        self._show_start()
-
-    def _scanpak_scan_tab(self) -> ft.Control:
-        number = ft.TextField(label="Номер відправлення", width=320)
-        status = ft.Text("")
-
-        def send(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("scanpak_token")
-            if not token:
-                status.value = "Відсутній токен. Увійдіть знову."
-                self.page.update()
-                return
-            digits = sanitize_digits(number.value or "")
-            if not digits:
-                status.value = "Введіть номер відправлення"
-                self.page.update()
-                return
-
-            def task() -> str:
-                resp = requests.post(
-                    f"{scanpak_base_url()}/scans",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    data=json.dumps({"parcel_number": digits}),
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    return "ok"
-                raise RuntimeError(resp.text)
-
-            def success(_: Any) -> None:
-                status.value = "✅ Скан збережено"
-                number.value = ""
-                self.page.update()
-
-            def error(_: str) -> None:
-                status.value = "⚠️ Немає зв'язку, запис збережено офлайн"
-                if not self.state.store.scanpak_contains(digits):
-                    self.state.store.add_scanpak_record(digits)
-                self.page.update()
-
-            status.value = "Надсилання..."
-            self.page.update()
-            run_in_thread(task, success, error)
-
-        def sync(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("scanpak_token")
-            if not token:
-                status.value = "Відсутній токен. Увійдіть знову."
-                self.page.update()
-                return
-
-            def task() -> str:
-                records = self.state.store.list_scanpak_records()
-                if not records:
-                    return "Немає офлайн записів"
-                sent = 0
-                for record in records:
-                    resp = requests.post(
-                        f"{scanpak_base_url()}/scans",
-                        headers={
-                            "Authorization": f"Bearer {token}",
-                            "Content-Type": "application/json",
-                            "Accept": "application/json",
-                        },
-                        data=json.dumps({"parcel_number": record["parcel_number"]}),
-                        timeout=10,
-                    )
-                    if resp.status_code == 200:
-                        sent += 1
-                        self.state.store.remove_scanpak_record(int(record["id"]))
-                return f"Синхронізовано: {sent}"
-
-            def success(message: str) -> None:
-                status.value = message
-                self.page.update()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            status.value = "Синхронізація..."
-            self.page.update()
-            run_in_thread(task, success, error)
-
-        return ft.Column(
-            controls=[
-                number,
-                ft.Row(
-                    controls=[
-                        ft.ElevatedButton(text="Надіслати", on_click=send),
-                        ft.OutlinedButton(text="Синхронізувати офлайн", on_click=sync),
-                    ]
-                ),
-                status,
-            ]
-        )
-
-    def _scanpak_history_tab(self) -> ft.Control:
-        parcel_filter = ft.TextField(label="Номер")
-        user_filter = ft.TextField(label="Користувач")
-        date_filter = ft.DatePicker()
-        date_button = ft.ElevatedButton(
-            text="Дата", on_click=lambda _: self.page.show_date_picker(date_filter)
-        )
-        status = ft.Text("")
-        table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("Номер")),
-                ft.DataColumn(ft.Text("Користувач")),
-                ft.DataColumn(ft.Text("Дата")),
-            ],
-            rows=[],
-        )
-        records: List[Dict[str, Any]] = []
-
-        def apply_filters(_: Any = None) -> None:
-            filtered = list(records)
-            if parcel_filter.value:
-                filtered = [
-                    item
-                    for item in filtered
-                    if parcel_filter.value in str(item.get("parcel_number", ""))
-                ]
-            if user_filter.value:
-                filtered = [
-                    item
-                    for item in filtered
-                    if user_filter.value.lower()
-                    in str(item.get("user_name", "")).lower()
-                ]
-            if date_filter.value:
-                target = date_filter.value
-                filtered = [
-                    item
-                    for item in filtered
-                    if item.get("created_at")
-                    and datetime.fromisoformat(item["created_at"]).date() == target
-                ]
-
-            table.rows = [
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text(str(item.get("parcel_number", "")))),
-                        ft.DataCell(ft.Text(str(item.get("user_name", "")))),
-                        ft.DataCell(ft.Text(format_iso_datetime(item.get("created_at")))),
-                    ]
-                )
-                for item in filtered
-            ]
-            self.page.update()
-
-        def fetch(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("scanpak_token")
-            if not token:
-                return
-
-            def task() -> List[Dict[str, Any]]:
-                resp = requests.get(
-                    f"{scanpak_base_url()}/history",
-                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                data.sort(
-                    key=lambda item: datetime.fromisoformat(
-                        item.get("created_at") or "1970-01-01T00:00:00"
-                    ),
-                    reverse=True,
-                )
-                return data
-
-            def success(data: List[Dict[str, Any]]) -> None:
-                records.clear()
-                records.extend(data)
-                status.value = f"Записів: {len(records)}"
-                apply_filters()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            run_in_thread(task, success, error)
-
-        return ft.Column(
-            controls=[
-                ft.Row(controls=[parcel_filter, user_filter, date_button]),
-                ft.Row(
-                    controls=[
-                        ft.ElevatedButton(text="Оновити", on_click=fetch),
-                        ft.OutlinedButton(text="Застосувати", on_click=lambda _: apply_filters()),
-                    ]
-                ),
-                status,
-                table,
-            ]
-        )
-
-    def _scanpak_stats_tab(self) -> ft.Control:
-        start_date = ft.DatePicker(value=date.today())
-        end_date = ft.DatePicker(value=date.today())
-        start_button = ft.ElevatedButton(
-            text="Початок", on_click=lambda _: self.page.show_date_picker(start_date)
-        )
-        end_button = ft.ElevatedButton(
-            text="Кінець", on_click=lambda _: self.page.show_date_picker(end_date)
-        )
-        user_filter = ft.TextField(label="Користувач")
-        summary = ft.Text("")
-        status = ft.Text("")
-        records: List[Dict[str, Any]] = []
-
-        def fetch(_: ft.ControlEvent) -> None:
-            token = self.state.settings.get("scanpak_token")
-            if not token:
-                return
-
-            def task() -> List[Dict[str, Any]]:
-                resp = requests.get(
-                    f"{scanpak_base_url()}/history",
-                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                return resp.json()
-
-            def success(data: List[Dict[str, Any]]) -> None:
-                records.clear()
-                records.extend(data)
-                apply_filters()
-
-            def error(message: str) -> None:
-                status.value = f"Помилка: {message}"
-                self.page.update()
-
-            run_in_thread(task, success, error)
-
-        def apply_filters(_: Any = None) -> None:
-            if not records:
-                return
-            start_val = start_date.value or date.today()
-            end_val = end_date.value or date.today()
-            if start_val > end_val:
-                start_val, end_val = end_val, start_val
-            user_value = user_filter.value.lower() if user_filter.value else ""
-
-            filtered: List[Dict[str, Any]] = []
-            for item in records:
-                if not item.get("created_at"):
-                    continue
-                try:
-                    dt = datetime.fromisoformat(item["created_at"]).astimezone().date()
-                except ValueError:
-                    continue
-                if not (start_val <= dt <= end_val):
-                    continue
-                if user_value and user_value not in str(item.get("user_name", "")).lower():
-                    continue
-                filtered.append(item)
-
-            per_user: Dict[str, int] = {}
-            for item in filtered:
-                user = str(item.get("user_name", "—"))
-                per_user[user] = per_user.get(user, 0) + 1
-
-            top_user, top_count = self._top_item(per_user)
-            summary.value = (
-                f"Сканів у періоді: {len(filtered)}\n"
-                f"Унікальних користувачів: {len(per_user)}\n"
-                f"Найактивніший оператор: {top_user} ({top_count})"
-            )
-            status.value = "Оновлено"
-            self.page.update()
-
-        return ft.Column(
-            controls=[
-                ft.Row(controls=[start_button, end_button, user_filter]),
-                ft.Row(
-                    controls=[
-                        ft.ElevatedButton(text="Оновити", on_click=fetch),
-                        ft.OutlinedButton(text="Застосувати", on_click=lambda _: apply_filters()),
-                    ]
-                ),
-                status,
-                summary,
-            ]
-        )
-
-    def _open_admin_panel(self) -> None:
-        def submit(password: str) -> None:
-            if not password:
-                return
-
-            def task() -> Dict[str, Any]:
-                resp = requests.post(
-                    f"{api_base_url()}/admin_login",
-                    headers={"Accept": "application/json", "Content-Type": "application/json"},
-                    data=json.dumps({"password": password}),
-                    timeout=10,
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(resp.text)
-                return resp.json()
-
-            def success(data: Dict[str, Any]) -> None:
-                token = data.get("token")
-                if not token:
-                    self._show_dialog("Помилка", "Сервер не повернув токен")
-                    return
-                self._show_admin_dialog(token, is_scanpak=False)
-
-            def error(message: str) -> None:
-                self._show_dialog("Помилка", message)
-
-            run_in_thread(task, success, error)
-
-        self._ask_password("Адмін-панель", submit)
-
-    def _open_scanpak_admin_panel(self) -> None:
-        def submit(password: str) -> None:
-            if not password:
-                return
-
-            def task() -> Dict[str, Any]:
-                resp = requests.post(
-                    f"{scanpak_base_url()}/admin_login",
-                    headers={"Accept": "application/json", "Content-Type": "application/json"},
-                    data=json.dumps({"password": password}),
-                    timeout=10,
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(resp.text)
-                return resp.json()
-
-            def success(data: Dict[str, Any]) -> None:
-                token = data.get("token")
-                if not token:
-                    self._show_dialog("Помилка", "Сервер не повернув токен")
-                    return
-                self._show_admin_dialog(token, is_scanpak=True)
-
-            def error(message: str) -> None:
-                self._show_dialog("Помилка", message)
-
-            run_in_thread(task, success, error)
-
-        self._ask_password("Адмін-панель СканПак", submit)
-
-    def _ask_password(self, title: str, on_submit: Callable[[str], None]) -> None:
-        password_field = ft.TextField(label="Пароль", password=True)
-
-        def submit(_: ft.ControlEvent) -> None:
-            self.page.dialog.open = False
-            self.page.update()
-            on_submit(password_field.value.strip())
-
-        dialog = ft.AlertDialog(
-            title=ft.Text(title),
-            content=password_field,
-            actions=[ft.TextButton(text="Скасувати", on_click=lambda _: self._close_dialog()),
-                     ft.ElevatedButton(text="Увійти", on_click=submit)],
-        )
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
-
-    def _show_admin_dialog(self, token: str, is_scanpak: bool) -> None:
-        role_options = ["admin", "operator"] if is_scanpak else ["admin", "operator", "viewer"]
-        pending_table = ft.DataTable(columns=[
-            ft.DataColumn(ft.Text("ID")),
-            ft.DataColumn(ft.Text("Прізвище")),
-            ft.DataColumn(ft.Text("Дата")),
-        ], rows=[])
-        users_table = ft.DataTable(columns=[
-            ft.DataColumn(ft.Text("ID")),
-            ft.DataColumn(ft.Text("Прізвище")),
-            ft.DataColumn(ft.Text("Роль")),
-            ft.DataColumn(ft.Text("Активний")),
-            ft.DataColumn(ft.Text("Створено")),
-        ], rows=[])
-        role_picker = ft.Dropdown(options=[ft.dropdown.Option(r) for r in role_options])
-        role_picker.value = role_options[0]
-        password_fields = {role: ft.TextField(label=f"{role} пароль", password=True) for role in role_options}
-
-        def headers() -> Dict[str, str]:
-            return {
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            }
-
-        def load_data() -> None:
-            base = scanpak_base_url() if is_scanpak else api_base_url()
-
-            def task() -> Dict[str, Any]:
-                pending_resp = requests.get(f"{base}/admin/registration_requests", headers=headers(), timeout=10)
-                pending_resp.raise_for_status()
-                users_resp = requests.get(f"{base}/admin/users", headers=headers(), timeout=10)
-                users_resp.raise_for_status()
-                pass_resp = requests.get(f"{base}/admin/role-passwords", headers=headers(), timeout=10)
-                pass_resp.raise_for_status()
-                return {
-                    "pending": pending_resp.json(),
-                    "users": users_resp.json(),
-                    "passwords": pass_resp.json(),
+            self.app.update_state(
+                {
+                    "token": token,
+                    "access_level": data.get("access_level"),
+                    "user_name": data.get("surname", surname),
+                    "user_role": data.get("role"),
                 }
+            )
+            self.app.show_frame("TrackingMainFrame")
 
-            def success(data: Dict[str, Any]) -> None:
-                pending_table.rows = [
-                    ft.DataRow(
-                        cells=[
-                            ft.DataCell(ft.Text(str(item.get("id", "")))),
-                            ft.DataCell(ft.Text(item.get("surname", "—"))),
-                            ft.DataCell(ft.Text(item.get("created_at", ""))),
-                        ]
-                    )
-                    for item in data.get("pending", [])
-                ]
-                users_table.rows = [
-                    ft.DataRow(
-                        cells=[
-                            ft.DataCell(ft.Text(str(item.get("id", "")))),
-                            ft.DataCell(ft.Text(item.get("surname", "—"))),
-                            ft.DataCell(ft.Text(item.get("role", ""))),
-                            ft.DataCell(ft.Text("Так" if item.get("is_active") else "Ні")),
-                            ft.DataCell(ft.Text(item.get("created_at", ""))),
-                        ]
-                    )
-                    for item in data.get("users", [])
-                ]
-                for role, field in password_fields.items():
-                    field.value = str(data.get("passwords", {}).get(role, ""))
-                self.page.update()
+        def on_error(exc: Exception) -> None:
+            self._set_busy(False)
+            if isinstance(exc, ApiError):
+                self.message.set(exc.message)
+            else:
+                self.message.set("Не вдалося зʼєднатися з сервером")
 
-            def error(message: str) -> None:
-                self._show_dialog("Помилка", message)
+        run_async(self, task, on_success, on_error)
 
-            run_in_thread(task, success, error)
+    def handle_register(self) -> None:
+        surname = self.register_surname.get().strip()
+        password = self.register_password.get().strip()
+        confirm = self.register_confirm.get().strip()
+        if not surname or not password or not confirm:
+            self.message.set("Заповніть усі поля")
+            return
+        if len(password) < 6:
+            self.message.set("Пароль має містити щонайменше 6 символів")
+            return
+        if password != confirm:
+            self.message.set("Паролі не співпадають")
+            return
 
-        def selected_id(table: ft.DataTable) -> Optional[str]:
-            for row in table.rows:
-                if row.selected:
-                    return row.cells[0].content.value
-            return None
+        def task() -> Any:
+            return self.app.api.request_json(
+                "POST", "/register", payload={"surname": surname, "password": password}
+            )
 
-        def approve(_: ft.ControlEvent) -> None:
-            request_id = selected_id(pending_table)
-            if not request_id:
+        def on_success(_: Any) -> None:
+            self.message.set(
+                "Заявку на реєстрацію відправлено. Дочекайтесь підтвердження."
+            )
+            self.register_surname.set("")
+            self.register_password.set("")
+            self.register_confirm.set("")
+
+        def on_error(exc: Exception) -> None:
+            if isinstance(exc, ApiError):
+                self.message.set(exc.message)
+            else:
+                self.message.set("Не вдалося відправити заявку")
+
+        run_async(self, task, on_success, on_error)
+
+    def open_admin_panel(self) -> None:
+        password = simple_prompt(self, "Пароль адміністратора")
+        if not password:
+            return
+
+        def task() -> Dict[str, Any]:
+            return self.app.api.request_json(
+                "POST", "/admin_login", payload={"password": password}
+            )
+
+        def on_success(data: Dict[str, Any]) -> None:
+            token = str(data.get("token", ""))
+            if not token:
+                messagebox.showerror("Помилка", "Сервер не повернув токен")
                 return
-            payload = json.dumps({"role": role_picker.value})
-            base = scanpak_base_url() if is_scanpak else api_base_url()
+            AdminPanel(self, self.app, token)
 
-            def task() -> None:
-                resp = requests.post(
-                    f"{base}/admin/registration_requests/{request_id}/approve",
-                    headers=headers(),
-                    data=payload,
-                    timeout=10,
-                )
-                resp.raise_for_status()
+        def on_error(exc: Exception) -> None:
+            if isinstance(exc, ApiError):
+                messagebox.showerror("Помилка", exc.message)
+            else:
+                messagebox.showerror("Помилка", "Не вдалося зʼєднатися з сервером")
 
-            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
+        run_async(self, task, on_success, on_error)
 
-        def reject(_: ft.ControlEvent) -> None:
-            request_id = selected_id(pending_table)
-            if not request_id:
-                return
-            base = scanpak_base_url() if is_scanpak else api_base_url()
 
-            def task() -> None:
-                resp = requests.post(
-                    f"{base}/admin/registration_requests/{request_id}/reject",
-                    headers=headers(),
-                    timeout=10,
-                )
-                resp.raise_for_status()
+class ScanpakLoginFrame(ttk.Frame):
+    def __init__(self, parent: ttk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.message = tk.StringVar(value="")
 
-            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
+        card = ttk.Frame(self, style="Card.TFrame", padding=40)
+        card.place(relx=0.5, rely=0.5, anchor="center")
 
-        def change_role(_: ft.ControlEvent) -> None:
-            user_id = selected_id(users_table)
-            if not user_id:
-                return
-            base = scanpak_base_url() if is_scanpak else api_base_url()
-
-            def task() -> None:
-                resp = requests.patch(
-                    f"{base}/admin/users/{user_id}",
-                    headers=headers(),
-                    data=json.dumps({"role": role_picker.value}),
-                    timeout=10,
-                )
-                resp.raise_for_status()
-
-            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
-
-        def toggle_active(_: ft.ControlEvent) -> None:
-            user_id = selected_id(users_table)
-            if not user_id:
-                return
-            base = scanpak_base_url() if is_scanpak else api_base_url()
-            current_row = next((row for row in users_table.rows if row.selected), None)
-            is_active = False
-            if current_row and len(current_row.cells) > 3:
-                is_active = current_row.cells[3].content.value == "Так"
-
-            def task() -> None:
-                resp = requests.patch(
-                    f"{base}/admin/users/{user_id}",
-                    headers=headers(),
-                    data=json.dumps({"is_active": not is_active}),
-                    timeout=10,
-                )
-                resp.raise_for_status()
-
-            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
-
-        def delete_user(_: ft.ControlEvent) -> None:
-            user_id = selected_id(users_table)
-            if not user_id:
-                return
-            base = scanpak_base_url() if is_scanpak else api_base_url()
-
-            def task() -> None:
-                resp = requests.delete(
-                    f"{base}/admin/users/{user_id}",
-                    headers=headers(),
-                    timeout=10,
-                )
-                resp.raise_for_status()
-
-            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
-
-        def save_password(role: str) -> Callable[[ft.ControlEvent], None]:
-            def handler(_: ft.ControlEvent) -> None:
-                base = scanpak_base_url() if is_scanpak else api_base_url()
-
-                def task() -> None:
-                    resp = requests.post(
-                        f"{base}/admin/role-passwords/{role}",
-                        headers=headers(),
-                        data=json.dumps({"password": password_fields[role].value or ""}),
-                        timeout=10,
-                    )
-                    resp.raise_for_status()
-
-                run_in_thread(task, lambda _: self._show_dialog("Готово", "Пароль оновлено"),
-                              lambda msg: self._show_dialog("Помилка", msg))
-
-            return handler
-
-        content = ft.Column(
-            width=900,
-            height=600,
-            scroll=ft.ScrollMode.AUTO,
-            controls=[
-                ft.Text("Запити на реєстрацію", weight=ft.FontWeight.BOLD),
-                pending_table,
-                ft.Row(
-                    controls=[
-                        role_picker,
-                        ft.ElevatedButton(text="Підтвердити", on_click=approve),
-                        ft.OutlinedButton(text="Відхилити", on_click=reject),
-                    ]
-                ),
-                ft.Divider(),
-                ft.Text("Користувачі", weight=ft.FontWeight.BOLD),
-                users_table,
-                ft.Row(
-                    controls=[
-                        ft.ElevatedButton(text="Змінити роль", on_click=change_role),
-                        ft.OutlinedButton(text="Перемкнути активність", on_click=toggle_active),
-                        ft.TextButton(text="Видалити", on_click=delete_user),
-                    ]
-                ),
-                ft.Divider(),
-                ft.Text("API паролі", weight=ft.FontWeight.BOLD),
-                *[
-                    ft.Row(
-                        controls=[password_fields[role], ft.ElevatedButton(text="Зберегти", on_click=save_password(role))]
-                    )
-                    for role in role_options
-                ],
-                ft.ElevatedButton(text="Оновити", on_click=lambda _: load_data()),
-            ],
+        ttk.Label(card, text="СканПак", style="Title.TLabel").pack()
+        ttk.Label(card, text="Авторизація для Scanpak", style="Subtitle.TLabel").pack(
+            pady=(0, 20)
         )
 
-        dialog = ft.AlertDialog(title=ft.Text("Адмін-панель"), content=content)
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
-        load_data()
+        self.tabs = ttk.Notebook(card)
+        self.tabs.pack(fill=tk.BOTH, expand=True)
 
-    def _show_dialog(self, title: str, message: str) -> None:
-        dialog = ft.AlertDialog(title=ft.Text(title), content=ft.Text(message))
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
+        self.login_tab = ttk.Frame(self.tabs, padding=20)
+        self.register_tab = ttk.Frame(self.tabs, padding=20)
+        self.tabs.add(self.login_tab, text="Вхід")
+        self.tabs.add(self.register_tab, text="Реєстрація")
 
-    def _close_dialog(self) -> None:
-        if self.page.dialog:
-            self.page.dialog.open = False
-            self.page.update()
+        self.login_surname = tk.StringVar()
+        self.login_password = tk.StringVar()
+        self.register_surname = tk.StringVar()
+        self.register_password = tk.StringVar()
+        self.register_confirm = tk.StringVar()
+
+        self._build_login()
+        self._build_register()
+
+        ttk.Label(card, textvariable=self.message, foreground="#DC2626").pack(
+            pady=8
+        )
+
+        buttons = ttk.Frame(card)
+        buttons.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(
+            buttons,
+            text="Назад",
+            style="Secondary.TButton",
+            command=lambda: app.show_frame("StartFrame"),
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            buttons,
+            text="Адмін панель",
+            style="Secondary.TButton",
+            command=self.open_admin_panel,
+        ).pack(side=tk.RIGHT)
+
+    def _build_login(self) -> None:
+        ttk.Label(self.login_tab, text="Прізвище").grid(row=0, column=0, sticky="w")
+        ttk.Entry(self.login_tab, textvariable=self.login_surname).grid(
+            row=1, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Label(self.login_tab, text="Пароль").grid(row=2, column=0, sticky="w")
+        ttk.Entry(self.login_tab, textvariable=self.login_password, show="*").grid(
+            row=3, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Button(
+            self.login_tab,
+            text="Увійти",
+            style="Accent.TButton",
+            command=self.handle_login,
+        ).grid(row=4, column=0, sticky="ew")
+        self.login_tab.columnconfigure(0, weight=1)
+
+    def _build_register(self) -> None:
+        ttk.Label(self.register_tab, text="Прізвище").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(self.register_tab, textvariable=self.register_surname).grid(
+            row=1, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Label(self.register_tab, text="Пароль").grid(row=2, column=0, sticky="w")
+        ttk.Entry(self.register_tab, textvariable=self.register_password, show="*").grid(
+            row=3, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Label(self.register_tab, text="Підтвердження пароля").grid(
+            row=4, column=0, sticky="w"
+        )
+        ttk.Entry(self.register_tab, textvariable=self.register_confirm, show="*").grid(
+            row=5, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Button(
+            self.register_tab,
+            text="Надіслати заявку",
+            style="Accent.TButton",
+            command=self.handle_register,
+        ).grid(row=6, column=0, sticky="ew")
+        self.register_tab.columnconfigure(0, weight=1)
+
+    def handle_login(self) -> None:
+        surname = self.login_surname.get().strip()
+        password = self.login_password.get().strip()
+        if not surname or not password:
+            self.message.set("Введіть прізвище та пароль")
+            return
+        self.message.set("")
+
+        def task() -> Dict[str, Any]:
+            return self.app.scanpak_api.request_json(
+                "POST", "/login", payload={"surname": surname, "password": password}
+            )
+
+        def on_success(data: Dict[str, Any]) -> None:
+            token = str(data.get("token", ""))
+            if not token:
+                self.message.set("Сервер не повернув токен")
+                return
+            self.app.update_state(
+                {
+                    "scanpak_token": token,
+                    "scanpak_user_name": data.get("surname", surname),
+                    "scanpak_user_role": data.get("role"),
+                }
+            )
+            self.app.show_frame("ScanpakMainFrame")
+
+        def on_error(exc: Exception) -> None:
+            if isinstance(exc, ApiError):
+                self.message.set(exc.message)
+            else:
+                self.message.set("Не вдалося зʼєднатися з сервером")
+
+        run_async(self, task, on_success, on_error)
+
+    def handle_register(self) -> None:
+        surname = self.register_surname.get().strip()
+        password = self.register_password.get().strip()
+        confirm = self.register_confirm.get().strip()
+        if not surname or not password or not confirm:
+            self.message.set("Заповніть усі поля")
+            return
+        if len(password) < 6:
+            self.message.set("Пароль має містити щонайменше 6 символів")
+            return
+        if password != confirm:
+            self.message.set("Паролі не співпадають")
+            return
+
+        def task() -> Any:
+            return self.app.scanpak_api.request_json(
+                "POST", "/register", payload={"surname": surname, "password": password}
+            )
+
+        def on_success(_: Any) -> None:
+            self.message.set("Заявку на реєстрацію відправлено.")
+            self.register_surname.set("")
+            self.register_password.set("")
+            self.register_confirm.set("")
+
+        def on_error(exc: Exception) -> None:
+            if isinstance(exc, ApiError):
+                self.message.set(exc.message)
+            else:
+                self.message.set("Не вдалося відправити заявку")
+
+        run_async(self, task, on_success, on_error)
+
+    def open_admin_panel(self) -> None:
+        password = simple_prompt(self, "Пароль адміністратора СканПак")
+        if not password:
+            return
+
+        def task() -> Dict[str, Any]:
+            return self.app.scanpak_api.request_json(
+                "POST", "/admin_login", payload={"password": password}
+            )
+
+        def on_success(data: Dict[str, Any]) -> None:
+            token = str(data.get("token", ""))
+            if not token:
+                messagebox.showerror("Помилка", "Сервер не повернув токен")
+                return
+            ScanpakAdminPanel(self, self.app, token)
+
+        def on_error(exc: Exception) -> None:
+            if isinstance(exc, ApiError):
+                messagebox.showerror("Помилка", exc.message)
+            else:
+                messagebox.showerror("Помилка", "Не вдалося зʼєднатися з сервером")
+
+        run_async(self, task, on_success, on_error)
 
 
-def main(page: ft.Page) -> None:
-    TrackingAppUI(page)
+class TrackingMainFrame(ttk.Frame):
+    def __init__(self, parent: ttk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.status = tk.StringVar(value="")
+        self.user_label = tk.StringVar(value="")
+        self.role_label = tk.StringVar(value="")
+        self.access_level = None
+
+        header = ttk.Frame(self)
+        header.pack(fill=tk.X)
+        ttk.Label(header, text="TrackingApp", style="Header.TLabel").pack(
+            side=tk.LEFT
+        )
+        ttk.Label(header, textvariable=self.user_label).pack(side=tk.LEFT, padx=20)
+        ttk.Label(header, textvariable=self.role_label).pack(side=tk.LEFT)
+        ttk.Button(
+            header,
+            text="Вийти",
+            style="Secondary.TButton",
+            command=self.logout,
+        ).pack(side=tk.RIGHT)
+
+        self.tabs = ttk.Notebook(self)
+        self.tabs.pack(fill=tk.BOTH, expand=True, pady=12)
+
+        self.scan_tab = TrackingScanTab(self.tabs, app, self.status)
+        self.history_tab = HistoryTab(self.tabs, app)
+        self.errors_tab = ErrorsTab(self.tabs, app)
+        self.stats_tab = StatisticsTab(self.tabs, app)
+
+        self.tabs.add(self.scan_tab, text="Сканер")
+        self.tabs.add(self.history_tab, text="Історія")
+        self.tabs.add(self.errors_tab, text="Помилки")
+        self.tabs.add(self.stats_tab, text="Статистика")
+
+        ttk.Label(self, textvariable=self.status, style="Status.TLabel").pack(
+            pady=(0, 8)
+        )
+
+    def refresh(self) -> None:
+        user = self.app.state_data.get("user_name", "оператор")
+        role = self.app.state_data.get("user_role")
+        access_level = self.app.state_data.get("access_level")
+        self.access_level = access_level
+        role_label = "👁 Перегляд"
+        if role == "admin" or access_level == 1:
+            role_label = "🔑 Адмін"
+        elif role == "operator" or access_level == 0:
+            role_label = "🧰 Оператор"
+        self.user_label.set(f"Оператор: {user}")
+        self.role_label.set(role_label)
+        self.scan_tab.refresh()
+        self.history_tab.refresh()
+        self.errors_tab.refresh()
+        self.stats_tab.refresh()
+
+    def logout(self) -> None:
+        self.app.clear_state(["token", "access_level", "user_name", "user_role"])
+        self.app.show_frame("StartFrame")
+
+
+class TrackingScanTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp, status: tk.StringVar) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.status = status
+        self.box_var = tk.StringVar()
+        self.ttn_var = tk.StringVar()
+        self.inflight = tk.IntVar(value=0)
+
+        form = ttk.Frame(self)
+        form.pack(fill=tk.X)
+        ttk.Label(form, text="BoxID").grid(row=0, column=0, sticky="w")
+        box_entry = ttk.Entry(form, textvariable=self.box_var)
+        box_entry.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(form, text="ТТН").grid(row=2, column=0, sticky="w")
+        ttn_entry = ttk.Entry(form, textvariable=self.ttn_var)
+        ttn_entry.grid(row=3, column=0, sticky="ew")
+        form.columnconfigure(0, weight=1)
+
+        action = ttk.Frame(self)
+        action.pack(fill=tk.X, pady=12)
+        ttk.Button(
+            action,
+            text="Надіслати",
+            style="Accent.TButton",
+            command=self.send_record,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            action,
+            text="Синхронізувати офлайн",
+            style="Secondary.TButton",
+            command=self.sync_offline,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Label(action, textvariable=self.inflight).pack(side=tk.RIGHT)
+
+        box_entry.bind("<Return>", lambda _: ttn_entry.focus())
+        ttn_entry.bind("<Return>", lambda _: self.send_record())
+
+    def refresh(self) -> None:
+        self.inflight.set(len(self.app.tracking_offline.list()))
+
+    def send_record(self) -> None:
+        token = self.app.state_data.get("token")
+        user_name = self.app.state_data.get("user_name", "operator")
+        boxid = "".join(filter(str.isdigit, self.box_var.get()))
+        ttn = "".join(filter(str.isdigit, self.ttn_var.get()))
+        if not boxid or not ttn:
+            self.status.set("Заповніть BoxID та ТТН")
+            return
+        record = {"user_name": user_name, "boxid": boxid, "ttn": ttn}
+        self.box_var.set("")
+        self.ttn_var.set("")
+
+        def task() -> Dict[str, Any]:
+            if not token:
+                raise ApiError("Відсутній токен", 401)
+            return self.app.api.request_json(
+                "POST", "/add_record", token=token, payload=record
+            )
+
+        def on_success(data: Dict[str, Any]) -> None:
+            note = data.get("note") if isinstance(data, dict) else None
+            if note:
+                self.status.set(f"⚠️ Дублікат: {note}")
+            else:
+                self.status.set("✅ Успішно додано")
+            self.sync_offline()
+
+        def on_error(exc: Exception) -> None:
+            self.app.tracking_offline.add(record)
+            self.inflight.set(len(self.app.tracking_offline.list()))
+            self.status.set("📦 Збережено локально (офлайн)")
+            if not isinstance(exc, ApiError):
+                return
+
+        run_async(self, task, on_success, on_error)
+
+    def sync_offline(self) -> None:
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        pending = self.app.tracking_offline.list()
+        if not pending:
+            self.status.set("Офлайн-черга порожня")
+            return
+
+        def task() -> int:
+            synced = 0
+            for record in pending:
+                try:
+                    self.app.api.request_json(
+                        "POST", "/add_record", token=token, payload=record
+                    )
+                    synced += 1
+                except ApiError:
+                    break
+            return synced
+
+        def on_success(count: int) -> None:
+            if count:
+                self.app.tracking_offline.clear()
+                self.status.set(f"Синхронізовано {count} записів")
+            self.inflight.set(len(self.app.tracking_offline.list()))
+
+        def on_error(_: Exception) -> None:
+            self.status.set("Не вдалося синхронізувати")
+
+        run_async(self, task, on_success, on_error)
+
+
+class HistoryTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.records: List[Dict[str, Any]] = []
+        self.filtered: List[Dict[str, Any]] = []
+
+        filters = ttk.LabelFrame(self, text="Фільтри", padding=12)
+        filters.pack(fill=tk.X)
+
+        self.box_filter = tk.StringVar()
+        self.ttn_filter = tk.StringVar()
+        self.user_filter = tk.StringVar()
+        self.date_filter = tk.StringVar()
+        self.start_time_filter = tk.StringVar()
+        self.end_time_filter = tk.StringVar()
+
+        self._filter_entry(filters, "BoxID", self.box_filter, 0)
+        self._filter_entry(filters, "ТТН", self.ttn_filter, 1)
+        self._filter_entry(filters, "Оператор", self.user_filter, 2)
+        self._filter_entry(filters, "Дата (YYYY-MM-DD)", self.date_filter, 3)
+        self._filter_entry(filters, "Час від (HH:MM)", self.start_time_filter, 4)
+        self._filter_entry(filters, "Час до (HH:MM)", self.end_time_filter, 5)
+
+        actions = ttk.Frame(filters)
+        actions.grid(row=2, column=0, columnspan=6, sticky="w", pady=(10, 0))
+        ttk.Button(
+            actions,
+            text="Застосувати",
+            style="Secondary.TButton",
+            command=self.apply_filters,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Очистити",
+            style="Secondary.TButton",
+            command=self.clear_filters,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_history,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="Очистити історію",
+            style="Secondary.TButton",
+            command=self.clear_history,
+        ).pack(side=tk.LEFT, padx=8)
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("datetime", "user", "boxid", "ttn"),
+            show="headings",
+        )
+        for col, label in [
+            ("datetime", "Дата"),
+            ("user", "Оператор"),
+            ("boxid", "BoxID"),
+            ("ttn", "ТТН"),
+        ]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=180, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True, pady=12)
+
+    def _filter_entry(
+        self, parent: ttk.LabelFrame, label: str, variable: tk.StringVar, col: int
+    ) -> None:
+        ttk.Label(parent, text=label).grid(row=0, column=col, sticky="w", padx=4)
+        ttk.Entry(parent, textvariable=variable, width=18).grid(
+            row=1, column=col, padx=4, pady=6
+        )
+
+    def refresh(self) -> None:
+        self.fetch_history()
+
+    def fetch_history(self) -> None:
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.api.request_json("GET", "/get_history", token=token)
+            if isinstance(data, list):
+                return data
+            return []
+
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.records = sorted(
+                data,
+                key=lambda item: item.get("datetime", ""),
+                reverse=True,
+            )
+            self.apply_filters()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def apply_filters(self) -> None:
+        filtered = list(self.records)
+        if self.box_filter.get():
+            filtered = [
+                rec
+                for rec in filtered
+                if self.box_filter.get().strip() in str(rec.get("boxid", ""))
+            ]
+        if self.ttn_filter.get():
+            filtered = [
+                rec
+                for rec in filtered
+                if self.ttn_filter.get().strip() in str(rec.get("ttn", ""))
+            ]
+        if self.user_filter.get():
+            token = self.user_filter.get().strip().lower()
+            filtered = [
+                rec
+                for rec in filtered
+                if token in str(rec.get("user_name", "")).lower()
+            ]
+
+        selected_date = parse_date(self.date_filter.get().strip())
+        if selected_date:
+            filtered = [
+                rec
+                for rec in filtered
+                if self._match_date(rec.get("datetime"), selected_date)
+            ]
+
+        start_time = parse_time(self.start_time_filter.get().strip())
+        end_time = parse_time(self.end_time_filter.get().strip())
+        if start_time or end_time:
+            filtered = [
+                rec
+                for rec in filtered
+                if self._match_time(rec.get("datetime"), start_time, end_time)
+            ]
+
+        self.filtered = filtered
+        self._refresh_tree()
+
+    def _match_date(self, value: Any, selected: date) -> bool:
+        try:
+            parsed = datetime.fromisoformat(str(value)).date()
+        except ValueError:
+            return False
+        return parsed == selected
+
+    def _match_time(
+        self, value: Any, start: Optional[time], end: Optional[time]
+    ) -> bool:
+        try:
+            parsed = datetime.fromisoformat(str(value)).time()
+        except ValueError:
+            return False
+        if start and parsed < start:
+            return False
+        if end and parsed > end:
+            return False
+        return True
+
+    def _refresh_tree(self) -> None:
+        self.tree.delete(*self.tree.get_children())
+        for record in self.filtered:
+            self.tree.insert(
+                "",
+                tk.END,
+                values=(
+                    format_datetime(record.get("datetime", "")),
+                    record.get("user_name", ""),
+                    record.get("boxid", ""),
+                    record.get("ttn", ""),
+                ),
+            )
+
+    def clear_filters(self) -> None:
+        self.box_filter.set("")
+        self.ttn_filter.set("")
+        self.user_filter.set("")
+        self.date_filter.set("")
+        self.start_time_filter.set("")
+        self.end_time_filter.set("")
+        self.apply_filters()
+
+    def clear_history(self) -> None:
+        role = self.app.state_data.get("user_role")
+        access_level = self.app.state_data.get("access_level")
+        if role != "admin" and access_level != 1:
+            messagebox.showinfo("Доступ", "Очистка доступна лише адміну")
+            return
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        if not messagebox.askyesno("Підтвердження", "Очистити історію?"):
+            return
+
+        def task() -> Any:
+            return self.app.api.request_json("DELETE", "/clear_tracking", token=token)
+
+        def on_success(_: Any) -> None:
+            self.records = []
+            self.apply_filters()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+
+class ErrorsTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.records: List[Dict[str, Any]] = []
+
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X)
+        ttk.Button(
+            actions,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_errors,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Очистити всі",
+            style="Secondary.TButton",
+            command=self.clear_errors,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="Видалити вибране",
+            style="Secondary.TButton",
+            command=self.delete_selected,
+        ).pack(side=tk.LEFT)
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("datetime", "user", "boxid", "ttn", "note", "id"),
+            show="headings",
+        )
+        for col, label in [
+            ("datetime", "Дата"),
+            ("user", "Оператор"),
+            ("boxid", "BoxID"),
+            ("ttn", "ТТН"),
+            ("note", "Примітка"),
+            ("id", "ID"),
+        ]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=150, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True, pady=12)
+
+    def refresh(self) -> None:
+        self.fetch_errors()
+
+    def fetch_errors(self) -> None:
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.api.request_json("GET", "/get_errors", token=token)
+            return data if isinstance(data, list) else []
+
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.records = data
+            self.tree.delete(*self.tree.get_children())
+            for record in data:
+                self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        format_datetime(record.get("datetime", "")),
+                        record.get("user_name", ""),
+                        record.get("boxid", ""),
+                        record.get("ttn", ""),
+                        record.get("note", ""),
+                        record.get("id", ""),
+                    ),
+                )
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def clear_errors(self) -> None:
+        role = self.app.state_data.get("user_role")
+        access_level = self.app.state_data.get("access_level")
+        if role not in {"admin", "operator"} and access_level not in {0, 1}:
+            messagebox.showinfo("Доступ", "Недостатньо прав")
+            return
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+        if not messagebox.askyesno("Підтвердження", "Очистити всі помилки?"):
+            return
+
+        def task() -> Any:
+            return self.app.api.request_json("DELETE", "/clear_errors", token=token)
+
+        def on_success(_: Any) -> None:
+            self.records = []
+            self.tree.delete(*self.tree.get_children())
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def delete_selected(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showinfo("Помилка", "Оберіть запис для видалення")
+            return
+        item = self.tree.item(selection[0])
+        record_id = item["values"][5]
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+
+        def task() -> Any:
+            return self.app.api.request_json(
+                "DELETE", f"/delete_error/{record_id}", token=token
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_errors()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+
+class StatisticsTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.history: List[Dict[str, Any]] = []
+        self.errors: List[Dict[str, Any]] = []
+        self.summary = tk.StringVar(value="")
+        self.start_date = tk.StringVar()
+        self.end_date = tk.StringVar()
+
+        filters = ttk.Frame(self)
+        filters.pack(fill=tk.X)
+        ttk.Label(filters, text="Початок (YYYY-MM-DD)").pack(side=tk.LEFT)
+        ttk.Entry(filters, textvariable=self.start_date, width=12).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Label(filters, text="Кінець (YYYY-MM-DD)").pack(side=tk.LEFT)
+        ttk.Entry(filters, textvariable=self.end_date, width=12).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Button(
+            filters,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_data,
+        ).pack(side=tk.LEFT, padx=8)
+
+        ttk.Label(self, textvariable=self.summary, style="Status.TLabel").pack(
+            pady=12
+        )
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("user", "scans", "errors"),
+            show="headings",
+            height=10,
+        )
+        for col, label in [("user", "Оператор"), ("scans", "Сканів"), ("errors", "Помилок")]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=180, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+    def refresh(self) -> None:
+        role = self.app.state_data.get("user_role")
+        access_level = self.app.state_data.get("access_level")
+        if role != "admin" and access_level != 1:
+            self.summary.set("Доступ до статистики лише для адміністраторів")
+            return
+        if not self.start_date.get() or not self.end_date.get():
+            today = datetime.now().date()
+            self.start_date.set(today.replace(day=1).isoformat())
+            self.end_date.set(today.isoformat())
+        self.fetch_data()
+
+    def fetch_data(self) -> None:
+        token = self.app.state_data.get("token")
+        if not token:
+            return
+
+        def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+            history = self.app.api.request_json("GET", "/get_history", token=token)
+            errors = self.app.api.request_json("GET", "/get_errors", token=token)
+            return (
+                history if isinstance(history, list) else [],
+                errors if isinstance(errors, list) else [],
+            )
+
+        def on_success(data: Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]) -> None:
+            self.history, self.errors = data
+            self.apply_stats()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def apply_stats(self) -> None:
+        start = parse_date(self.start_date.get().strip())
+        end = parse_date(self.end_date.get().strip())
+        if not start or not end:
+            messagebox.showinfo("Фільтр", "Вкажіть коректні дати")
+            return
+
+        def in_range(record: Dict[str, Any]) -> bool:
+            try:
+                dt = datetime.fromisoformat(record.get("datetime", "")).date()
+            except ValueError:
+                return False
+            return start <= dt <= end
+
+        history = [rec for rec in self.history if in_range(rec)]
+        errors = [rec for rec in self.errors if in_range(rec)]
+
+        counts: Dict[str, int] = {}
+        error_counts: Dict[str, int] = {}
+        for rec in history:
+            user = rec.get("user_name", "—")
+            counts[user] = counts.get(user, 0) + 1
+        for rec in errors:
+            user = rec.get("user_name", "—")
+            error_counts[user] = error_counts.get(user, 0) + 1
+
+        total_scans = sum(counts.values())
+        total_errors = sum(error_counts.values())
+        top_user = max(counts.items(), key=lambda item: item[1], default=("—", 0))
+        self.summary.set(
+            f"Сканів: {total_scans} | Помилок: {total_errors} | Топ оператор: {top_user[0]}"
+        )
+
+        self.tree.delete(*self.tree.get_children())
+        for user, scans in sorted(counts.items(), key=lambda item: item[1], reverse=True):
+            self.tree.insert(
+                "",
+                tk.END,
+                values=(user, scans, error_counts.get(user, 0)),
+            )
+
+
+class ScanpakMainFrame(ttk.Frame):
+    def __init__(self, parent: ttk.Frame, app: TrackingApp) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.status = tk.StringVar(value="")
+        self.user_label = tk.StringVar(value="")
+
+        header = ttk.Frame(self)
+        header.pack(fill=tk.X)
+        ttk.Label(header, text="СканПак", style="Header.TLabel").pack(side=tk.LEFT)
+        ttk.Label(header, textvariable=self.user_label).pack(side=tk.LEFT, padx=20)
+        ttk.Button(
+            header,
+            text="Вийти",
+            style="Secondary.TButton",
+            command=self.logout,
+        ).pack(side=tk.RIGHT)
+
+        self.tabs = ttk.Notebook(self)
+        self.tabs.pack(fill=tk.BOTH, expand=True, pady=12)
+
+        self.scan_tab = ScanpakScanTab(self.tabs, app, self.status)
+        self.history_tab = ScanpakHistoryTab(self.tabs, app)
+        self.stats_tab = ScanpakStatsTab(self.tabs, app)
+        self.tabs.add(self.scan_tab, text="Сканування")
+        self.tabs.add(self.history_tab, text="Історія")
+        self.tabs.add(self.stats_tab, text="Статистика")
+
+        ttk.Label(self, textvariable=self.status, style="Status.TLabel").pack(
+            pady=(0, 8)
+        )
+
+    def refresh(self) -> None:
+        name = self.app.state_data.get("scanpak_user_name", "оператор")
+        role = self.app.state_data.get("scanpak_user_role", "")
+        role_label = "Адмін" if role == "admin" else "Оператор"
+        self.user_label.set(f"{name} • {role_label}")
+        self.scan_tab.refresh()
+        self.history_tab.refresh()
+        self.stats_tab.refresh()
+
+    def logout(self) -> None:
+        self.app.clear_state(["scanpak_token", "scanpak_user_name", "scanpak_user_role"])
+        self.app.show_frame("StartFrame")
+
+
+class ScanpakScanTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp, status: tk.StringVar) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.status = status
+        self.number_var = tk.StringVar()
+        self.offline_count = tk.IntVar(value=0)
+
+        ttk.Label(self, text="Номер відправлення").pack(anchor="w")
+        entry = ttk.Entry(self, textvariable=self.number_var)
+        entry.pack(fill=tk.X, pady=(0, 12))
+        entry.bind("<Return>", lambda _: self.submit())
+
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X)
+        ttk.Button(
+            actions,
+            text="Зберегти",
+            style="Accent.TButton",
+            command=self.submit,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Синхронізувати",
+            style="Secondary.TButton",
+            command=self.sync_offline,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Label(actions, textvariable=self.offline_count).pack(side=tk.RIGHT)
+
+    def refresh(self) -> None:
+        self.offline_count.set(len(self.app.scanpak_offline.list()))
+
+    def submit(self) -> None:
+        token = self.app.state_data.get("scanpak_token")
+        number = "".join(filter(str.isdigit, self.number_var.get()))
+        if not number:
+            self.status.set("Введіть номер")
+            return
+        if self.app.scanpak_offline.contains("parcel_number", number):
+            self.status.set("Увага, це дублікат в офлайн черзі")
+            self.number_var.set("")
+            return
+        self.number_var.set("")
+
+        def task() -> Dict[str, Any]:
+            if not token:
+                raise ApiError("Відсутній токен", 401)
+            return self.app.scanpak_api.request_json(
+                "POST", "/scans", token=token, payload={"parcel_number": number}
+            )
+
+        def on_success(_: Dict[str, Any]) -> None:
+            self.status.set("✅ Збережено")
+            self.sync_offline()
+
+        def on_error(exc: Exception) -> None:
+            self.app.scanpak_offline.add({"parcel_number": number})
+            self.offline_count.set(len(self.app.scanpak_offline.list()))
+            if isinstance(exc, ApiError):
+                self.status.set(exc.message)
+            else:
+                self.status.set("Збережено локально (офлайн)")
+
+        run_async(self, task, on_success, on_error)
+
+    def sync_offline(self) -> None:
+        token = self.app.state_data.get("scanpak_token")
+        if not token:
+            return
+        pending = self.app.scanpak_offline.list()
+        if not pending:
+            self.status.set("Офлайн-черга порожня")
+            return
+
+        def task() -> int:
+            synced = 0
+            for record in pending:
+                try:
+                    self.app.scanpak_api.request_json(
+                        "POST", "/scans", token=token, payload=record
+                    )
+                    synced += 1
+                except ApiError:
+                    break
+            return synced
+
+        def on_success(count: int) -> None:
+            if count:
+                self.app.scanpak_offline.clear()
+            self.offline_count.set(len(self.app.scanpak_offline.list()))
+            self.status.set(f"Синхронізовано {count} записів")
+
+        def on_error(_: Exception) -> None:
+            self.status.set("Не вдалося синхронізувати")
+
+        run_async(self, task, on_success, on_error)
+
+
+class ScanpakHistoryTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.records: List[Dict[str, Any]] = []
+        self.filtered: List[Dict[str, Any]] = []
+
+        filters = ttk.LabelFrame(self, text="Фільтри", padding=12)
+        filters.pack(fill=tk.X)
+        self.parcel_filter = tk.StringVar()
+        self.user_filter = tk.StringVar()
+        self.date_filter = tk.StringVar()
+
+        ttk.Label(filters, text="Відправлення").grid(row=0, column=0, sticky="w")
+        ttk.Entry(filters, textvariable=self.parcel_filter, width=16).grid(
+            row=1, column=0, padx=4
+        )
+        ttk.Label(filters, text="Оператор").grid(row=0, column=1, sticky="w")
+        ttk.Entry(filters, textvariable=self.user_filter, width=16).grid(
+            row=1, column=1, padx=4
+        )
+        ttk.Label(filters, text="Дата (YYYY-MM-DD)").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(filters, textvariable=self.date_filter, width=16).grid(
+            row=1, column=2, padx=4
+        )
+
+        actions = ttk.Frame(filters)
+        actions.grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ttk.Button(
+            actions,
+            text="Застосувати",
+            style="Secondary.TButton",
+            command=self.apply_filters,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Очистити",
+            style="Secondary.TButton",
+            command=self.clear_filters,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_history,
+        ).pack(side=tk.LEFT, padx=8)
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("datetime", "user", "parcel"),
+            show="headings",
+        )
+        for col, label in [
+            ("datetime", "Дата"),
+            ("user", "Оператор"),
+            ("parcel", "Номер"),
+        ]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=200, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True, pady=12)
+
+    def refresh(self) -> None:
+        self.fetch_history()
+
+    def fetch_history(self) -> None:
+        token = self.app.state_data.get("scanpak_token")
+        if not token:
+            return
+
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.scanpak_api.request_json("GET", "/history", token=token)
+            return data if isinstance(data, list) else []
+
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.records = data
+            self.apply_filters()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def apply_filters(self) -> None:
+        filtered = list(self.records)
+        if self.parcel_filter.get():
+            filtered = [
+                rec
+                for rec in filtered
+                if self.parcel_filter.get().strip() in str(rec.get("parcel_number", ""))
+            ]
+        if self.user_filter.get():
+            token = self.user_filter.get().strip().lower()
+            filtered = [
+                rec
+                for rec in filtered
+                if token in str(rec.get("user", rec.get("user_name", ""))).lower()
+            ]
+        selected_date = parse_date(self.date_filter.get().strip())
+        if selected_date:
+            filtered = [
+                rec
+                for rec in filtered
+                if self._match_date(rec.get("timestamp", rec.get("datetime")), selected_date)
+            ]
+        self.filtered = filtered
+        self.tree.delete(*self.tree.get_children())
+        for record in filtered:
+            timestamp = record.get("timestamp", record.get("datetime", ""))
+            self.tree.insert(
+                "",
+                tk.END,
+                values=(
+                    format_datetime(str(timestamp)),
+                    record.get("user", record.get("user_name", "")),
+                    record.get("parcel_number", ""),
+                ),
+            )
+
+    def _match_date(self, value: Any, selected: date) -> bool:
+        try:
+            parsed = datetime.fromisoformat(str(value)).date()
+        except ValueError:
+            return False
+        return parsed == selected
+
+    def clear_filters(self) -> None:
+        self.parcel_filter.set("")
+        self.user_filter.set("")
+        self.date_filter.set("")
+        self.apply_filters()
+
+
+class ScanpakStatsTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.summary = tk.StringVar()
+        self.start_date = tk.StringVar()
+        self.end_date = tk.StringVar()
+        self.records: List[Dict[str, Any]] = []
+
+        filters = ttk.Frame(self)
+        filters.pack(fill=tk.X)
+        ttk.Label(filters, text="Початок (YYYY-MM-DD)").pack(side=tk.LEFT)
+        ttk.Entry(filters, textvariable=self.start_date, width=12).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Label(filters, text="Кінець (YYYY-MM-DD)").pack(side=tk.LEFT)
+        ttk.Entry(filters, textvariable=self.end_date, width=12).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Button(
+            filters,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_data,
+        ).pack(side=tk.LEFT, padx=8)
+
+        ttk.Label(self, textvariable=self.summary, style="Status.TLabel").pack(
+            pady=12
+        )
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("user", "count"),
+            show="headings",
+            height=10,
+        )
+        self.tree.heading("user", text="Оператор")
+        self.tree.heading("count", text="Сканів")
+        self.tree.column("user", width=200, anchor="center")
+        self.tree.column("count", width=100, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+    def refresh(self) -> None:
+        if not self.start_date.get() or not self.end_date.get():
+            today = datetime.now().date()
+            self.start_date.set(today.replace(day=1).isoformat())
+            self.end_date.set(today.isoformat())
+        self.fetch_data()
+
+    def fetch_data(self) -> None:
+        token = self.app.state_data.get("scanpak_token")
+        if not token:
+            return
+
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.scanpak_api.request_json("GET", "/history", token=token)
+            return data if isinstance(data, list) else []
+
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.records = data
+            self.apply_stats()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def apply_stats(self) -> None:
+        start = parse_date(self.start_date.get().strip())
+        end = parse_date(self.end_date.get().strip())
+        if not start or not end:
+            messagebox.showinfo("Фільтр", "Вкажіть коректні дати")
+            return
+        counts: Dict[str, int] = {}
+        for record in self.records:
+            timestamp = record.get("timestamp", record.get("datetime", ""))
+            try:
+                rec_date = datetime.fromisoformat(str(timestamp)).date()
+            except ValueError:
+                continue
+            if start <= rec_date <= end:
+                user = record.get("user", record.get("user_name", "—"))
+                counts[user] = counts.get(user, 0) + 1
+        total = sum(counts.values())
+        top = max(counts.items(), key=lambda item: item[1], default=("—", 0))
+        self.summary.set(f"Сканів: {total} | Топ оператор: {top[0]}")
+        self.tree.delete(*self.tree.get_children())
+        for user, count in sorted(counts.items(), key=lambda item: item[1], reverse=True):
+            self.tree.insert("", tk.END, values=(user, count))
+
+
+class AdminPanel(tk.Toplevel):
+    def __init__(self, parent: tk.Misc, app: TrackingApp, token: str) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.token = token
+        self.title("Адмін панель")
+        self.geometry("900x600")
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        self.pending_tab = AdminPendingTab(notebook, app, token)
+        self.users_tab = AdminUsersTab(notebook, app, token)
+        self.password_tab = AdminPasswordsTab(notebook, app, token)
+        notebook.add(self.pending_tab, text="Запити")
+        notebook.add(self.users_tab, text="Користувачі")
+        notebook.add(self.password_tab, text="Паролі ролей")
+
+
+class AdminPendingTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp, token: str) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.token = token
+        self.requests: List[Dict[str, Any]] = []
+
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X)
+        ttk.Button(
+            actions,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_requests,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Підтвердити",
+            style="Secondary.TButton",
+            command=self.approve_request,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="Відхилити",
+            style="Secondary.TButton",
+            command=self.reject_request,
+        ).pack(side=tk.LEFT)
+
+        self.role_var = tk.StringVar(value="operator")
+        ttk.Label(actions, text="Роль").pack(side=tk.LEFT, padx=8)
+        ttk.Combobox(
+            actions, textvariable=self.role_var, values=["admin", "operator", "viewer"], width=12
+        ).pack(side=tk.LEFT)
+
+        self.tree = ttk.Treeview(
+            self, columns=("id", "surname", "created"), show="headings"
+        )
+        for col, label in [("id", "ID"), ("surname", "Прізвище"), ("created", "Дата")]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=140, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True, pady=12)
+        self.fetch_requests()
+
+    def fetch_requests(self) -> None:
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.api.request_json(
+                "GET", "/admin/registration_requests", token=self.token
+            )
+            return data if isinstance(data, list) else []
+
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.requests = data
+            self.tree.delete(*self.tree.get_children())
+            for req in data:
+                self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        req.get("id"),
+                        req.get("surname", ""),
+                        format_datetime(req.get("created_at", "")),
+                    ),
+                )
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def _selected_id(self) -> Optional[int]:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        return int(self.tree.item(selection[0])["values"][0])
+
+    def approve_request(self) -> None:
+        request_id = self._selected_id()
+        if request_id is None:
+            messagebox.showinfo("Помилка", "Оберіть запит")
+            return
+        role = self.role_var.get()
+
+        def task() -> Any:
+            return self.app.api.request_json(
+                "POST",
+                f"/admin/registration_requests/{request_id}/approve",
+                token=self.token,
+                payload={"role": role},
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_requests()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def reject_request(self) -> None:
+        request_id = self._selected_id()
+        if request_id is None:
+            messagebox.showinfo("Помилка", "Оберіть запит")
+            return
+
+        def task() -> Any:
+            return self.app.api.request_json(
+                "POST",
+                f"/admin/registration_requests/{request_id}/reject",
+                token=self.token,
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_requests()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+
+class AdminUsersTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp, token: str) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.token = token
+
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X)
+        ttk.Button(
+            actions,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_users,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Змінити роль",
+            style="Secondary.TButton",
+            command=self.change_role,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="Активність",
+            style="Secondary.TButton",
+            command=self.toggle_active,
+        ).pack(side=tk.LEFT)
+
+        self.role_var = tk.StringVar(value="operator")
+        self.active_var = tk.StringVar(value="true")
+        ttk.Label(actions, text="Роль").pack(side=tk.LEFT, padx=8)
+        ttk.Combobox(
+            actions, textvariable=self.role_var, values=["admin", "operator", "viewer"], width=12
+        ).pack(side=tk.LEFT)
+        ttk.Label(actions, text="Активність").pack(side=tk.LEFT, padx=8)
+        ttk.Combobox(actions, textvariable=self.active_var, values=["true", "false"], width=8).pack(
+            side=tk.LEFT
+        )
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("id", "surname", "role", "active"),
+            show="headings",
+        )
+        for col, label in [
+            ("id", "ID"),
+            ("surname", "Прізвище"),
+            ("role", "Роль"),
+            ("active", "Активний"),
+        ]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=150, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True, pady=12)
+        self.fetch_users()
+
+    def fetch_users(self) -> None:
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.api.request_json("GET", "/admin/users", token=self.token)
+            return data if isinstance(data, list) else []
+
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.tree.delete(*self.tree.get_children())
+            for user in data:
+                self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        user.get("id"),
+                        user.get("surname"),
+                        user.get("role"),
+                        "Так" if user.get("is_active", False) else "Ні",
+                    ),
+                )
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def _selected_id(self) -> Optional[int]:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        return int(self.tree.item(selection[0])["values"][0])
+
+    def change_role(self) -> None:
+        user_id = self._selected_id()
+        if user_id is None:
+            messagebox.showinfo("Помилка", "Оберіть користувача")
+            return
+        role = self.role_var.get()
+
+        def task() -> Any:
+            return self.app.api.request_json(
+                "PATCH", f"/admin/users/{user_id}", token=self.token, payload={"role": role}
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_users()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def toggle_active(self) -> None:
+        user_id = self._selected_id()
+        if user_id is None:
+            messagebox.showinfo("Помилка", "Оберіть користувача")
+            return
+        is_active = self.active_var.get().lower() == "true"
+
+        def task() -> Any:
+            return self.app.api.request_json(
+                "PATCH",
+                f"/admin/users/{user_id}",
+                token=self.token,
+                payload={"is_active": is_active},
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_users()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+
+class AdminPasswordsTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp, token: str) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.token = token
+        self.passwords: Dict[str, str] = {}
+
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X)
+        ttk.Button(
+            actions,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_passwords,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Зберегти",
+            style="Secondary.TButton",
+            command=self.update_password,
+        ).pack(side=tk.LEFT, padx=8)
+
+        self.role_var = tk.StringVar(value="operator")
+        self.password_var = tk.StringVar()
+        ttk.Label(actions, text="Роль").pack(side=tk.LEFT, padx=8)
+        ttk.Combobox(
+            actions, textvariable=self.role_var, values=["admin", "operator", "viewer"], width=12
+        ).pack(side=tk.LEFT)
+        ttk.Entry(actions, textvariable=self.password_var, width=24, show="*").pack(
+            side=tk.LEFT, padx=8
+        )
+        self.fetch_passwords()
+
+    def fetch_passwords(self) -> None:
+        def task() -> Dict[str, Any]:
+            data = self.app.api.request_json(
+                "GET", "/admin/role-passwords", token=self.token
+            )
+            return data if isinstance(data, dict) else {}
+
+        def on_success(data: Dict[str, Any]) -> None:
+            self.passwords = {str(k): str(v) for k, v in data.items()}
+            role = self.role_var.get()
+            self.password_var.set(self.passwords.get(role, ""))
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def update_password(self) -> None:
+        role = self.role_var.get()
+        password = self.password_var.get().strip()
+        if not password:
+            messagebox.showinfo("Помилка", "Введіть пароль")
+            return
+
+        def task() -> Any:
+            return self.app.api.request_json(
+                "POST",
+                f"/admin/role-passwords/{role}",
+                token=self.token,
+                payload={"password": password},
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_passwords()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+
+class ScanpakAdminPanel(tk.Toplevel):
+    def __init__(self, parent: tk.Misc, app: TrackingApp, token: str) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.token = token
+        self.title("Адмін панель Scanpak")
+        self.geometry("900x600")
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        self.pending_tab = ScanpakAdminPendingTab(notebook, app, token)
+        self.users_tab = ScanpakAdminUsersTab(notebook, app, token)
+        notebook.add(self.pending_tab, text="Запити")
+        notebook.add(self.users_tab, text="Користувачі")
+
+
+class ScanpakAdminPendingTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp, token: str) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.token = token
+
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X)
+        ttk.Button(
+            actions,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_requests,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Підтвердити",
+            style="Secondary.TButton",
+            command=self.approve_request,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="Відхилити",
+            style="Secondary.TButton",
+            command=self.reject_request,
+        ).pack(side=tk.LEFT)
+
+        self.role_var = tk.StringVar(value="operator")
+        ttk.Label(actions, text="Роль").pack(side=tk.LEFT, padx=8)
+        ttk.Combobox(
+            actions, textvariable=self.role_var, values=["admin", "operator"], width=12
+        ).pack(side=tk.LEFT)
+
+        self.tree = ttk.Treeview(
+            self, columns=("id", "surname", "created"), show="headings"
+        )
+        for col, label in [("id", "ID"), ("surname", "Прізвище"), ("created", "Дата")]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=140, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True, pady=12)
+        self.fetch_requests()
+
+    def fetch_requests(self) -> None:
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.scanpak_api.request_json(
+                "GET", "/admin/registration_requests", token=self.token
+            )
+            return data if isinstance(data, list) else []
+
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.tree.delete(*self.tree.get_children())
+            for req in data:
+                self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        req.get("id"),
+                        req.get("surname", ""),
+                        format_datetime(req.get("created_at", "")),
+                    ),
+                )
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def _selected_id(self) -> Optional[int]:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        return int(self.tree.item(selection[0])["values"][0])
+
+    def approve_request(self) -> None:
+        request_id = self._selected_id()
+        if request_id is None:
+            messagebox.showinfo("Помилка", "Оберіть запит")
+            return
+        role = self.role_var.get()
+
+        def task() -> Any:
+            return self.app.scanpak_api.request_json(
+                "POST",
+                f"/admin/registration_requests/{request_id}/approve",
+                token=self.token,
+                payload={"role": role},
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_requests()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def reject_request(self) -> None:
+        request_id = self._selected_id()
+        if request_id is None:
+            messagebox.showinfo("Помилка", "Оберіть запит")
+            return
+
+        def task() -> Any:
+            return self.app.scanpak_api.request_json(
+                "POST",
+                f"/admin/registration_requests/{request_id}/reject",
+                token=self.token,
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_requests()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+
+class ScanpakAdminUsersTab(ttk.Frame):
+    def __init__(self, parent: ttk.Notebook, app: TrackingApp, token: str) -> None:
+        super().__init__(parent, padding=20)
+        self.app = app
+        self.token = token
+
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X)
+        ttk.Button(
+            actions,
+            text="Оновити",
+            style="Accent.TButton",
+            command=self.fetch_users,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Змінити роль",
+            style="Secondary.TButton",
+            command=self.change_role,
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="Активність",
+            style="Secondary.TButton",
+            command=self.toggle_active,
+        ).pack(side=tk.LEFT)
+
+        self.role_var = tk.StringVar(value="operator")
+        self.active_var = tk.StringVar(value="true")
+        ttk.Label(actions, text="Роль").pack(side=tk.LEFT, padx=8)
+        ttk.Combobox(
+            actions, textvariable=self.role_var, values=["admin", "operator"], width=12
+        ).pack(side=tk.LEFT)
+        ttk.Label(actions, text="Активність").pack(side=tk.LEFT, padx=8)
+        ttk.Combobox(actions, textvariable=self.active_var, values=["true", "false"], width=8).pack(
+            side=tk.LEFT
+        )
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("id", "surname", "role", "active"),
+            show="headings",
+        )
+        for col, label in [
+            ("id", "ID"),
+            ("surname", "Прізвище"),
+            ("role", "Роль"),
+            ("active", "Активний"),
+        ]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=150, anchor="center")
+        self.tree.pack(fill=tk.BOTH, expand=True, pady=12)
+        self.fetch_users()
+
+    def fetch_users(self) -> None:
+        def task() -> List[Dict[str, Any]]:
+            data = self.app.scanpak_api.request_json("GET", "/admin/users", token=self.token)
+            return data if isinstance(data, list) else []
+
+        def on_success(data: List[Dict[str, Any]]) -> None:
+            self.tree.delete(*self.tree.get_children())
+            for user in data:
+                self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        user.get("id"),
+                        user.get("surname"),
+                        user.get("role"),
+                        "Так" if user.get("is_active", False) else "Ні",
+                    ),
+                )
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def _selected_id(self) -> Optional[int]:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        return int(self.tree.item(selection[0])["values"][0])
+
+    def change_role(self) -> None:
+        user_id = self._selected_id()
+        if user_id is None:
+            messagebox.showinfo("Помилка", "Оберіть користувача")
+            return
+        role = self.role_var.get()
+
+        def task() -> Any:
+            return self.app.scanpak_api.request_json(
+                "PATCH", f"/admin/users/{user_id}", token=self.token, payload={"role": role}
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_users()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+    def toggle_active(self) -> None:
+        user_id = self._selected_id()
+        if user_id is None:
+            messagebox.showinfo("Помилка", "Оберіть користувача")
+            return
+        is_active = self.active_var.get().lower() == "true"
+
+        def task() -> Any:
+            return self.app.scanpak_api.request_json(
+                "PATCH",
+                f"/admin/users/{user_id}",
+                token=self.token,
+                payload={"is_active": is_active},
+            )
+
+        def on_success(_: Any) -> None:
+            self.fetch_users()
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Помилка", str(exc))
+
+        run_async(self, task, on_success, on_error)
+
+
+def simple_prompt(root: tk.Misc, prompt: str) -> Optional[str]:
+    dialog = tk.Toplevel(root)
+    dialog.title("Ввід")
+    dialog.grab_set()
+    ttk.Label(dialog, text=prompt).pack(padx=20, pady=(20, 6))
+    value = tk.StringVar()
+    entry = ttk.Entry(dialog, textvariable=value, show="*")
+    entry.pack(padx=20, pady=6, fill=tk.X)
+    entry.focus()
+
+    result: List[Optional[str]] = [None]
+
+    def submit() -> None:
+        result[0] = value.get().strip()
+        dialog.destroy()
+
+    ttk.Button(dialog, text="OK", style="Accent.TButton", command=submit).pack(
+        pady=(6, 20)
+    )
+    dialog.wait_window()
+    return result[0]
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    app = TrackingApp()
+    app.mainloop()
