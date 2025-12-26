@@ -1,21 +1,14 @@
 import json
 import os
 import sqlite3
-import sys
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import flet as ft
 import requests
 from platformdirs import user_data_dir
-from PySide6.QtCore import QDate, QObject, QRunnable, QThreadPool, QTime, Qt, Signal, Slot
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
-                               QDateEdit, QDialog, QFormLayout, QGridLayout,
-                               QHBoxLayout, QLabel, QInputDialog, QLineEdit,
-                               QMainWindow, QMessageBox, QPushButton,
-                               QStackedWidget, QTableWidget, QTableWidgetItem,
-                               QTabWidget, QTextEdit, QTimeEdit, QVBoxLayout,
-                               QWidget)
 
 APP_NAME = "TrackingApp"
 APP_VENDOR = "TrackingApp"
@@ -33,7 +26,7 @@ def api_base_url() -> str:
 
 
 def scanpak_base_url() -> str:
-    return f"http://{SCANPAK_API_HOST}:{SCANPAK_API_PORT}:{SCANPAK_BASE_PATH}"
+    return f"http://{SCANPAK_API_HOST}:{SCANPAK_API_PORT}{SCANPAK_BASE_PATH}"
 
 
 class Settings:
@@ -225,1469 +218,163 @@ def parse_user_role(raw: Optional[str], level: Optional[int]) -> UserRoleInfo:
     )
 
 
-class WorkerSignals(QObject):
-    success = Signal(object)
-    error = Signal(str)
-
-
-class Worker(QRunnable):
-    def __init__(self, fn: Callable[[], Any]) -> None:
-        super().__init__()
-        self.fn = fn
-        self.signals = WorkerSignals()
-
-    @Slot()
-    def run(self) -> None:
+def run_in_thread(fn: Callable[[], Any], on_success: Callable[[Any], None], on_error: Callable[[str], None]) -> None:
+    def runner() -> None:
         try:
-            result = self.fn()
-            self.signals.success.emit(result)
+            result = fn()
+            on_success(result)
         except Exception as exc:  # pylint: disable=broad-except
-            self.signals.error.emit(str(exc))
+            on_error(str(exc))
 
+    threading.Thread(target=runner, daemon=True).start()
 
-class StartPage(QWidget):
-    def __init__(self, navigate: Callable[[str], None]) -> None:
-        super().__init__()
-        self.navigate = navigate
-        self._build_ui()
 
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
+def sanitize_digits(value: str) -> str:
+    return "".join(ch for ch in value if ch.isdigit())
 
-        title = QLabel("Оберіть режим")
-        title.setObjectName("title")
-        title.setAlignment(Qt.AlignCenter)
 
-        tracking_btn = QPushButton("Увійти в TrackingApp")
-        tracking_btn.clicked.connect(lambda: self.navigate("tracking_login"))
+def format_iso_datetime(value: Any) -> str:
+    if not isinstance(value, str):
+        return str(value or "")
+    try:
+        return datetime.fromisoformat(value).astimezone().strftime("%d.%m.%Y %H:%M:%S")
+    except ValueError:
+        return value
 
-        scanpak_btn = QPushButton("Увійти в СканПак")
-        scanpak_btn.clicked.connect(lambda: self.navigate("scanpak_login"))
 
-        layout.addWidget(title)
-        layout.addSpacing(16)
-        layout.addWidget(tracking_btn)
-        layout.addWidget(scanpak_btn)
-
-
-class LoginPage(QWidget):
-    def __init__(
-        self,
-        title: str,
-        on_login: Callable[[str, str], None],
-        on_register: Callable[[str, str], None],
-        on_admin: Optional[Callable[[], None]] = None,
-    ) -> None:
-        super().__init__()
-        self.on_login = on_login
-        self.on_register = on_register
-        self.on_admin = on_admin
-        self._is_register = False
-        self._status_label = QLabel("")
-        self._build_ui(title)
-
-    def _build_ui(self, title: str) -> None:
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
-
-        heading = QLabel(title)
-        heading.setObjectName("title")
-        heading.setAlignment(Qt.AlignCenter)
-
-        form = QFormLayout()
-        self.surname_input = QLineEdit()
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.Password)
-        self.confirm_input = QLineEdit()
-        self.confirm_input.setEchoMode(QLineEdit.Password)
-
-        form.addRow("Прізвище:", self.surname_input)
-        form.addRow("Пароль:", self.password_input)
-        form.addRow("Підтвердіть пароль:", self.confirm_input)
-
-        self.confirm_input.setVisible(False)
-
-        button_layout = QHBoxLayout()
-        self.submit_btn = QPushButton("Увійти")
-        self.submit_btn.clicked.connect(self._submit)
-        self.toggle_btn = QPushButton("Зареєструватися")
-        self.toggle_btn.clicked.connect(self._toggle_mode)
-        button_layout.addWidget(self.submit_btn)
-        button_layout.addWidget(self.toggle_btn)
-
-        layout.addWidget(heading)
-        layout.addSpacing(12)
-        layout.addLayout(form)
-        layout.addWidget(self._status_label)
-        layout.addLayout(button_layout)
-
-        if self.on_admin:
-            admin_btn = QPushButton("Адмін-панель")
-            admin_btn.clicked.connect(self.on_admin)
-            layout.addWidget(admin_btn)
-
-    def _toggle_mode(self) -> None:
-        self._is_register = not self._is_register
-        self.confirm_input.setVisible(self._is_register)
-        self.submit_btn.setText("Зареєструватися" if self._is_register else "Увійти")
-        self.toggle_btn.setText("Повернутися до входу" if self._is_register else "Зареєструватися")
-        self._status_label.setText("")
-
-    def _submit(self) -> None:
-        surname = self.surname_input.text().strip()
-        password = self.password_input.text().strip()
-        if not surname or not password:
-            self._status_label.setText("Заповніть прізвище та пароль.")
-            return
-        if self._is_register:
-            confirm = self.confirm_input.text().strip()
-            if len(password) < 6:
-                self._status_label.setText("Пароль має містити мінімум 6 символів.")
-                return
-            if confirm != password:
-                self._status_label.setText("Паролі не співпадають.")
-                return
-            self.on_register(surname, password)
-        else:
-            self.on_login(surname, password)
-
-    def set_status(self, message: str, success: bool = False) -> None:
-        self._status_label.setText(message)
-        self._status_label.setProperty("success", success)
-        self._status_label.style().unpolish(self._status_label)
-        self._status_label.style().polish(self._status_label)
-
-    def reset(self) -> None:
-        self.surname_input.clear()
-        self.password_input.clear()
-        self.confirm_input.clear()
-        self._status_label.setText("")
-        if self._is_register:
-            self._toggle_mode()
-
-
-class AdminPanelDialog(QDialog):
-    def __init__(self, token: str, is_scanpak: bool = False, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.token = token
-        self.is_scanpak = is_scanpak
-        self.setWindowTitle("Адмін-панель")
-        self.resize(900, 600)
-        self._thread_pool = QThreadPool.globalInstance()
-        self._build_ui()
-        self._load_data()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-
-        self.pending_table = QTableWidget(0, 3)
-        self.pending_table.setHorizontalHeaderLabels(["ID", "Прізвище", "Дата"])
-        self.pending_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-
-        pending_widget = QWidget()
-        pending_layout = QVBoxLayout(pending_widget)
-        pending_layout.addWidget(self.pending_table)
-
-        self.pending_actions = QHBoxLayout()
-        self.pending_role = QComboBox()
-        self.pending_role.addItems(["admin", "operator"]) if self.is_scanpak else self.pending_role.addItems(["admin", "operator", "viewer"])
-        approve_btn = QPushButton("Підтвердити")
-        reject_btn = QPushButton("Відхилити")
-        approve_btn.clicked.connect(self._approve_pending)
-        reject_btn.clicked.connect(self._reject_pending)
-        self.pending_actions.addWidget(QLabel("Роль:"))
-        self.pending_actions.addWidget(self.pending_role)
-        self.pending_actions.addWidget(approve_btn)
-        self.pending_actions.addWidget(reject_btn)
-        pending_layout.addLayout(self.pending_actions)
-
-        self.users_table = QTableWidget(0, 5)
-        self.users_table.setHorizontalHeaderLabels(
-            ["ID", "Прізвище", "Роль", "Активний", "Створено"]
-        )
-        self.users_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-
-        users_widget = QWidget()
-        users_layout = QVBoxLayout(users_widget)
-        users_layout.addWidget(self.users_table)
-
-        users_action_layout = QHBoxLayout()
-        self.user_role_box = QComboBox()
-        self.user_role_box.addItems(["admin", "operator"]) if self.is_scanpak else self.user_role_box.addItems(["admin", "operator", "viewer"])
-        toggle_btn = QPushButton("Змінити роль")
-        toggle_btn.clicked.connect(self._change_role)
-        active_btn = QPushButton("Перемкнути активність")
-        active_btn.clicked.connect(self._toggle_active)
-        delete_btn = QPushButton("Видалити користувача")
-        delete_btn.clicked.connect(self._delete_user)
-        users_action_layout.addWidget(self.user_role_box)
-        users_action_layout.addWidget(toggle_btn)
-        users_action_layout.addWidget(active_btn)
-        users_action_layout.addWidget(delete_btn)
-        users_layout.addLayout(users_action_layout)
-
-        password_widget = QWidget()
-        password_layout = QFormLayout(password_widget)
-        self.password_fields: Dict[str, QLineEdit] = {}
-        roles = ["admin", "operator"] if self.is_scanpak else ["admin", "operator", "viewer"]
-        for role in roles:
-            field = QLineEdit()
-            field.setEchoMode(QLineEdit.Password)
-            self.password_fields[role] = field
-            save_btn = QPushButton("Зберегти")
-            save_btn.clicked.connect(lambda checked=False, r=role: self._save_role_password(r))
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.addWidget(field)
-            row_layout.addWidget(save_btn)
-            password_layout.addRow(role.capitalize(), row_widget)
-
-        self.tabs.addTab(pending_widget, "Запити")
-        self.tabs.addTab(users_widget, "Користувачі")
-        self.tabs.addTab(password_widget, "API паролі")
-
-        refresh_btn = QPushButton("Оновити")
-        refresh_btn.clicked.connect(self._load_data)
-        layout.addWidget(refresh_btn)
-
-    def _api_url(self, path: str) -> str:
-        if self.is_scanpak:
-            return f"{scanpak_base_url()}{path}"
-        return f"{api_base_url()}{path}"
-
-    def _headers(self) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-
-    def _load_data(self) -> None:
-        def task() -> Dict[str, Any]:
-            pending_resp = requests.get(self._api_url("/admin/registration_requests"), headers=self._headers(), timeout=10)
-            pending_resp.raise_for_status()
-            users_resp = requests.get(self._api_url("/admin/users"), headers=self._headers(), timeout=10)
-            users_resp.raise_for_status()
-            password_resp = requests.get(self._api_url("/admin/role-passwords"), headers=self._headers(), timeout=10)
-            password_resp.raise_for_status()
-            return {
-                "pending": pending_resp.json(),
-                "users": users_resp.json(),
-                "passwords": password_resp.json(),
-            }
-
-        worker = Worker(task)
-        worker.signals.success.connect(self._populate_data)
-        worker.signals.error.connect(self._show_error)
-        self._thread_pool.start(worker)
-
-    def _populate_data(self, payload: Dict[str, Any]) -> None:
-        pending = payload.get("pending", []) or []
-        users = payload.get("users", []) or []
-        passwords = payload.get("passwords", {}) or {}
-
-        self.pending_table.setRowCount(len(pending))
-        for row, item in enumerate(pending):
-            self.pending_table.setItem(row, 0, QTableWidgetItem(str(item.get("id"))))
-            self.pending_table.setItem(row, 1, QTableWidgetItem(item.get("surname", "—")))
-            self.pending_table.setItem(row, 2, QTableWidgetItem(item.get("created_at", "")))
-
-        self.users_table.setRowCount(len(users))
-        for row, item in enumerate(users):
-            self.users_table.setItem(row, 0, QTableWidgetItem(str(item.get("id"))))
-            self.users_table.setItem(row, 1, QTableWidgetItem(item.get("surname", "—")))
-            self.users_table.setItem(row, 2, QTableWidgetItem(item.get("role", "")))
-            self.users_table.setItem(row, 3, QTableWidgetItem("Так" if item.get("is_active") else "Ні"))
-            self.users_table.setItem(row, 4, QTableWidgetItem(item.get("created_at", "")))
-
-        for role, field in self.password_fields.items():
-            field.setText(passwords.get(role, ""))
-
-    def _selected_pending_id(self) -> Optional[int]:
-        items = self.pending_table.selectedItems()
-        if not items:
-            return None
-        return int(items[0].text())
-
-    def _selected_user_id(self) -> Optional[int]:
-        items = self.users_table.selectedItems()
-        if not items:
-            return None
-        return int(items[0].text())
-
-    def _approve_pending(self) -> None:
-        request_id = self._selected_pending_id()
-        if request_id is None:
-            self._show_error("Оберіть запит для підтвердження.")
-            return
-        role = self.pending_role.currentText()
-        payload = json.dumps({"role": role})
-
-        def task() -> None:
-            resp = requests.post(
-                self._api_url(f"/admin/registration_requests/{request_id}/approve"),
-                headers=self._headers(),
-                data=payload,
-                timeout=10,
-            )
-            resp.raise_for_status()
-
-        self._run_action(task, "Користувача підтверджено")
-
-    def _reject_pending(self) -> None:
-        request_id = self._selected_pending_id()
-        if request_id is None:
-            self._show_error("Оберіть запит для відхилення.")
-            return
-
-        def task() -> None:
-            resp = requests.post(
-                self._api_url(f"/admin/registration_requests/{request_id}/reject"),
-                headers=self._headers(),
-                timeout=10,
-            )
-            resp.raise_for_status()
-
-        self._run_action(task, "Запит відхилено")
-
-    def _change_role(self) -> None:
-        user_id = self._selected_user_id()
-        if user_id is None:
-            self._show_error("Оберіть користувача для зміни ролі.")
-            return
-        role = self.user_role_box.currentText()
-        payload = json.dumps({"role": role})
-
-        def task() -> None:
-            resp = requests.patch(
-                self._api_url(f"/admin/users/{user_id}"),
-                headers=self._headers(),
-                data=payload,
-                timeout=10,
-            )
-            resp.raise_for_status()
-
-        self._run_action(task, "Роль оновлено")
-
-    def _toggle_active(self) -> None:
-        user_id = self._selected_user_id()
-        if user_id is None:
-            self._show_error("Оберіть користувача для зміни активності.")
-            return
-        current_status_item = self.users_table.item(self.users_table.currentRow(), 3)
-        is_active = current_status_item.text().strip() == "Так" if current_status_item else False
-        payload = json.dumps({"is_active": not is_active})
-
-        def task() -> None:
-            resp = requests.patch(
-                self._api_url(f"/admin/users/{user_id}"),
-                headers=self._headers(),
-                data=payload,
-                timeout=10,
-            )
-            resp.raise_for_status()
-
-        self._run_action(task, "Статус оновлено")
-
-    def _delete_user(self) -> None:
-        user_id = self._selected_user_id()
-        if user_id is None:
-            self._show_error("Оберіть користувача для видалення.")
-            return
-
-        if QMessageBox.question(self, "Підтвердження", "Видалити користувача?") != QMessageBox.Yes:
-            return
-
-        def task() -> None:
-            resp = requests.delete(
-                self._api_url(f"/admin/users/{user_id}"),
-                headers=self._headers(),
-                timeout=10,
-            )
-            resp.raise_for_status()
-
-        self._run_action(task, "Користувача видалено")
-
-    def _save_role_password(self, role: str) -> None:
-        password = self.password_fields[role].text().strip()
-        payload = json.dumps({"password": password})
-
-        def task() -> None:
-            resp = requests.post(
-                self._api_url(f"/admin/role-passwords/{role}"),
-                headers=self._headers(),
-                data=payload,
-                timeout=10,
-            )
-            resp.raise_for_status()
-
-        self._run_action(task, "Пароль оновлено")
-
-    def _run_action(self, task: Callable[[], None], success_message: str) -> None:
-        worker = Worker(task)
-        worker.signals.success.connect(lambda _: self._handle_action_success(success_message))
-        worker.signals.error.connect(self._show_error)
-        self._thread_pool.start(worker)
-
-    def _handle_action_success(self, message: str) -> None:
-        QMessageBox.information(self, "Успішно", message)
-        self._load_data()
-
-    def _show_error(self, message: str) -> None:
-        QMessageBox.warning(self, "Помилка", message)
-
-
-class TrackingDashboard(QWidget):
-    def __init__(self, settings: Settings, store: OfflineStore, on_logout: Callable[[], None]) -> None:
-        super().__init__()
-        self.settings = settings
-        self.store = store
-        self.on_logout = on_logout
-        self.thread_pool = QThreadPool.globalInstance()
-        self.role_info = parse_user_role(
-            settings.get("user_role"), settings.get("access_level")
-        )
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        header = QHBoxLayout()
-        user_label = QLabel(
-            f"Оператор: {self.settings.get('user_name', 'operator')}"
-        )
-        role_label = QLabel(self.role_info.label)
-        role_label.setObjectName("roleLabel")
-        header.addWidget(user_label)
-        header.addWidget(role_label)
-        header.addStretch()
-        logout_btn = QPushButton("Вийти")
-        logout_btn.clicked.connect(self.on_logout)
-        header.addWidget(logout_btn)
-        layout.addLayout(header)
-
-        self.tabs = QTabWidget()
-        self.scanner_tab = ScannerTab(self.settings, self.store)
-        self.history_tab = HistoryTab(self.settings, self.role_info)
-        self.errors_tab = ErrorsTab(self.settings, self.role_info)
-        self.tabs.addTab(self.scanner_tab, "Сканер")
-        self.tabs.addTab(self.history_tab, "Історія")
-        self.tabs.addTab(self.errors_tab, "Помилки")
-        if self.role_info.is_admin:
-            self.stats_tab = StatisticsTab(self.settings)
-            self.tabs.addTab(self.stats_tab, "Статистика")
-        layout.addWidget(self.tabs)
-
-
-class ScannerTab(QWidget):
-    def __init__(self, settings: Settings, store: OfflineStore) -> None:
-        super().__init__()
-        self.settings = settings
-        self.store = store
-        self.thread_pool = QThreadPool.globalInstance()
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-        self.boxid_input = QLineEdit()
-        self.ttn_input = QLineEdit()
-        self.boxid_input.returnPressed.connect(self._focus_ttn)
-        self.ttn_input.returnPressed.connect(self._send_record)
-        form.addRow("BoxID:", self.boxid_input)
-        form.addRow("TTN:", self.ttn_input)
-        layout.addLayout(form)
-
-        action_layout = QHBoxLayout()
-        send_btn = QPushButton("Надіслати")
-        send_btn.clicked.connect(self._send_record)
-        camera_btn = QPushButton("Сканувати камерою")
-        camera_btn.clicked.connect(self._open_manual_scan)
-        sync_btn = QPushButton("Синхронізувати офлайн")
-        sync_btn.clicked.connect(self._sync_offline)
-        action_layout.addWidget(send_btn)
-        action_layout.addWidget(camera_btn)
-        action_layout.addWidget(sync_btn)
-        layout.addLayout(action_layout)
-
-        self.status = QLabel("")
-        layout.addWidget(self.status)
-
-    def _sanitize(self, value: str) -> str:
-        return "".join(ch for ch in value if ch.isdigit())
-
-    def _focus_ttn(self) -> None:
-        self.ttn_input.setFocus()
-
-    def _open_manual_scan(self) -> None:
-        text, ok = QInputDialog.getText(self, "Сканування", "Введіть код: ")
-        if ok and text:
-            sanitized = self._sanitize(text)
-            if not self.boxid_input.text().strip():
-                self.boxid_input.setText(sanitized)
-                self.ttn_input.setFocus()
-            else:
-                self.ttn_input.setText(sanitized)
-                self._send_record()
-
-    def _send_record(self) -> None:
-        boxid = self._sanitize(self.boxid_input.text())
-        ttn = self._sanitize(self.ttn_input.text())
-        if not boxid or not ttn:
-            self.status.setText("Заповніть BoxID і TTN")
-            return
-        token = self.settings.get("token")
-        if not token:
-            self.status.setText("Відсутній токен. Увійдіть знову.")
-            return
-
-        record = {
-            "user_name": self.settings.get("user_name", "operator"),
-            "boxid": boxid,
-            "ttn": ttn,
-        }
-
-        def task() -> str:
-            resp = requests.post(
-                f"{api_base_url()}/add_record",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                data=json.dumps(record),
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                return "ok"
-            raise RuntimeError(resp.text)
-
-        worker = Worker(task)
-        worker.signals.success.connect(lambda _: self._handle_send_success())
-        worker.signals.error.connect(lambda msg: self._handle_send_error(msg, record))
-        self.thread_pool.start(worker)
-        self.status.setText("Надсилання...")
-
-    def _handle_send_success(self) -> None:
-        self.status.setText("✅ Запис надіслано")
-        self.boxid_input.clear()
-        self.ttn_input.clear()
-        self.boxid_input.setFocus()
-        QApplication.beep()
-
-    def _handle_send_error(self, message: str, record: Dict[str, str]) -> None:
-        self.status.setText("⚠️ Немає зв'язку, запис збережено офлайн")
-        self.store.add_tracking_record(record)
-        QApplication.beep()
-
-    def _sync_offline(self) -> None:
-        token = self.settings.get("token")
-        if not token:
-            self.status.setText("Відсутній токен. Увійдіть знову.")
-            return
-
-        def task() -> str:
-            records = self.store.list_tracking_records()
-            if not records:
-                return "Немає офлайн записів"
-            sent_ids: List[int] = []
-            for record in records:
-                resp = requests.post(
-                    f"{api_base_url()}/add_record",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                    },
-                    data=json.dumps(
-                        {
-                            "user_name": record["user_name"],
-                            "boxid": record["boxid"],
-                            "ttn": record["ttn"],
-                        }
-                    ),
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    sent_ids.append(int(record["id"]))
-            if sent_ids:
-                self.store.clear_tracking_records(sent_ids)
-            return f"Синхронізовано: {len(sent_ids)}"
-
-        worker = Worker(task)
-        worker.signals.success.connect(lambda msg: self.status.setText(str(msg)))
-        worker.signals.error.connect(lambda msg: self.status.setText(f"Помилка: {msg}"))
-        self.thread_pool.start(worker)
-
-
-class HistoryTab(QWidget):
-    def __init__(self, settings: Settings, role_info: UserRoleInfo) -> None:
-        super().__init__()
-        self.settings = settings
-        self.role_info = role_info
-        self.thread_pool = QThreadPool.globalInstance()
-        self.records: List[Dict[str, Any]] = []
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-
-        filters = QGridLayout()
-        self.box_filter = QLineEdit()
-        self.ttn_filter = QLineEdit()
-        self.user_filter = QLineEdit()
-        self.date_filter = QDateEdit()
-        self.date_filter.setCalendarPopup(True)
-        self.date_filter.setDisplayFormat("dd.MM.yyyy")
-        self.date_filter.setDate(QDate.currentDate())
-        self.date_filter.setSpecialValueText("Будь-яка")
-        self.date_filter.setMinimumDate(QDate(2000, 1, 1))
-        self.date_filter.setDate(QDate(2000, 1, 1))
-
-        self.start_time = QTimeEdit()
-        self.start_time.setDisplayFormat("HH:mm")
-        self.start_time.setTime(QTime(0, 0))
-        self.end_time = QTimeEdit()
-        self.end_time.setDisplayFormat("HH:mm")
-        self.end_time.setTime(QTime(23, 59))
-
-        filters.addWidget(QLabel("BoxID"), 0, 0)
-        filters.addWidget(self.box_filter, 0, 1)
-        filters.addWidget(QLabel("TTN"), 0, 2)
-        filters.addWidget(self.ttn_filter, 0, 3)
-        filters.addWidget(QLabel("Користувач"), 1, 0)
-        filters.addWidget(self.user_filter, 1, 1)
-        filters.addWidget(QLabel("Дата"), 1, 2)
-        filters.addWidget(self.date_filter, 1, 3)
-        filters.addWidget(QLabel("Початок"), 2, 0)
-        filters.addWidget(self.start_time, 2, 1)
-        filters.addWidget(QLabel("Кінець"), 2, 2)
-        filters.addWidget(self.end_time, 2, 3)
-
-        layout.addLayout(filters)
-
-        buttons = QHBoxLayout()
-        refresh_btn = QPushButton("Оновити")
-        refresh_btn.clicked.connect(self._fetch_history)
-        apply_btn = QPushButton("Застосувати фільтри")
-        apply_btn.clicked.connect(self._apply_filters)
-        clear_btn = QPushButton("Скинути фільтри")
-        clear_btn.clicked.connect(self._clear_filters)
-        buttons.addWidget(refresh_btn)
-        buttons.addWidget(apply_btn)
-        buttons.addWidget(clear_btn)
-
-        if self.role_info.can_clear_history:
-            clear_history_btn = QPushButton("Очистити історію")
-            clear_history_btn.clicked.connect(self._clear_history)
-            buttons.addWidget(clear_history_btn)
-
-        layout.addLayout(buttons)
-
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["BoxID", "TTN", "Оператор", "Дата"])
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        layout.addWidget(self.table)
-
-        self._fetch_history()
-
-    def _fetch_history(self) -> None:
-        token = self.settings.get("token")
-        if not token:
-            return
-
-        def task() -> List[Dict[str, Any]]:
-            resp = requests.get(
-                f"{api_base_url()}/get_history",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            data.sort(
-                key=lambda item: datetime.fromisoformat(
-                    (item.get("datetime") or "1970-01-01T00:00:00")
-                ),
-                reverse=True,
-            )
-            return data
-
-        worker = Worker(task)
-        worker.signals.success.connect(self._set_records)
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
-
-    def _set_records(self, records: List[Dict[str, Any]]) -> None:
-        self.records = records
-        self._apply_filters()
-
-    def _apply_filters(self) -> None:
-        filtered = self.records[:]
-        box_value = self.box_filter.text().strip()
-        ttn_value = self.ttn_filter.text().strip()
-        user_value = self.user_filter.text().strip().lower()
-
-        if box_value:
-            filtered = [item for item in filtered if box_value in str(item.get("boxid", ""))]
-        if ttn_value:
-            filtered = [item for item in filtered if ttn_value in str(item.get("ttn", ""))]
-        if user_value:
-            filtered = [
-                item
-                for item in filtered
-                if user_value in str(item.get("user_name", "")).lower()
-            ]
-
-        if self.date_filter.date() != QDate(2000, 1, 1):
-            selected = self.date_filter.date().toPython()
-            filtered = [
-                item
-                for item in filtered
-                if self._parse_date(item.get("datetime"))
-                and self._parse_date(item.get("datetime")).date() == selected
-            ]
-
-        start_time = self.start_time.time().toPython()
-        end_time = self.end_time.time().toPython()
-
-        def within_time(item: Dict[str, Any]) -> bool:
-            dt = self._parse_date(item.get("datetime"))
-            if not dt:
-                return False
-            return start_time <= dt.time() <= end_time
-
-        filtered = [item for item in filtered if within_time(item)]
-        self._populate_table(filtered)
-
-    def _populate_table(self, records: List[Dict[str, Any]]) -> None:
-        self.table.setRowCount(len(records))
-        for row, item in enumerate(records):
-            self.table.setItem(row, 0, QTableWidgetItem(str(item.get("boxid", ""))))
-            self.table.setItem(row, 1, QTableWidgetItem(str(item.get("ttn", ""))))
-            self.table.setItem(row, 2, QTableWidgetItem(str(item.get("user_name", ""))))
-            self.table.setItem(row, 3, QTableWidgetItem(self._format_date(item.get("datetime"))))
-
-    def _clear_filters(self) -> None:
-        self.box_filter.clear()
-        self.ttn_filter.clear()
-        self.user_filter.clear()
-        self.date_filter.setDate(QDate(2000, 1, 1))
-        self.start_time.setTime(QTime(0, 0))
-        self.end_time.setTime(QTime(23, 59))
-        self._apply_filters()
-
-    def _parse_date(self, value: Any) -> Optional[datetime]:
-        if isinstance(value, str) and value:
-            try:
-                return datetime.fromisoformat(value).astimezone()
-            except ValueError:
-                return None
-        return None
-
-    def _format_date(self, value: Any) -> str:
-        dt = self._parse_date(value)
-        if not dt:
-            return str(value or "")
-        return dt.strftime("%d.%m.%Y %H:%M:%S")
-
-    def _clear_history(self) -> None:
-        if QMessageBox.question(self, "Підтвердження", "Очистити історію?") != QMessageBox.Yes:
-            return
-        token = self.settings.get("token")
-        if not token:
-            return
-
-        def task() -> str:
-            resp = requests.delete(
-                f"{api_base_url()}/clear_tracking",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-            return "Історію очищено"
-
-        worker = Worker(task)
-        worker.signals.success.connect(lambda msg: QMessageBox.information(self, "Готово", msg))
-        worker.signals.success.connect(lambda _: self._set_records([]))
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
-
-
-class ErrorsTab(QWidget):
-    def __init__(self, settings: Settings, role_info: UserRoleInfo) -> None:
-        super().__init__()
-        self.settings = settings
-        self.role_info = role_info
-        self.thread_pool = QThreadPool.globalInstance()
-        self._build_ui()
-        self._fetch_errors()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        button_row = QHBoxLayout()
-        refresh_btn = QPushButton("Оновити")
-        refresh_btn.clicked.connect(self._fetch_errors)
-        button_row.addWidget(refresh_btn)
-
-        if self.role_info.can_clear_errors:
-            clear_btn = QPushButton("Очистити журнал")
-            clear_btn.clicked.connect(self._clear_errors)
-            delete_btn = QPushButton("Видалити вибраний")
-            delete_btn.clicked.connect(self._delete_selected)
-            button_row.addWidget(clear_btn)
-            button_row.addWidget(delete_btn)
-
-        layout.addLayout(button_row)
-
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["ID", "BoxID", "TTN", "Дата"])
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        layout.addWidget(self.table)
-
-    def _fetch_errors(self) -> None:
-        token = self.settings.get("token")
-        if not token:
-            return
-
-        def task() -> List[Dict[str, Any]]:
-            resp = requests.get(
-                f"{api_base_url()}/get_errors",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            data.sort(
-                key=lambda item: datetime.fromisoformat(
-                    (item.get("datetime") or "1970-01-01T00:00:00")
-                ),
-                reverse=True,
-            )
-            return data
-
-        worker = Worker(task)
-        worker.signals.success.connect(self._populate)
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
-
-    def _populate(self, records: List[Dict[str, Any]]) -> None:
-        self.table.setRowCount(len(records))
-        for row, item in enumerate(records):
-            self.table.setItem(row, 0, QTableWidgetItem(str(item.get("id", ""))))
-            self.table.setItem(row, 1, QTableWidgetItem(str(item.get("boxid", ""))))
-            self.table.setItem(row, 2, QTableWidgetItem(str(item.get("ttn", ""))))
-            self.table.setItem(row, 3, QTableWidgetItem(self._format_date(item.get("datetime"))))
-
-    def _format_date(self, value: Any) -> str:
-        try:
-            return datetime.fromisoformat(value).astimezone().strftime("%d.%m.%Y %H:%M:%S")
-        except Exception:
-            return str(value or "")
-
-    def _clear_errors(self) -> None:
-        if QMessageBox.question(self, "Підтвердження", "Очистити журнал помилок?") != QMessageBox.Yes:
-            return
-        token = self.settings.get("token")
-        if not token:
-            return
-
-        def task() -> str:
-            resp = requests.delete(
-                f"{api_base_url()}/clear_errors",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-            return "Журнал очищено"
-
-        worker = Worker(task)
-        worker.signals.success.connect(lambda msg: QMessageBox.information(self, "Готово", msg))
-        worker.signals.success.connect(lambda _: self._fetch_errors())
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
-
-    def _delete_selected(self) -> None:
-        items = self.table.selectedItems()
-        if not items:
-            return
-        error_id = items[0].text()
-        if QMessageBox.question(self, "Підтвердження", f"Видалити помилку #{error_id}?") != QMessageBox.Yes:
-            return
-        token = self.settings.get("token")
-        if not token:
-            return
-
-        def task() -> str:
-            resp = requests.delete(
-                f"{api_base_url()}/delete_error/{error_id}",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-            return "Помилку видалено"
-
-        worker = Worker(task)
-        worker.signals.success.connect(lambda msg: QMessageBox.information(self, "Готово", msg))
-        worker.signals.success.connect(lambda _: self._fetch_errors())
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
-
-
-class StatisticsTab(QWidget):
-    def __init__(self, settings: Settings) -> None:
-        super().__init__()
-        self.settings = settings
-        self.thread_pool = QThreadPool.globalInstance()
-        self.history: List[Dict[str, Any]] = []
-        self.errors: List[Dict[str, Any]] = []
-        self._build_ui()
-        self._fetch_data()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        filter_layout = QGridLayout()
-        self.start_date = QDateEdit(QDate.currentDate().addDays(-7))
-        self.start_date.setCalendarPopup(True)
-        self.end_date = QDateEdit(QDate.currentDate())
-        self.end_date.setCalendarPopup(True)
-        self.start_time = QTimeEdit(QTime(0, 0))
-        self.end_time = QTimeEdit(QTime(23, 59))
-        filter_layout.addWidget(QLabel("Початок"), 0, 0)
-        filter_layout.addWidget(self.start_date, 0, 1)
-        filter_layout.addWidget(self.start_time, 0, 2)
-        filter_layout.addWidget(QLabel("Кінець"), 1, 0)
-        filter_layout.addWidget(self.end_date, 1, 1)
-        filter_layout.addWidget(self.end_time, 1, 2)
-        layout.addLayout(filter_layout)
-
-        refresh_btn = QPushButton("Оновити")
-        refresh_btn.clicked.connect(self._fetch_data)
-        apply_btn = QPushButton("Застосувати")
-        apply_btn.clicked.connect(self._apply_filters)
-        btn_layout = QHBoxLayout()
-        btn_layout.addWidget(refresh_btn)
-        btn_layout.addWidget(apply_btn)
-        layout.addLayout(btn_layout)
-
-        self.summary = QTextEdit()
-        self.summary.setReadOnly(True)
-        layout.addWidget(self.summary)
-
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Дата", "Сканів", "Помилок"])
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        layout.addWidget(self.table)
-
-    def _fetch_data(self) -> None:
-        token = self.settings.get("token")
-        if not token:
-            return
-
-        def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-            headers = {"Authorization": f"Bearer {token}"}
-            history_resp = requests.get(f"{api_base_url()}/get_history", headers=headers, timeout=10)
-            errors_resp = requests.get(f"{api_base_url()}/get_errors", headers=headers, timeout=10)
-            history_resp.raise_for_status()
-            errors_resp.raise_for_status()
-            return history_resp.json(), errors_resp.json()
-
-        worker = Worker(task)
-        worker.signals.success.connect(self._set_data)
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
-
-    def _set_data(self, data: Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]) -> None:
-        self.history, self.errors = data
-        self._apply_filters()
-
-    def _apply_filters(self) -> None:
-        start_dt = datetime.combine(self.start_date.date().toPython(), self.start_time.time().toPython())
-        end_dt = datetime.combine(self.end_date.date().toPython(), self.end_time.time().toPython())
-        if start_dt > end_dt:
-            start_dt, end_dt = end_dt, start_dt
-
-        history = [item for item in self.history if self._within_range(item, start_dt, end_dt)]
-        errors = [item for item in self.errors if self._within_range(item, start_dt, end_dt)]
-
-        scan_counts: Dict[str, int] = {}
-        error_counts: Dict[str, int] = {}
-        daily_scans: Dict[date, int] = {}
-        daily_errors: Dict[date, int] = {}
-
-        for item in history:
-            user = str(item.get("user_name", "—"))
-            scan_counts[user] = scan_counts.get(user, 0) + 1
-            dt = self._parse_date(item.get("datetime"))
-            if dt:
-                daily_scans[dt.date()] = daily_scans.get(dt.date(), 0) + 1
-
-        for item in errors:
-            user = str(item.get("user_name", "—"))
-            error_counts[user] = error_counts.get(user, 0) + 1
-            dt = self._parse_date(item.get("datetime"))
-            if dt:
-                daily_errors[dt.date()] = daily_errors.get(dt.date(), 0) + 1
-
-        total_scans = sum(scan_counts.values())
-        total_errors = sum(error_counts.values())
-        top_user, top_count = self._top_item(scan_counts)
-        top_error_user, top_error_count = self._top_item(error_counts)
-
-        summary = (
-            f"Усього сканів: {total_scans}\n"
-            f"Унікальних операторів: {len(scan_counts)}\n"
-            f"Усього помилок: {total_errors}\n"
-            f"Оператор з найбільшою активністю: {top_user} ({top_count})\n"
-            f"Оператор з найбільшою кількістю помилок: {top_error_user} ({top_error_count})\n"
-        )
-        self.summary.setText(summary)
-
-        all_dates = sorted(set(daily_scans.keys()) | set(daily_errors.keys()))
-        self.table.setRowCount(len(all_dates))
-        for row, day in enumerate(all_dates):
-            self.table.setItem(row, 0, QTableWidgetItem(day.strftime("%d.%m.%Y")))
-            self.table.setItem(row, 1, QTableWidgetItem(str(daily_scans.get(day, 0))))
-            self.table.setItem(row, 2, QTableWidgetItem(str(daily_errors.get(day, 0))))
-
-    def _within_range(self, item: Dict[str, Any], start: datetime, end: datetime) -> bool:
-        dt = self._parse_date(item.get("datetime"))
-        if not dt:
-            return False
-        return start <= dt <= end
-
-    def _parse_date(self, value: Any) -> Optional[datetime]:
-        if isinstance(value, str) and value:
-            try:
-                return datetime.fromisoformat(value).astimezone()
-            except ValueError:
-                return None
-        return None
-
-    def _top_item(self, data: Dict[str, int]) -> Tuple[str, int]:
-        if not data:
-            return "—", 0
-        top_user = max(data.items(), key=lambda item: item[1])
-        return top_user[0], top_user[1]
-
-
-class ScanpakHome(QWidget):
-    def __init__(self, settings: Settings, store: OfflineStore, on_logout: Callable[[], None]) -> None:
-        super().__init__()
-        self.settings = settings
-        self.store = store
-        self.on_logout = on_logout
-        self.thread_pool = QThreadPool.globalInstance()
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        header = QHBoxLayout()
-        header.addWidget(QLabel(f"Оператор: {self.settings.get('scanpak_user_name', '—')}") )
-        header.addStretch()
-        logout_btn = QPushButton("Вийти")
-        logout_btn.clicked.connect(self.on_logout)
-        header.addWidget(logout_btn)
-        layout.addLayout(header)
-
-        self.tabs = QTabWidget()
-        self.scan_tab = ScanpakScanTab(self.settings, self.store)
-        self.history_tab = ScanpakHistoryTab(self.settings)
-        self.stats_tab = ScanpakStatsTab(self.settings)
-        self.tabs.addTab(self.scan_tab, "Сканування")
-        self.tabs.addTab(self.history_tab, "Історія")
-        self.tabs.addTab(self.stats_tab, "Статистика")
-        layout.addWidget(self.tabs)
-
-
-class ScanpakScanTab(QWidget):
-    def __init__(self, settings: Settings, store: OfflineStore) -> None:
-        super().__init__()
-        self.settings = settings
-        self.store = store
-        self.thread_pool = QThreadPool.globalInstance()
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-        self.number_input = QLineEdit()
-        self.number_input.returnPressed.connect(self._send_scan)
-        form.addRow("Номер відправлення:", self.number_input)
-        layout.addLayout(form)
-
-        buttons = QHBoxLayout()
-        send_btn = QPushButton("Надіслати")
-        send_btn.clicked.connect(self._send_scan)
-        sync_btn = QPushButton("Синхронізувати офлайн")
-        sync_btn.clicked.connect(self._sync_offline)
-        buttons.addWidget(send_btn)
-        buttons.addWidget(sync_btn)
-        layout.addLayout(buttons)
-
-        self.status = QLabel("")
-        layout.addWidget(self.status)
-
-    def _sanitize(self, value: str) -> str:
-        return "".join(ch for ch in value if ch.isdigit())
-
-    def _send_scan(self) -> None:
-        token = self.settings.get("scanpak_token")
-        if not token:
-            self.status.setText("Відсутній токен. Увійдіть знову.")
-            return
-        digits = self._sanitize(self.number_input.text())
-        if not digits:
-            self.status.setText("Введіть номер відправлення")
-            return
-
-        payload = json.dumps({"parcel_number": digits})
-
-        def task() -> str:
-            resp = requests.post(
-                f"{scanpak_base_url()}/scans",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                data=payload,
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                return "ok"
-            raise RuntimeError(resp.text)
-
-        worker = Worker(task)
-        worker.signals.success.connect(lambda _: self._handle_success())
-        worker.signals.error.connect(lambda msg: self._handle_error(msg, digits))
-        self.thread_pool.start(worker)
-        self.status.setText("Надсилання...")
-
-    def _handle_success(self) -> None:
-        self.status.setText("✅ Скан збережено")
-        self.number_input.clear()
-        self.number_input.setFocus()
-        QApplication.beep()
-
-    def _handle_error(self, message: str, digits: str) -> None:
-        self.status.setText("⚠️ Немає зв'язку, запис збережено офлайн")
-        if not self.store.scanpak_contains(digits):
-            self.store.add_scanpak_record(digits)
-        QApplication.beep()
-
-    def _sync_offline(self) -> None:
-        token = self.settings.get("scanpak_token")
-        if not token:
-            self.status.setText("Відсутній токен. Увійдіть знову.")
-            return
-
-        def task() -> str:
-            records = self.store.list_scanpak_records()
-            if not records:
-                return "Немає офлайн записів"
-            sent = 0
-            for record in records:
-                resp = requests.post(
-                    f"{scanpak_base_url()}/scans",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    data=json.dumps({"parcel_number": record["parcel_number"]}),
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    sent += 1
-                    self.store.remove_scanpak_record(int(record["id"]))
-            return f"Синхронізовано: {sent}"
-
-        worker = Worker(task)
-        worker.signals.success.connect(lambda msg: self.status.setText(str(msg)))
-        worker.signals.error.connect(lambda msg: self.status.setText(f"Помилка: {msg}"))
-        self.thread_pool.start(worker)
-
-
-class ScanpakHistoryTab(QWidget):
-    def __init__(self, settings: Settings) -> None:
-        super().__init__()
-        self.settings = settings
-        self.thread_pool = QThreadPool.globalInstance()
-        self.records: List[Dict[str, Any]] = []
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        filter_layout = QGridLayout()
-        self.parcel_filter = QLineEdit()
-        self.user_filter = QLineEdit()
-        self.date_filter = QDateEdit(QDate.currentDate())
-        self.date_filter.setCalendarPopup(True)
-        self.date_filter.setDate(QDate(2000, 1, 1))
-        filter_layout.addWidget(QLabel("Номер"), 0, 0)
-        filter_layout.addWidget(self.parcel_filter, 0, 1)
-        filter_layout.addWidget(QLabel("Користувач"), 0, 2)
-        filter_layout.addWidget(self.user_filter, 0, 3)
-        filter_layout.addWidget(QLabel("Дата"), 1, 0)
-        filter_layout.addWidget(self.date_filter, 1, 1)
-        layout.addLayout(filter_layout)
-
-        buttons = QHBoxLayout()
-        refresh_btn = QPushButton("Оновити")
-        refresh_btn.clicked.connect(self._fetch_history)
-        apply_btn = QPushButton("Застосувати")
-        apply_btn.clicked.connect(self._apply_filters)
-        buttons.addWidget(refresh_btn)
-        buttons.addWidget(apply_btn)
-        layout.addLayout(buttons)
-
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Номер", "Користувач", "Дата"])
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        layout.addWidget(self.table)
-
-        self._fetch_history()
-
-    def _fetch_history(self) -> None:
-        token = self.settings.get("scanpak_token")
-        if not token:
-            return
-
-        def task() -> List[Dict[str, Any]]:
-            resp = requests.get(
-                f"{scanpak_base_url()}/history",
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            data.sort(
-                key=lambda item: datetime.fromisoformat(
-                    (item.get("created_at") or "1970-01-01T00:00:00")
-                ),
-                reverse=True,
-            )
-            return data
-
-        worker = Worker(task)
-        worker.signals.success.connect(self._set_records)
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
-
-    def _set_records(self, records: List[Dict[str, Any]]) -> None:
-        self.records = records
-        self._apply_filters()
-
-    def _apply_filters(self) -> None:
-        filtered = self.records[:]
-        parcel_value = self.parcel_filter.text().strip()
-        user_value = self.user_filter.text().strip().lower()
-        if parcel_value:
-            filtered = [item for item in filtered if parcel_value in str(item.get("parcel_number", ""))]
-        if user_value:
-            filtered = [
-                item
-                for item in filtered
-                if user_value in str(item.get("user_name", "")).lower()
-            ]
-        if self.date_filter.date() != QDate(2000, 1, 1):
-            target = self.date_filter.date().toPython()
-            filtered = [
-                item
-                for item in filtered
-                if self._parse_date(item.get("created_at"))
-                and self._parse_date(item.get("created_at")).date() == target
-            ]
-        self.table.setRowCount(len(filtered))
-        for row, item in enumerate(filtered):
-            self.table.setItem(row, 0, QTableWidgetItem(str(item.get("parcel_number", ""))))
-            self.table.setItem(row, 1, QTableWidgetItem(str(item.get("user_name", ""))))
-            self.table.setItem(row, 2, QTableWidgetItem(self._format_date(item.get("created_at"))))
-
-    def _parse_date(self, value: Any) -> Optional[datetime]:
-        if isinstance(value, str) and value:
-            try:
-                return datetime.fromisoformat(value).astimezone()
-            except ValueError:
-                return None
-        return None
-
-    def _format_date(self, value: Any) -> str:
-        dt = self._parse_date(value)
-        return dt.strftime("%d.%m.%Y %H:%M:%S") if dt else str(value or "")
-
-
-class ScanpakStatsTab(QWidget):
-    def __init__(self, settings: Settings) -> None:
-        super().__init__()
-        self.settings = settings
-        self.thread_pool = QThreadPool.globalInstance()
-        self.records: List[Dict[str, Any]] = []
-        self._build_ui()
-        self._fetch_history()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        self.start_date = QDateEdit(QDate.currentDate().addDays(-7))
-        self.start_date.setCalendarPopup(True)
-        self.end_date = QDateEdit(QDate.currentDate())
-        self.end_date.setCalendarPopup(True)
-        self.user_filter = QLineEdit()
-
-        form = QFormLayout()
-        form.addRow("Початок", self.start_date)
-        form.addRow("Кінець", self.end_date)
-        form.addRow("Користувач", self.user_filter)
-        layout.addLayout(form)
-
-        buttons = QHBoxLayout()
-        refresh_btn = QPushButton("Оновити")
-        refresh_btn.clicked.connect(self._fetch_history)
-        apply_btn = QPushButton("Застосувати")
-        apply_btn.clicked.connect(self._apply_filters)
-        buttons.addWidget(refresh_btn)
-        buttons.addWidget(apply_btn)
-        layout.addLayout(buttons)
-
-        self.summary = QTextEdit()
-        self.summary.setReadOnly(True)
-        layout.addWidget(self.summary)
-
-    def _fetch_history(self) -> None:
-        token = self.settings.get("scanpak_token")
-        if not token:
-            return
-
-        def task() -> List[Dict[str, Any]]:
-            resp = requests.get(
-                f"{scanpak_base_url()}/history",
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            return resp.json()
-
-        worker = Worker(task)
-        worker.signals.success.connect(self._set_records)
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
-
-    def _set_records(self, records: List[Dict[str, Any]]) -> None:
-        self.records = records
-        self._apply_filters()
-
-    def _apply_filters(self) -> None:
-        start = self.start_date.date().toPython()
-        end = self.end_date.date().toPython()
-        if start > end:
-            start, end = end, start
-        user_filter = self.user_filter.text().strip().lower()
-
-        filtered: List[Dict[str, Any]] = []
-        for item in self.records:
-            dt = self._parse_date(item.get("created_at"))
-            if not dt:
-                continue
-            if not (start <= dt.date() <= end):
-                continue
-            if user_filter and user_filter not in str(item.get("user_name", "")).lower():
-                continue
-            filtered.append(item)
-
-        per_user: Dict[str, int] = {}
-        for item in filtered:
-            user = str(item.get("user_name", "—"))
-            per_user[user] = per_user.get(user, 0) + 1
-
-        top_user, top_count = self._top_item(per_user)
-        summary = (
-            f"Сканів у періоді: {len(filtered)}\n"
-            f"Унікальних користувачів: {len(per_user)}\n"
-            f"Найактивніший оператор: {top_user} ({top_count})\n"
-        )
-        self.summary.setText(summary)
-
-    def _parse_date(self, value: Any) -> Optional[datetime]:
-        if isinstance(value, str) and value:
-            try:
-                return datetime.fromisoformat(value).astimezone()
-            except ValueError:
-                return None
-        return None
-
-    def _top_item(self, data: Dict[str, int]) -> Tuple[str, int]:
-        if not data:
-            return "—", 0
-        top_user = max(data.items(), key=lambda item: item[1])
-        return top_user[0], top_user[1]
-
-
-class TrackingApp(QMainWindow):
+class AppState:
     def __init__(self) -> None:
-        super().__init__()
         self.settings = Settings()
         self.store = OfflineStore()
-        self.thread_pool = QThreadPool.globalInstance()
-        self.setWindowTitle(APP_NAME)
-        self.resize(1100, 700)
-        self._build_ui()
-        self._apply_theme()
 
-    def _build_ui(self) -> None:
-        self.stack = QStackedWidget()
-        self.setCentralWidget(self.stack)
 
-        self.start_page = StartPage(self._navigate)
-        self.tracking_login = LoginPage(
-            "TrackingApp",
-            self._tracking_login,
-            self._tracking_register,
+class TrackingAppUI:
+    def __init__(self, page: ft.Page) -> None:
+        self.page = page
+        self.state = AppState()
+        self.page.title = "TrackingApp"
+        self.page.theme_mode = ft.ThemeMode.LIGHT
+        self.page.theme = ft.Theme(color_scheme_seed=ft.colors.BLUE)
+        self.page.window_width = 1200
+        self.page.window_height = 800
+        self.page.scroll = ft.ScrollMode.AUTO
+        self._build()
+
+    def _build(self) -> None:
+        self.page.controls.clear()
+        self._show_start()
+
+    def _show_start(self) -> None:
+        self.page.controls = [
+            ft.Container(
+                expand=True,
+                alignment=ft.alignment.center,
+                content=ft.Column(
+                    width=420,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Text("Оберіть режим", size=28, weight=ft.FontWeight.BOLD),
+                        ft.ElevatedButton(
+                            text="Увійти в TrackingApp",
+                            width=300,
+                            on_click=lambda _: self._show_tracking_login(),
+                        ),
+                        ft.ElevatedButton(
+                            text="Увійти в СканПак",
+                            width=300,
+                            on_click=lambda _: self._show_scanpak_login(),
+                        ),
+                    ],
+                ),
+            )
+        ]
+        self.page.update()
+
+    def _show_tracking_login(self) -> None:
+        self._show_login(
+            title="TrackingApp",
+            on_login=self._tracking_login,
+            on_register=self._tracking_register,
             on_admin=self._open_admin_panel,
         )
-        self.scanpak_login = LoginPage(
-            "СканПак",
-            self._scanpak_login,
-            self._scanpak_register,
+
+    def _show_scanpak_login(self) -> None:
+        self._show_login(
+            title="СканПак",
+            on_login=self._scanpak_login,
+            on_register=self._scanpak_register,
             on_admin=self._open_scanpak_admin_panel,
         )
 
-        self.stack.addWidget(self.start_page)
-        self.stack.addWidget(self.tracking_login)
-        self.stack.addWidget(self.scanpak_login)
+    def _show_login(
+        self,
+        title: str,
+        on_login: Callable[[str, str, ft.Text], None],
+        on_register: Callable[[str, str, ft.Text], None],
+        on_admin: Callable[[], None],
+    ) -> None:
+        surname = ft.TextField(label="Прізвище", width=320)
+        password = ft.TextField(label="Пароль", password=True, width=320)
+        confirm = ft.TextField(label="Підтвердіть пароль", password=True, width=320, visible=False)
+        status = ft.Text("")
+        is_register = {"value": False}
 
-        self._navigate("start")
+        def toggle_mode(_: ft.ControlEvent) -> None:
+            is_register["value"] = not is_register["value"]
+            confirm.visible = is_register["value"]
+            submit.text = "Зареєструватися" if is_register["value"] else "Увійти"
+            toggle.text = "Повернутися до входу" if is_register["value"] else "Зареєструватися"
+            status.value = ""
+            self.page.update()
 
-    def _apply_theme(self) -> None:
-        self.setStyleSheet(
-            """
-            QWidget { font-family: 'Segoe UI'; font-size: 14px; }
-            QLabel#title { font-size: 28px; font-weight: 600; }
-            QLabel[success="true"] { color: #2e7d32; }
-            QLabel { color: #0f172a; }
-            QPushButton { background: #2563eb; color: white; padding: 8px 16px; border-radius: 6px; }
-            QPushButton:hover { background: #1d4ed8; }
-            QPushButton:disabled { background: #94a3b8; }
-            QTabBar::tab { padding: 8px 16px; }
-            QLineEdit, QDateEdit, QTimeEdit { padding: 6px; border: 1px solid #cbd5f5; border-radius: 6px; }
-            QTextEdit { border: 1px solid #cbd5f5; border-radius: 6px; padding: 8px; }
-            #roleLabel { font-weight: 600; color: #ef4444; }
-            """
-        )
+        def submit_action(_: ft.ControlEvent) -> None:
+            if not surname.value or not password.value:
+                status.value = "Заповніть прізвище та пароль."
+                self.page.update()
+                return
+            if is_register["value"]:
+                if len(password.value) < 6:
+                    status.value = "Пароль має містити мінімум 6 символів."
+                    self.page.update()
+                    return
+                if password.value != confirm.value:
+                    status.value = "Паролі не співпадають."
+                    self.page.update()
+                    return
+                on_register(surname.value.strip(), password.value.strip(), status)
+            else:
+                on_login(surname.value.strip(), password.value.strip(), status)
 
-    def _navigate(self, target: str) -> None:
-        if target == "start":
-            self.stack.setCurrentWidget(self.start_page)
-        elif target == "tracking_login":
-            self.tracking_login.reset()
-            self.stack.setCurrentWidget(self.tracking_login)
-        elif target == "scanpak_login":
-            self.scanpak_login.reset()
-            self.stack.setCurrentWidget(self.scanpak_login)
+        submit = ft.ElevatedButton(text="Увійти", width=320, on_click=submit_action)
+        toggle = ft.TextButton(text="Зареєструватися", on_click=toggle_mode)
 
-    def _tracking_login(self, surname: str, password: str) -> None:
+        self.page.controls = [
+            ft.Container(
+                expand=True,
+                alignment=ft.alignment.center,
+                content=ft.Column(
+                    width=420,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Text(title, size=30, weight=ft.FontWeight.BOLD),
+                        surname,
+                        password,
+                        confirm,
+                        status,
+                        submit,
+                        toggle,
+                        ft.TextButton(text="Адмін-панель", on_click=lambda _: on_admin()),
+                        ft.TextButton(text="Назад", on_click=lambda _: self._show_start()),
+                    ],
+                ),
+            )
+        ]
+        self.page.update()
+
+    def _tracking_login(self, surname: str, password: str, status: ft.Text) -> None:
+        status.value = "Вхід..."
+        self.page.update()
+
         def task() -> Dict[str, Any]:
             resp = requests.post(
                 f"{api_base_url()}/login",
@@ -1699,24 +386,28 @@ class TrackingApp(QMainWindow):
                 raise RuntimeError(resp.text)
             return resp.json()
 
-        worker = Worker(task)
-        worker.signals.success.connect(self._handle_tracking_login)
-        worker.signals.error.connect(lambda msg: self.tracking_login.set_status(msg))
-        self.thread_pool.start(worker)
-        self.tracking_login.set_status("Вхід...", success=True)
+        def success(data: Dict[str, Any]) -> None:
+            token = str(data.get("token", ""))
+            if not token:
+                status.value = "Сервер не повернув токен"
+                self.page.update()
+                return
+            self.state.settings.set("token", token)
+            self.state.settings.set("user_name", data.get("surname") or surname)
+            self.state.settings.set("access_level", data.get("access_level"))
+            self.state.settings.set("user_role", data.get("role"))
+            self._show_tracking_dashboard()
 
-    def _handle_tracking_login(self, data: Dict[str, Any]) -> None:
-        token = str(data.get("token", ""))
-        if not token:
-            self.tracking_login.set_status("Сервер не повернув токен")
-            return
-        self.settings.set("token", token)
-        self.settings.set("user_name", data.get("surname") or "operator")
-        self.settings.set("access_level", data.get("access_level"))
-        self.settings.set("user_role", data.get("role"))
-        self._open_tracking_dashboard()
+        def error(msg: str) -> None:
+            status.value = msg
+            self.page.update()
 
-    def _tracking_register(self, surname: str, password: str) -> None:
+        run_in_thread(task, success, error)
+
+    def _tracking_register(self, surname: str, password: str, status: ft.Text) -> None:
+        status.value = "Надсилання..."
+        self.page.update()
+
         def task() -> None:
             resp = requests.post(
                 f"{api_base_url()}/register",
@@ -1727,25 +418,20 @@ class TrackingApp(QMainWindow):
             if resp.status_code != 200:
                 raise RuntimeError(resp.text)
 
-        worker = Worker(task)
-        worker.signals.success.connect(
-            lambda _: self.tracking_login.set_status(
-                "Заявку на реєстрацію відправлено", success=True
-            )
-        )
-        worker.signals.error.connect(lambda msg: self.tracking_login.set_status(msg))
-        self.thread_pool.start(worker)
+        def success(_: Any) -> None:
+            status.value = "Заявку на реєстрацію відправлено."
+            self.page.update()
 
-    def _open_tracking_dashboard(self) -> None:
-        self.dashboard = TrackingDashboard(self.settings, self.store, self._logout_tracking)
-        self.stack.addWidget(self.dashboard)
-        self.stack.setCurrentWidget(self.dashboard)
+        def error(msg: str) -> None:
+            status.value = msg
+            self.page.update()
 
-    def _logout_tracking(self) -> None:
-        self.settings.clear(["token", "access_level", "user_name", "user_role"])
-        self._navigate("start")
+        run_in_thread(task, success, error)
 
-    def _scanpak_login(self, surname: str, password: str) -> None:
+    def _scanpak_login(self, surname: str, password: str, status: ft.Text) -> None:
+        status.value = "Вхід..."
+        self.page.update()
+
         def task() -> Dict[str, Any]:
             resp = requests.post(
                 f"{scanpak_base_url()}/login",
@@ -1757,23 +443,27 @@ class TrackingApp(QMainWindow):
                 raise RuntimeError(resp.text)
             return resp.json()
 
-        worker = Worker(task)
-        worker.signals.success.connect(self._handle_scanpak_login)
-        worker.signals.error.connect(lambda msg: self.scanpak_login.set_status(msg))
-        self.thread_pool.start(worker)
-        self.scanpak_login.set_status("Вхід...", success=True)
+        def success(data: Dict[str, Any]) -> None:
+            token = str(data.get("token", ""))
+            if not token:
+                status.value = "Сервер не повернув токен"
+                self.page.update()
+                return
+            self.state.settings.set("scanpak_token", token)
+            self.state.settings.set("scanpak_user_name", data.get("surname") or surname)
+            self.state.settings.set("scanpak_user_role", data.get("role"))
+            self._show_scanpak_home()
 
-    def _handle_scanpak_login(self, data: Dict[str, Any]) -> None:
-        token = str(data.get("token", ""))
-        if not token:
-            self.scanpak_login.set_status("Сервер не повернув токен")
-            return
-        self.settings.set("scanpak_token", token)
-        self.settings.set("scanpak_user_name", data.get("surname") or "operator")
-        self.settings.set("scanpak_user_role", data.get("role"))
-        self._open_scanpak_home()
+        def error(msg: str) -> None:
+            status.value = msg
+            self.page.update()
 
-    def _scanpak_register(self, surname: str, password: str) -> None:
+        run_in_thread(task, success, error)
+
+    def _scanpak_register(self, surname: str, password: str, status: ft.Text) -> None:
+        status.value = "Надсилання..."
+        self.page.update()
+
         def task() -> None:
             resp = requests.post(
                 f"{scanpak_base_url()}/register",
@@ -1784,89 +474,1245 @@ class TrackingApp(QMainWindow):
             if resp.status_code != 200:
                 raise RuntimeError(resp.text)
 
-        worker = Worker(task)
-        worker.signals.success.connect(
-            lambda _: self.scanpak_login.set_status(
-                "Заявку на реєстрацію відправлено", success=True
-            )
-        )
-        worker.signals.error.connect(lambda msg: self.scanpak_login.set_status(msg))
-        self.thread_pool.start(worker)
+        def success(_: Any) -> None:
+            status.value = "Заявку на реєстрацію відправлено."
+            self.page.update()
 
-    def _open_scanpak_home(self) -> None:
-        self.scanpak_home = ScanpakHome(self.settings, self.store, self._logout_scanpak)
-        self.stack.addWidget(self.scanpak_home)
-        self.stack.setCurrentWidget(self.scanpak_home)
+        def error(msg: str) -> None:
+            status.value = msg
+            self.page.update()
+
+        run_in_thread(task, success, error)
+
+    def _show_tracking_dashboard(self) -> None:
+        role_info = parse_user_role(
+            self.state.settings.get("user_role"), self.state.settings.get("access_level")
+        )
+        header = ft.Row(
+            controls=[
+                ft.Text(f"Оператор: {self.state.settings.get('user_name', 'operator')}", size=16),
+                ft.Text(role_info.label, weight=ft.FontWeight.BOLD),
+                ft.Container(expand=True),
+                ft.TextButton(text="Вийти", on_click=lambda _: self._logout_tracking()),
+            ]
+        )
+        tabs = [
+            ft.Tab(text="Сканер", content=self._tracking_scanner_tab()),
+            ft.Tab(text="Історія", content=self._tracking_history_tab(role_info)),
+            ft.Tab(text="Помилки", content=self._tracking_errors_tab(role_info)),
+        ]
+        if role_info.is_admin:
+            tabs.append(ft.Tab(text="Статистика", content=self._tracking_stats_tab()))
+
+        self.page.controls = [
+            ft.Container(
+                padding=20,
+                expand=True,
+                content=ft.Column(
+                    controls=[
+                        header,
+                        ft.Tabs(tabs=tabs, expand=True),
+                    ],
+                ),
+            )
+        ]
+        self.page.update()
+
+    def _logout_tracking(self) -> None:
+        self.state.settings.clear(["token", "access_level", "user_name", "user_role"])
+        self._show_start()
+
+    def _tracking_scanner_tab(self) -> ft.Control:
+        boxid = ft.TextField(label="BoxID", width=240)
+        ttn = ft.TextField(label="TTN", width=240)
+        status = ft.Text("")
+
+        def send(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("token")
+            if not token:
+                status.value = "Відсутній токен. Увійдіть знову."
+                self.page.update()
+                return
+            box_value = sanitize_digits(boxid.value or "")
+            ttn_value = sanitize_digits(ttn.value or "")
+            if not box_value or not ttn_value:
+                status.value = "Заповніть BoxID і TTN"
+                self.page.update()
+                return
+
+            record = {
+                "user_name": self.state.settings.get("user_name", "operator"),
+                "boxid": box_value,
+                "ttn": ttn_value,
+            }
+
+            def task() -> str:
+                resp = requests.post(
+                    f"{api_base_url()}/add_record",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    data=json.dumps(record),
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    return "ok"
+                raise RuntimeError(resp.text)
+
+            def success(_: Any) -> None:
+                status.value = "✅ Запис надіслано"
+                boxid.value = ""
+                ttn.value = ""
+                self.page.update()
+
+            def error(_: str) -> None:
+                status.value = "⚠️ Немає зв'язку, запис збережено офлайн"
+                self.state.store.add_tracking_record(record)
+                self.page.update()
+
+            status.value = "Надсилання..."
+            self.page.update()
+            run_in_thread(task, success, error)
+
+        def sync(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("token")
+            if not token:
+                status.value = "Відсутній токен. Увійдіть знову."
+                self.page.update()
+                return
+
+            def task() -> str:
+                records = self.state.store.list_tracking_records()
+                if not records:
+                    return "Немає офлайн записів"
+                sent_ids: List[int] = []
+                for record in records:
+                    resp = requests.post(
+                        f"{api_base_url()}/add_record",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json",
+                        },
+                        data=json.dumps(
+                            {
+                                "user_name": record["user_name"],
+                                "boxid": record["boxid"],
+                                "ttn": record["ttn"],
+                            }
+                        ),
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        sent_ids.append(int(record["id"]))
+                if sent_ids:
+                    self.state.store.clear_tracking_records(sent_ids)
+                return f"Синхронізовано: {len(sent_ids)}"
+
+            def success(message: str) -> None:
+                status.value = message
+                self.page.update()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            status.value = "Синхронізація..."
+            self.page.update()
+            run_in_thread(task, success, error)
+
+        return ft.Column(
+            controls=[
+                ft.Row(controls=[boxid, ttn]),
+                ft.Row(
+                    controls=[
+                        ft.ElevatedButton(text="Надіслати", on_click=send),
+                        ft.OutlinedButton(text="Синхронізувати офлайн", on_click=sync),
+                    ]
+                ),
+                status,
+            ]
+        )
+
+    def _tracking_history_tab(self, role_info: UserRoleInfo) -> ft.Control:
+        box_filter = ft.TextField(label="BoxID")
+        ttn_filter = ft.TextField(label="TTN")
+        user_filter = ft.TextField(label="Користувач")
+        date_filter = ft.DatePicker(on_change=lambda _: None)
+        date_button = ft.ElevatedButton(
+            text="Дата", on_click=lambda _: self.page.show_date_picker(date_filter)
+        )
+        start_time = ft.TimePicker()
+        start_button = ft.ElevatedButton(
+            text="Початок", on_click=lambda _: self.page.show_time_picker(start_time)
+        )
+        end_time = ft.TimePicker()
+        end_button = ft.ElevatedButton(
+            text="Кінець", on_click=lambda _: self.page.show_time_picker(end_time)
+        )
+        status = ft.Text("")
+
+        table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("BoxID")),
+                ft.DataColumn(ft.Text("TTN")),
+                ft.DataColumn(ft.Text("Оператор")),
+                ft.DataColumn(ft.Text("Дата")),
+            ],
+            rows=[],
+        )
+        records: List[Dict[str, Any]] = []
+
+        def apply_filters(_: Any = None) -> None:
+            filtered = list(records)
+            if box_filter.value:
+                filtered = [
+                    item for item in filtered if box_filter.value in str(item.get("boxid", ""))
+                ]
+            if ttn_filter.value:
+                filtered = [
+                    item for item in filtered if ttn_filter.value in str(item.get("ttn", ""))
+                ]
+            if user_filter.value:
+                filtered = [
+                    item
+                    for item in filtered
+                    if user_filter.value.lower()
+                    in str(item.get("user_name", "")).lower()
+                ]
+            if date_filter.value:
+                selected = date_filter.value
+                filtered = [
+                    item
+                    for item in filtered
+                    if item.get("datetime")
+                    and datetime.fromisoformat(item["datetime"]).date() == selected
+                ]
+
+            if start_time.value or end_time.value:
+                start_val = start_time.value or ft.Time(0, 0)
+                end_val = end_time.value or ft.Time(23, 59)
+                start_dt = datetime.combine(date.today(), datetime.strptime(str(start_val), "%H:%M").time())
+                end_dt = datetime.combine(date.today(), datetime.strptime(str(end_val), "%H:%M").time())
+
+                def within(item: Dict[str, Any]) -> bool:
+                    if not item.get("datetime"):
+                        return False
+                    try:
+                        parsed = datetime.fromisoformat(item["datetime"]).astimezone()
+                    except ValueError:
+                        return False
+                    return start_dt.time() <= parsed.time() <= end_dt.time()
+
+                filtered = [item for item in filtered if within(item)]
+
+            table.rows = [
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(str(item.get("boxid", "")))),
+                        ft.DataCell(ft.Text(str(item.get("ttn", "")))),
+                        ft.DataCell(ft.Text(str(item.get("user_name", "")))),
+                        ft.DataCell(ft.Text(format_iso_datetime(item.get("datetime")))),
+                    ]
+                )
+                for item in filtered
+            ]
+            self.page.update()
+
+        def fetch(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("token")
+            if not token:
+                return
+
+            def task() -> List[Dict[str, Any]]:
+                resp = requests.get(
+                    f"{api_base_url()}/get_history",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                data.sort(
+                    key=lambda item: datetime.fromisoformat(
+                        item.get("datetime") or "1970-01-01T00:00:00"
+                    ),
+                    reverse=True,
+                )
+                return data
+
+            def success(data: List[Dict[str, Any]]) -> None:
+                records.clear()
+                records.extend(data)
+                status.value = f"Записів: {len(records)}"
+                apply_filters()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            run_in_thread(task, success, error)
+
+        def clear_filters(_: ft.ControlEvent) -> None:
+            box_filter.value = ""
+            ttn_filter.value = ""
+            user_filter.value = ""
+            date_filter.value = None
+            start_time.value = None
+            end_time.value = None
+            apply_filters()
+
+        def clear_history(_: ft.ControlEvent) -> None:
+            if not role_info.can_clear_history:
+                return
+            token = self.state.settings.get("token")
+            if not token:
+                return
+
+            def task() -> str:
+                resp = requests.delete(
+                    f"{api_base_url()}/clear_tracking",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(resp.text)
+                return "Історію очищено"
+
+            def success(message: str) -> None:
+                records.clear()
+                status.value = message
+                apply_filters()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            run_in_thread(task, success, error)
+
+        buttons = [
+            ft.ElevatedButton(text="Оновити", on_click=fetch),
+            ft.OutlinedButton(text="Застосувати фільтри", on_click=lambda _: apply_filters()),
+            ft.TextButton(text="Скинути", on_click=clear_filters),
+        ]
+        if role_info.can_clear_history:
+            buttons.append(ft.TextButton(text="Очистити історію", on_click=clear_history))
+
+        return ft.Column(
+            controls=[
+                ft.Row(controls=[box_filter, ttn_filter, user_filter]),
+                ft.Row(controls=[date_button, start_button, end_button]),
+                ft.Row(controls=buttons),
+                status,
+                table,
+            ]
+        )
+
+    def _tracking_errors_tab(self, role_info: UserRoleInfo) -> ft.Control:
+        status = ft.Text("")
+        table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("ID")),
+                ft.DataColumn(ft.Text("BoxID")),
+                ft.DataColumn(ft.Text("TTN")),
+                ft.DataColumn(ft.Text("Дата")),
+            ],
+            rows=[],
+        )
+        errors: List[Dict[str, Any]] = []
+
+        def fetch(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("token")
+            if not token:
+                return
+
+            def task() -> List[Dict[str, Any]]:
+                resp = requests.get(
+                    f"{api_base_url()}/get_errors",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                data.sort(
+                    key=lambda item: datetime.fromisoformat(
+                        item.get("datetime") or "1970-01-01T00:00:00"
+                    ),
+                    reverse=True,
+                )
+                return data
+
+            def success(data: List[Dict[str, Any]]) -> None:
+                errors.clear()
+                errors.extend(data)
+                table.rows = [
+                    ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.Text(str(item.get("id", "")))),
+                            ft.DataCell(ft.Text(str(item.get("boxid", "")))),
+                            ft.DataCell(ft.Text(str(item.get("ttn", "")))),
+                            ft.DataCell(ft.Text(format_iso_datetime(item.get("datetime")))),
+                        ]
+                    )
+                    for item in errors
+                ]
+                status.value = f"Помилок: {len(errors)}"
+                self.page.update()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            run_in_thread(task, success, error)
+
+        def clear_errors(_: ft.ControlEvent) -> None:
+            if not role_info.can_clear_errors:
+                return
+            token = self.state.settings.get("token")
+            if not token:
+                return
+
+            def task() -> str:
+                resp = requests.delete(
+                    f"{api_base_url()}/clear_errors",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(resp.text)
+                return "Журнал очищено"
+
+            def success(message: str) -> None:
+                errors.clear()
+                table.rows = []
+                status.value = message
+                self.page.update()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            run_in_thread(task, success, error)
+
+        def delete_selected(_: ft.ControlEvent) -> None:
+            if not role_info.can_clear_errors:
+                return
+            if not table.rows:
+                return
+            selected = None
+            for row in table.rows:
+                if row.selected:
+                    selected = row
+                    break
+            if not selected:
+                status.value = "Оберіть рядок"
+                self.page.update()
+                return
+            error_id = selected.cells[0].content.value
+            token = self.state.settings.get("token")
+            if not token:
+                return
+
+            def task() -> str:
+                resp = requests.delete(
+                    f"{api_base_url()}/delete_error/{error_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(resp.text)
+                return "Помилку видалено"
+
+            def success(message: str) -> None:
+                status.value = message
+                fetch(ft.ControlEvent(None))
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            run_in_thread(task, success, error)
+
+        buttons = [ft.ElevatedButton(text="Оновити", on_click=fetch)]
+        if role_info.can_clear_errors:
+            buttons.extend(
+                [
+                    ft.TextButton(text="Очистити журнал", on_click=clear_errors),
+                    ft.TextButton(text="Видалити вибраний", on_click=delete_selected),
+                ]
+            )
+
+        return ft.Column(controls=[ft.Row(controls=buttons), status, table])
+
+    def _tracking_stats_tab(self) -> ft.Control:
+        status = ft.Text("")
+        summary = ft.Text("", selectable=True)
+        table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Дата")),
+                ft.DataColumn(ft.Text("Сканів")),
+                ft.DataColumn(ft.Text("Помилок")),
+            ],
+            rows=[],
+        )
+
+        start_date = ft.DatePicker(value=date.today())
+        end_date = ft.DatePicker(value=date.today())
+        start_button = ft.ElevatedButton(
+            text="Початок", on_click=lambda _: self.page.show_date_picker(start_date)
+        )
+        end_button = ft.ElevatedButton(
+            text="Кінець", on_click=lambda _: self.page.show_date_picker(end_date)
+        )
+
+        def fetch(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("token")
+            if not token:
+                return
+
+            def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+                headers = {"Authorization": f"Bearer {token}"}
+                history_resp = requests.get(
+                    f"{api_base_url()}/get_history", headers=headers, timeout=10
+                )
+                errors_resp = requests.get(
+                    f"{api_base_url()}/get_errors", headers=headers, timeout=10
+                )
+                history_resp.raise_for_status()
+                errors_resp.raise_for_status()
+                return history_resp.json(), errors_resp.json()
+
+            def success(data: Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]) -> None:
+                history, errors = data
+                start_val = start_date.value or date.today()
+                end_val = end_date.value or date.today()
+                if start_val > end_val:
+                    start_val, end_val = end_val, start_val
+
+                def within(item: Dict[str, Any]) -> bool:
+                    if not item.get("datetime"):
+                        return False
+                    try:
+                        dt = datetime.fromisoformat(item["datetime"]).astimezone().date()
+                    except ValueError:
+                        return False
+                    return start_val <= dt <= end_val
+
+                history_filtered = [item for item in history if within(item)]
+                errors_filtered = [item for item in errors if within(item)]
+
+                scan_counts: Dict[str, int] = {}
+                error_counts: Dict[str, int] = {}
+                daily_scans: Dict[date, int] = {}
+                daily_errors: Dict[date, int] = {}
+
+                for item in history_filtered:
+                    user = str(item.get("user_name", "—"))
+                    scan_counts[user] = scan_counts.get(user, 0) + 1
+                    try:
+                        dt = datetime.fromisoformat(item["datetime"]).astimezone().date()
+                        daily_scans[dt] = daily_scans.get(dt, 0) + 1
+                    except ValueError:
+                        continue
+
+                for item in errors_filtered:
+                    user = str(item.get("user_name", "—"))
+                    error_counts[user] = error_counts.get(user, 0) + 1
+                    try:
+                        dt = datetime.fromisoformat(item["datetime"]).astimezone().date()
+                        daily_errors[dt] = daily_errors.get(dt, 0) + 1
+                    except ValueError:
+                        continue
+
+                top_user, top_count = self._top_item(scan_counts)
+                top_error_user, top_error_count = self._top_item(error_counts)
+
+                summary.value = (
+                    f"Усього сканів: {sum(scan_counts.values())}\n"
+                    f"Унікальних операторів: {len(scan_counts)}\n"
+                    f"Усього помилок: {sum(error_counts.values())}\n"
+                    f"Найактивніший оператор: {top_user} ({top_count})\n"
+                    f"Оператор з найбільшою кількістю помилок: {top_error_user} ({top_error_count})"
+                )
+
+                all_dates = sorted(set(daily_scans.keys()) | set(daily_errors.keys()))
+                table.rows = [
+                    ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.Text(day.strftime("%d.%m.%Y"))),
+                            ft.DataCell(ft.Text(str(daily_scans.get(day, 0)))),
+                            ft.DataCell(ft.Text(str(daily_errors.get(day, 0)))),
+                        ]
+                    )
+                    for day in all_dates
+                ]
+                status.value = "Оновлено"
+                self.page.update()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            run_in_thread(task, success, error)
+
+        return ft.Column(
+            controls=[
+                ft.Row(controls=[start_button, end_button, ft.ElevatedButton(text="Оновити", on_click=fetch)]),
+                status,
+                summary,
+                table,
+            ]
+        )
+
+    def _top_item(self, data: Dict[str, int]) -> Tuple[str, int]:
+        if not data:
+            return "—", 0
+        top_user = max(data.items(), key=lambda item: item[1])
+        return top_user[0], top_user[1]
+
+    def _show_scanpak_home(self) -> None:
+        header = ft.Row(
+            controls=[
+                ft.Text(
+                    f"Оператор: {self.state.settings.get('scanpak_user_name', '—')}",
+                    size=16,
+                ),
+                ft.Container(expand=True),
+                ft.TextButton(text="Вийти", on_click=lambda _: self._logout_scanpak()),
+            ]
+        )
+
+        tabs = ft.Tabs(
+            tabs=[
+                ft.Tab(text="Сканування", content=self._scanpak_scan_tab()),
+                ft.Tab(text="Історія", content=self._scanpak_history_tab()),
+                ft.Tab(text="Статистика", content=self._scanpak_stats_tab()),
+            ],
+            expand=True,
+        )
+
+        self.page.controls = [
+            ft.Container(
+                padding=20,
+                expand=True,
+                content=ft.Column(controls=[header, tabs]),
+            )
+        ]
+        self.page.update()
 
     def _logout_scanpak(self) -> None:
-        self.settings.clear(["scanpak_token", "scanpak_user_name", "scanpak_user_role"])
-        self._navigate("start")
+        self.state.settings.clear(["scanpak_token", "scanpak_user_name", "scanpak_user_role"])
+        self._show_start()
+
+    def _scanpak_scan_tab(self) -> ft.Control:
+        number = ft.TextField(label="Номер відправлення", width=320)
+        status = ft.Text("")
+
+        def send(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("scanpak_token")
+            if not token:
+                status.value = "Відсутній токен. Увійдіть знову."
+                self.page.update()
+                return
+            digits = sanitize_digits(number.value or "")
+            if not digits:
+                status.value = "Введіть номер відправлення"
+                self.page.update()
+                return
+
+            def task() -> str:
+                resp = requests.post(
+                    f"{scanpak_base_url()}/scans",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                    data=json.dumps({"parcel_number": digits}),
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    return "ok"
+                raise RuntimeError(resp.text)
+
+            def success(_: Any) -> None:
+                status.value = "✅ Скан збережено"
+                number.value = ""
+                self.page.update()
+
+            def error(_: str) -> None:
+                status.value = "⚠️ Немає зв'язку, запис збережено офлайн"
+                if not self.state.store.scanpak_contains(digits):
+                    self.state.store.add_scanpak_record(digits)
+                self.page.update()
+
+            status.value = "Надсилання..."
+            self.page.update()
+            run_in_thread(task, success, error)
+
+        def sync(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("scanpak_token")
+            if not token:
+                status.value = "Відсутній токен. Увійдіть знову."
+                self.page.update()
+                return
+
+            def task() -> str:
+                records = self.state.store.list_scanpak_records()
+                if not records:
+                    return "Немає офлайн записів"
+                sent = 0
+                for record in records:
+                    resp = requests.post(
+                        f"{scanpak_base_url()}/scans",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                        },
+                        data=json.dumps({"parcel_number": record["parcel_number"]}),
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        sent += 1
+                        self.state.store.remove_scanpak_record(int(record["id"]))
+                return f"Синхронізовано: {sent}"
+
+            def success(message: str) -> None:
+                status.value = message
+                self.page.update()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            status.value = "Синхронізація..."
+            self.page.update()
+            run_in_thread(task, success, error)
+
+        return ft.Column(
+            controls=[
+                number,
+                ft.Row(
+                    controls=[
+                        ft.ElevatedButton(text="Надіслати", on_click=send),
+                        ft.OutlinedButton(text="Синхронізувати офлайн", on_click=sync),
+                    ]
+                ),
+                status,
+            ]
+        )
+
+    def _scanpak_history_tab(self) -> ft.Control:
+        parcel_filter = ft.TextField(label="Номер")
+        user_filter = ft.TextField(label="Користувач")
+        date_filter = ft.DatePicker()
+        date_button = ft.ElevatedButton(
+            text="Дата", on_click=lambda _: self.page.show_date_picker(date_filter)
+        )
+        status = ft.Text("")
+        table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Номер")),
+                ft.DataColumn(ft.Text("Користувач")),
+                ft.DataColumn(ft.Text("Дата")),
+            ],
+            rows=[],
+        )
+        records: List[Dict[str, Any]] = []
+
+        def apply_filters(_: Any = None) -> None:
+            filtered = list(records)
+            if parcel_filter.value:
+                filtered = [
+                    item
+                    for item in filtered
+                    if parcel_filter.value in str(item.get("parcel_number", ""))
+                ]
+            if user_filter.value:
+                filtered = [
+                    item
+                    for item in filtered
+                    if user_filter.value.lower()
+                    in str(item.get("user_name", "")).lower()
+                ]
+            if date_filter.value:
+                target = date_filter.value
+                filtered = [
+                    item
+                    for item in filtered
+                    if item.get("created_at")
+                    and datetime.fromisoformat(item["created_at"]).date() == target
+                ]
+
+            table.rows = [
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(str(item.get("parcel_number", "")))),
+                        ft.DataCell(ft.Text(str(item.get("user_name", "")))),
+                        ft.DataCell(ft.Text(format_iso_datetime(item.get("created_at")))),
+                    ]
+                )
+                for item in filtered
+            ]
+            self.page.update()
+
+        def fetch(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("scanpak_token")
+            if not token:
+                return
+
+            def task() -> List[Dict[str, Any]]:
+                resp = requests.get(
+                    f"{scanpak_base_url()}/history",
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                data.sort(
+                    key=lambda item: datetime.fromisoformat(
+                        item.get("created_at") or "1970-01-01T00:00:00"
+                    ),
+                    reverse=True,
+                )
+                return data
+
+            def success(data: List[Dict[str, Any]]) -> None:
+                records.clear()
+                records.extend(data)
+                status.value = f"Записів: {len(records)}"
+                apply_filters()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            run_in_thread(task, success, error)
+
+        return ft.Column(
+            controls=[
+                ft.Row(controls=[parcel_filter, user_filter, date_button]),
+                ft.Row(
+                    controls=[
+                        ft.ElevatedButton(text="Оновити", on_click=fetch),
+                        ft.OutlinedButton(text="Застосувати", on_click=lambda _: apply_filters()),
+                    ]
+                ),
+                status,
+                table,
+            ]
+        )
+
+    def _scanpak_stats_tab(self) -> ft.Control:
+        start_date = ft.DatePicker(value=date.today())
+        end_date = ft.DatePicker(value=date.today())
+        start_button = ft.ElevatedButton(
+            text="Початок", on_click=lambda _: self.page.show_date_picker(start_date)
+        )
+        end_button = ft.ElevatedButton(
+            text="Кінець", on_click=lambda _: self.page.show_date_picker(end_date)
+        )
+        user_filter = ft.TextField(label="Користувач")
+        summary = ft.Text("")
+        status = ft.Text("")
+        records: List[Dict[str, Any]] = []
+
+        def fetch(_: ft.ControlEvent) -> None:
+            token = self.state.settings.get("scanpak_token")
+            if not token:
+                return
+
+            def task() -> List[Dict[str, Any]]:
+                resp = requests.get(
+                    f"{scanpak_base_url()}/history",
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                return resp.json()
+
+            def success(data: List[Dict[str, Any]]) -> None:
+                records.clear()
+                records.extend(data)
+                apply_filters()
+
+            def error(message: str) -> None:
+                status.value = f"Помилка: {message}"
+                self.page.update()
+
+            run_in_thread(task, success, error)
+
+        def apply_filters(_: Any = None) -> None:
+            if not records:
+                return
+            start_val = start_date.value or date.today()
+            end_val = end_date.value or date.today()
+            if start_val > end_val:
+                start_val, end_val = end_val, start_val
+            user_value = user_filter.value.lower() if user_filter.value else ""
+
+            filtered: List[Dict[str, Any]] = []
+            for item in records:
+                if not item.get("created_at"):
+                    continue
+                try:
+                    dt = datetime.fromisoformat(item["created_at"]).astimezone().date()
+                except ValueError:
+                    continue
+                if not (start_val <= dt <= end_val):
+                    continue
+                if user_value and user_value not in str(item.get("user_name", "")).lower():
+                    continue
+                filtered.append(item)
+
+            per_user: Dict[str, int] = {}
+            for item in filtered:
+                user = str(item.get("user_name", "—"))
+                per_user[user] = per_user.get(user, 0) + 1
+
+            top_user, top_count = self._top_item(per_user)
+            summary.value = (
+                f"Сканів у періоді: {len(filtered)}\n"
+                f"Унікальних користувачів: {len(per_user)}\n"
+                f"Найактивніший оператор: {top_user} ({top_count})"
+            )
+            status.value = "Оновлено"
+            self.page.update()
+
+        return ft.Column(
+            controls=[
+                ft.Row(controls=[start_button, end_button, user_filter]),
+                ft.Row(
+                    controls=[
+                        ft.ElevatedButton(text="Оновити", on_click=fetch),
+                        ft.OutlinedButton(text="Застосувати", on_click=lambda _: apply_filters()),
+                    ]
+                ),
+                status,
+                summary,
+            ]
+        )
 
     def _open_admin_panel(self) -> None:
-        password, ok = QInputDialog.getText(self, "Адмін панель", "Пароль адміністратора:")
-        if not ok or not password.strip():
-            return
+        def submit(password: str) -> None:
+            if not password:
+                return
 
-        def task() -> Dict[str, Any]:
-            resp = requests.post(
-                f"{api_base_url()}/admin_login",
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                data=json.dumps({"password": password.strip()}),
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-            return resp.json()
+            def task() -> Dict[str, Any]:
+                resp = requests.post(
+                    f"{api_base_url()}/admin_login",
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
+                    data=json.dumps({"password": password}),
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(resp.text)
+                return resp.json()
 
-        worker = Worker(task)
-        worker.signals.success.connect(self._launch_admin_panel)
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
+            def success(data: Dict[str, Any]) -> None:
+                token = data.get("token")
+                if not token:
+                    self._show_dialog("Помилка", "Сервер не повернув токен")
+                    return
+                self._show_admin_dialog(token, is_scanpak=False)
 
-    def _launch_admin_panel(self, data: Dict[str, Any]) -> None:
-        token = data.get("token")
-        if not token:
-            QMessageBox.warning(self, "Помилка", "Сервер не повернув токен")
-            return
-        dialog = AdminPanelDialog(token, is_scanpak=False, parent=self)
-        dialog.exec()
+            def error(message: str) -> None:
+                self._show_dialog("Помилка", message)
+
+            run_in_thread(task, success, error)
+
+        self._ask_password("Адмін-панель", submit)
 
     def _open_scanpak_admin_panel(self) -> None:
-        password, ok = QInputDialog.getText(self, "Адмін панель СканПак", "Пароль адміністратора:")
-        if not ok or not password.strip():
-            return
+        def submit(password: str) -> None:
+            if not password:
+                return
 
-        def task() -> Dict[str, Any]:
-            resp = requests.post(
-                f"{scanpak_base_url()}/admin_login",
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                data=json.dumps({"password": password.strip()}),
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(resp.text)
-            return resp.json()
+            def task() -> Dict[str, Any]:
+                resp = requests.post(
+                    f"{scanpak_base_url()}/admin_login",
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
+                    data=json.dumps({"password": password}),
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(resp.text)
+                return resp.json()
 
-        worker = Worker(task)
-        worker.signals.success.connect(self._launch_scanpak_admin_panel)
-        worker.signals.error.connect(lambda msg: QMessageBox.warning(self, "Помилка", msg))
-        self.thread_pool.start(worker)
+            def success(data: Dict[str, Any]) -> None:
+                token = data.get("token")
+                if not token:
+                    self._show_dialog("Помилка", "Сервер не повернув токен")
+                    return
+                self._show_admin_dialog(token, is_scanpak=True)
 
-    def _launch_scanpak_admin_panel(self, data: Dict[str, Any]) -> None:
-        token = data.get("token")
-        if not token:
-            QMessageBox.warning(self, "Помилка", "Сервер не повернув токен")
-            return
-        dialog = AdminPanelDialog(token, is_scanpak=True, parent=self)
-        dialog.exec()
+            def error(message: str) -> None:
+                self._show_dialog("Помилка", message)
+
+            run_in_thread(task, success, error)
+
+        self._ask_password("Адмін-панель СканПак", submit)
+
+    def _ask_password(self, title: str, on_submit: Callable[[str], None]) -> None:
+        password_field = ft.TextField(label="Пароль", password=True)
+
+        def submit(_: ft.ControlEvent) -> None:
+            self.page.dialog.open = False
+            self.page.update()
+            on_submit(password_field.value.strip())
+
+        dialog = ft.AlertDialog(
+            title=ft.Text(title),
+            content=password_field,
+            actions=[ft.TextButton(text="Скасувати", on_click=lambda _: self._close_dialog()),
+                     ft.ElevatedButton(text="Увійти", on_click=submit)],
+        )
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+
+    def _show_admin_dialog(self, token: str, is_scanpak: bool) -> None:
+        role_options = ["admin", "operator"] if is_scanpak else ["admin", "operator", "viewer"]
+        pending_table = ft.DataTable(columns=[
+            ft.DataColumn(ft.Text("ID")),
+            ft.DataColumn(ft.Text("Прізвище")),
+            ft.DataColumn(ft.Text("Дата")),
+        ], rows=[])
+        users_table = ft.DataTable(columns=[
+            ft.DataColumn(ft.Text("ID")),
+            ft.DataColumn(ft.Text("Прізвище")),
+            ft.DataColumn(ft.Text("Роль")),
+            ft.DataColumn(ft.Text("Активний")),
+            ft.DataColumn(ft.Text("Створено")),
+        ], rows=[])
+        role_picker = ft.Dropdown(options=[ft.dropdown.Option(r) for r in role_options])
+        role_picker.value = role_options[0]
+        password_fields = {role: ft.TextField(label=f"{role} пароль", password=True) for role in role_options}
+
+        def headers() -> Dict[str, str]:
+            return {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+
+        def load_data() -> None:
+            base = scanpak_base_url() if is_scanpak else api_base_url()
+
+            def task() -> Dict[str, Any]:
+                pending_resp = requests.get(f"{base}/admin/registration_requests", headers=headers(), timeout=10)
+                pending_resp.raise_for_status()
+                users_resp = requests.get(f"{base}/admin/users", headers=headers(), timeout=10)
+                users_resp.raise_for_status()
+                pass_resp = requests.get(f"{base}/admin/role-passwords", headers=headers(), timeout=10)
+                pass_resp.raise_for_status()
+                return {
+                    "pending": pending_resp.json(),
+                    "users": users_resp.json(),
+                    "passwords": pass_resp.json(),
+                }
+
+            def success(data: Dict[str, Any]) -> None:
+                pending_table.rows = [
+                    ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.Text(str(item.get("id", "")))),
+                            ft.DataCell(ft.Text(item.get("surname", "—"))),
+                            ft.DataCell(ft.Text(item.get("created_at", ""))),
+                        ]
+                    )
+                    for item in data.get("pending", [])
+                ]
+                users_table.rows = [
+                    ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.Text(str(item.get("id", "")))),
+                            ft.DataCell(ft.Text(item.get("surname", "—"))),
+                            ft.DataCell(ft.Text(item.get("role", ""))),
+                            ft.DataCell(ft.Text("Так" if item.get("is_active") else "Ні")),
+                            ft.DataCell(ft.Text(item.get("created_at", ""))),
+                        ]
+                    )
+                    for item in data.get("users", [])
+                ]
+                for role, field in password_fields.items():
+                    field.value = str(data.get("passwords", {}).get(role, ""))
+                self.page.update()
+
+            def error(message: str) -> None:
+                self._show_dialog("Помилка", message)
+
+            run_in_thread(task, success, error)
+
+        def selected_id(table: ft.DataTable) -> Optional[str]:
+            for row in table.rows:
+                if row.selected:
+                    return row.cells[0].content.value
+            return None
+
+        def approve(_: ft.ControlEvent) -> None:
+            request_id = selected_id(pending_table)
+            if not request_id:
+                return
+            payload = json.dumps({"role": role_picker.value})
+            base = scanpak_base_url() if is_scanpak else api_base_url()
+
+            def task() -> None:
+                resp = requests.post(
+                    f"{base}/admin/registration_requests/{request_id}/approve",
+                    headers=headers(),
+                    data=payload,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+
+            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
+
+        def reject(_: ft.ControlEvent) -> None:
+            request_id = selected_id(pending_table)
+            if not request_id:
+                return
+            base = scanpak_base_url() if is_scanpak else api_base_url()
+
+            def task() -> None:
+                resp = requests.post(
+                    f"{base}/admin/registration_requests/{request_id}/reject",
+                    headers=headers(),
+                    timeout=10,
+                )
+                resp.raise_for_status()
+
+            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
+
+        def change_role(_: ft.ControlEvent) -> None:
+            user_id = selected_id(users_table)
+            if not user_id:
+                return
+            base = scanpak_base_url() if is_scanpak else api_base_url()
+
+            def task() -> None:
+                resp = requests.patch(
+                    f"{base}/admin/users/{user_id}",
+                    headers=headers(),
+                    data=json.dumps({"role": role_picker.value}),
+                    timeout=10,
+                )
+                resp.raise_for_status()
+
+            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
+
+        def toggle_active(_: ft.ControlEvent) -> None:
+            user_id = selected_id(users_table)
+            if not user_id:
+                return
+            base = scanpak_base_url() if is_scanpak else api_base_url()
+            current_row = next((row for row in users_table.rows if row.selected), None)
+            is_active = False
+            if current_row and len(current_row.cells) > 3:
+                is_active = current_row.cells[3].content.value == "Так"
+
+            def task() -> None:
+                resp = requests.patch(
+                    f"{base}/admin/users/{user_id}",
+                    headers=headers(),
+                    data=json.dumps({"is_active": not is_active}),
+                    timeout=10,
+                )
+                resp.raise_for_status()
+
+            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
+
+        def delete_user(_: ft.ControlEvent) -> None:
+            user_id = selected_id(users_table)
+            if not user_id:
+                return
+            base = scanpak_base_url() if is_scanpak else api_base_url()
+
+            def task() -> None:
+                resp = requests.delete(
+                    f"{base}/admin/users/{user_id}",
+                    headers=headers(),
+                    timeout=10,
+                )
+                resp.raise_for_status()
+
+            run_in_thread(task, lambda _: load_data(), lambda msg: self._show_dialog("Помилка", msg))
+
+        def save_password(role: str) -> Callable[[ft.ControlEvent], None]:
+            def handler(_: ft.ControlEvent) -> None:
+                base = scanpak_base_url() if is_scanpak else api_base_url()
+
+                def task() -> None:
+                    resp = requests.post(
+                        f"{base}/admin/role-passwords/{role}",
+                        headers=headers(),
+                        data=json.dumps({"password": password_fields[role].value or ""}),
+                        timeout=10,
+                    )
+                    resp.raise_for_status()
+
+                run_in_thread(task, lambda _: self._show_dialog("Готово", "Пароль оновлено"),
+                              lambda msg: self._show_dialog("Помилка", msg))
+
+            return handler
+
+        content = ft.Column(
+            width=900,
+            height=600,
+            scroll=ft.ScrollMode.AUTO,
+            controls=[
+                ft.Text("Запити на реєстрацію", weight=ft.FontWeight.BOLD),
+                pending_table,
+                ft.Row(
+                    controls=[
+                        role_picker,
+                        ft.ElevatedButton(text="Підтвердити", on_click=approve),
+                        ft.OutlinedButton(text="Відхилити", on_click=reject),
+                    ]
+                ),
+                ft.Divider(),
+                ft.Text("Користувачі", weight=ft.FontWeight.BOLD),
+                users_table,
+                ft.Row(
+                    controls=[
+                        ft.ElevatedButton(text="Змінити роль", on_click=change_role),
+                        ft.OutlinedButton(text="Перемкнути активність", on_click=toggle_active),
+                        ft.TextButton(text="Видалити", on_click=delete_user),
+                    ]
+                ),
+                ft.Divider(),
+                ft.Text("API паролі", weight=ft.FontWeight.BOLD),
+                *[
+                    ft.Row(
+                        controls=[password_fields[role], ft.ElevatedButton(text="Зберегти", on_click=save_password(role))]
+                    )
+                    for role in role_options
+                ],
+                ft.ElevatedButton(text="Оновити", on_click=lambda _: load_data()),
+            ],
+        )
+
+        dialog = ft.AlertDialog(title=ft.Text("Адмін-панель"), content=content)
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+        load_data()
+
+    def _show_dialog(self, title: str, message: str) -> None:
+        dialog = ft.AlertDialog(title=ft.Text(title), content=ft.Text(message))
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+
+    def _close_dialog(self) -> None:
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
 
 
-def main() -> None:
-    app = QApplication(sys.argv)
-    window = TrackingApp()
-    window.show()
-    sys.exit(app.exec())
+def main(page: ft.Page) -> None:
+    TrackingAppUI(page)
 
 
 if __name__ == "__main__":
-    main()
+    ft.app(target=main)
