@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import sys
 from dataclasses import dataclass
 from datetime import datetime, date, time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -9,6 +10,11 @@ import requests
 from platformdirs import user_data_dir
 import tkinter as tk
 from tkinter import messagebox, ttk
+
+if os.name == "nt":
+    import winsound
+else:
+    winsound = None
 
 BASE_URL = "http://173.242.53.38:10000"
 SCANPAK_BASE_PATH = "/scanpak"
@@ -185,6 +191,25 @@ class OfflineQueue:
 
     def clear(self) -> None:
         self.store.save_offline_records(self.path, [])
+
+
+class SoundPlayer:
+    def __init__(self, base_dir: str) -> None:
+        self.base_dir = base_dir
+
+    def play_success(self) -> None:
+        self._play("success.wav")
+
+    def play_error(self) -> None:
+        self._play("error.wav")
+
+    def _play(self, filename: str) -> None:
+        path = os.path.join(self.base_dir, "assets", "sounds", filename)
+        if winsound is not None and os.path.exists(path):
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            return
+        sys.stdout.write("\a")
+        sys.stdout.flush()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -962,11 +987,19 @@ class TrackingScanTab(tk.Frame):
         tk.Label(offline_inner, text="📴 В черзі офлайн:", font=(Fonts.FAMILY, Fonts.SMALL_SIZE), fg=Colors.TEXT_SECONDARY, bg=Colors.BG_TERTIARY).pack(side=tk.LEFT)
         tk.Label(offline_inner, textvariable=self.inflight, font=(Fonts.FAMILY, Fonts.BODY_SIZE, "bold"), fg=Colors.WARNING, bg=Colors.BG_TERTIARY).pack(side=tk.LEFT, padx=Spacing.XS)
         
-        self.box_entry.bind("<Return>", lambda e: self.ttn_entry.focus())
+        self.box_entry.bind("<Return>", lambda e: self._handle_box_submit())
         self.ttn_entry.bind("<Return>", lambda e: self.send_record())
     
     def refresh(self) -> None:
         self.inflight.set(len(self.app.tracking_offline.list()))
+
+    def _handle_box_submit(self) -> None:
+        boxid = "".join(filter(str.isdigit, self.box_entry.get()))
+        if not boxid:
+            return
+        self.box_entry.set(boxid)
+        self.app.sound_player.play_success()
+        self.ttn_entry.focus()
     
     def send_record(self) -> None:
         token = self.app.state_data.get("token")
@@ -991,15 +1024,19 @@ class TrackingScanTab(tk.Frame):
         def on_success(data: Dict[str, Any]) -> None:
             note = data.get("note") if isinstance(data, dict) else None
             if note:
+                self.app.sound_player.play_error()
                 self.status.set(f"⚠️ Дублікат: {note}")
             else:
+                self.app.sound_player.play_success()
                 self.status.set("✅ Успішно додано")
             self.sync_offline()
         
         def on_error(exc: Exception) -> None:
             self.app.tracking_offline.add(record)
             self.inflight.set(len(self.app.tracking_offline.list()))
+            self.app.sound_player.play_error()
             self.status.set("📦 Збережено локально (офлайн)")
+            self.sync_offline()
         
         run_async(self, task, on_success, on_error)
     
@@ -1549,6 +1586,14 @@ class ScanpakScanTab(tk.Frame):
     
     def refresh(self) -> None:
         self.offline_count.set(len(self.app.scanpak_offline.list()))
+
+    def _is_duplicate(self, number: str) -> bool:
+        normalized = number.strip()
+        if not normalized:
+            return False
+        if normalized in self.app.scanpak_history_numbers:
+            return True
+        return self.app.scanpak_offline.contains("parcel_number", normalized)
     
     def submit(self) -> None:
         token = self.app.state_data.get("scanpak_token")
@@ -1557,10 +1602,11 @@ class ScanpakScanTab(tk.Frame):
         if not number:
             self.status.set("⚠️ Введіть номер")
             return
-        
-        if self.app.scanpak_offline.contains("parcel_number", number):
-            self.status.set("⚠️ Дублікат в офлайн черзі")
+
+        if self._is_duplicate(number):
+            self.status.set("Увага, це дублікат. Не збережено")
             self.number_entry.set("")
+            self.number_entry.focus()
             return
         
         self.number_entry.set("")
@@ -1573,6 +1619,7 @@ class ScanpakScanTab(tk.Frame):
         
         def on_success(_: Dict[str, Any]) -> None:
             self.status.set("✅ Збережено")
+            self.app.sound_player.play_success()
             self.sync_offline()
         
         def on_error(exc: Exception) -> None:
@@ -1581,7 +1628,7 @@ class ScanpakScanTab(tk.Frame):
             if isinstance(exc, ApiError):
                 self.status.set(f"⚠️ {exc.message}")
             else:
-                self.status.set("📦 Збережено локально (офлайн)")
+                self.status.set(f"📦 Офлайн: номер {number} збережено локально")
         
         run_async(self, task, on_success, on_error)
     
@@ -1678,9 +1725,14 @@ class ScanpakHistoryTab(tk.Frame):
             data = self.app.scanpak_api.request_json("GET", "/history", token=token)
             return data if isinstance(data, list) else []
         
-        def on_success(data: List[Dict[str, Any]]) -> None:
-            self.records = sorted(data, key=lambda x: x.get("timestamp", x.get("datetime", "")), reverse=True)
-            self.apply_filters()
+    def on_success(data: List[Dict[str, Any]]) -> None:
+        self.records = sorted(data, key=lambda x: x.get("timestamp", x.get("datetime", "")), reverse=True)
+        self.app.scanpak_history_numbers = {
+            str(record.get("parcel_number", "")).strip()
+            for record in self.records
+            if str(record.get("parcel_number", "")).strip()
+        }
+        self.apply_filters()
         
         def on_error(exc: Exception) -> None:
             messagebox.showerror("Помилка", str(exc))
@@ -2403,6 +2455,8 @@ class TrackingApp(tk.Tk):
         self.scanpak_api = ApiClient(f"{BASE_URL}{SCANPAK_BASE_PATH}")
         self.tracking_offline = OfflineQueue(self.store, self.store.tracking_offline_path)
         self.scanpak_offline = OfflineQueue(self.store, self.store.scanpak_offline_path)
+        self.scanpak_history_numbers: set[str] = set()
+        self.sound_player = SoundPlayer(os.path.dirname(os.path.abspath(__file__)))
         
         self.container = tk.Frame(self, bg=Colors.BG_PRIMARY)
         self.container.pack(fill=tk.BOTH, expand=True)
@@ -2440,5 +2494,3 @@ class TrackingApp(tk.Tk):
 if __name__ == "__main__":
     app = TrackingApp()
     app.mainloop()
-
-
