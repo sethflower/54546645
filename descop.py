@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,7 +14,12 @@ from tkinter import messagebox, ttk
 BASE_URL = "http://173.242.53.38:10000"
 APP_NAME = "TrackingApp"
 
+winsound = None
+if sys.platform == "win32":
+    import winsound as winsound_module
 
+    winsound = winsound_module
+    
 # ═══════════════════════════════════════════════════════════════════════════════
 # ЦВЕТОВАЯ СХЕМА И КОНСТАНТЫ ДИЗАЙНА
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -746,20 +752,21 @@ class TrackingScanTab(tk.Frame):
         self.app = app
         self.status = status
         self.inflight = tk.IntVar(value=0)
+        self.scan_message = tk.StringVar(value="")
         
         center = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        center.place(relx=0.5, rely=0.45, anchor="center")
+        center.place(relx=0.5, rely=0.4, anchor="center")
         
-        card = ModernCard(center, title="📷 Сканування", padding=Spacing.XXL)
+        card = ModernCard(center, title="📷 Сканування", padding=Spacing.XXL + Spacing.MD)
         card.pack(fill=tk.X)
         
         self.box_entry = ModernEntry(
             card.content,
             label="BoxID",
             icon="📦",
-            label_size=Fonts.SUBHEADER_SIZE,
-            entry_size=20,
-            entry_padding=Spacing.MD,
+            label_size=Fonts.HEADER_SIZE,
+            entry_size=28,
+            entry_padding=Spacing.LG,
         )
         self.box_entry.pack(fill=tk.X, pady=Spacing.SM)
         
@@ -767,17 +774,26 @@ class TrackingScanTab(tk.Frame):
             card.content,
             label="ТТН",
             icon="🏷️",
-            label_size=Fonts.SUBHEADER_SIZE,
-            entry_size=20,
-            entry_padding=Spacing.MD,
+            label_size=Fonts.HEADER_SIZE,
+            entry_size=28,
+            entry_padding=Spacing.LG,
         )
         self.ttn_entry.pack(fill=tk.X, pady=Spacing.SM)
         
         btn_frame = tk.Frame(card.content, bg=Colors.BG_CARD)
         btn_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
         
-        ModernButton(btn_frame, text="📤 Надіслати", command=self.send_record, variant="primary", width=200, height=54).pack(side=tk.LEFT)
-        ModernButton(btn_frame, text="🔄 Синхронізувати", command=self.sync_offline, variant="secondary", width=220, height=54).pack(side=tk.LEFT, padx=Spacing.SM)
+        ModernButton(btn_frame, text="📤 Надіслати", command=self.send_record, variant="primary", width=240, height=70).pack(side=tk.LEFT)
+        ModernButton(btn_frame, text="🔄 Синхронізувати", command=self.sync_offline, variant="secondary", width=260, height=70).pack(side=tk.LEFT, padx=Spacing.SM)
+
+        self.scan_message_label = tk.Label(
+            card.content,
+            textvariable=self.scan_message,
+            font=(Fonts.FAMILY, Fonts.SUBHEADER_SIZE, "bold"),
+            fg=Colors.TEXT_SECONDARY,
+            bg=Colors.BG_CARD,
+        )
+        self.scan_message_label.pack(fill=tk.X, pady=(Spacing.MD, 0))
         
         offline_frame = tk.Frame(card.content, bg=Colors.BG_TERTIARY)
         offline_frame.pack(fill=tk.X, pady=(Spacing.LG, 0))
@@ -790,6 +806,44 @@ class TrackingScanTab(tk.Frame):
         
         self.box_entry.bind("<Return>", lambda e: self.ttn_entry.focus())
         self.ttn_entry.bind("<Return>", lambda e: self.send_record())
+
+    def _play_tone(self, tone: str) -> None:
+        if winsound:
+            tones = {
+                "success": (880, 140),
+                "duplicate": (220, 220),
+                "partial": (440, 200),
+                "warning": (330, 160),
+            }
+            frequency, duration = tones.get(tone, (330, 160))
+            winsound.Beep(frequency, duration)
+        else:
+            self.bell()
+
+    def _set_scan_message(self, message: str, tone: str) -> None:
+        colors = {
+            "success": Colors.SUCCESS,
+            "duplicate": Colors.ERROR,
+            "partial": Colors.WARNING,
+            "warning": Colors.WARNING,
+            "info": Colors.TEXT_SECONDARY,
+        }
+        self.scan_message.set(message)
+        self.scan_message_label.config(fg=colors.get(tone, Colors.TEXT_SECONDARY))
+        self.status.set(message)
+        self._play_tone(tone)
+
+    def _describe_duplicate(self, note: str) -> Tuple[str, str]:
+        note_lower = note.lower()
+        has_boxid = "box" in note_lower
+        has_ttn = "ттн" in note_lower or "ttn" in note_lower
+        if has_boxid and has_ttn:
+            return ("Такі BoxID та ТТН вже було внесено", "duplicate")
+        if has_boxid:
+            return ("Такий BoxID вже було внесено", "partial")
+        if has_ttn:
+            return ("Такий ТТН вже було внесено", "partial")
+        return ("Такий запис вже було внесено", "duplicate")
     
     def refresh(self) -> None:
         self.inflight.set(len(self.app.tracking_offline.list()))
@@ -801,7 +855,7 @@ class TrackingScanTab(tk.Frame):
         ttn = "".join(filter(str.isdigit, self.ttn_entry.get()))
         
         if not boxid or not ttn:
-            self.status.set("⚠️ Заповніть BoxID та ТТН")
+            self._set_scan_message("Заповніть BoxID та ТТН", "warning")
             return
         
         record = {"user_name": user_name, "boxid": boxid, "ttn": ttn}
@@ -817,14 +871,17 @@ class TrackingScanTab(tk.Frame):
         def on_success(data: Dict[str, Any]) -> None:
             note = data.get("note") if isinstance(data, dict) else None
             if note:
-                self.status.set(f"⚠️ Дублікат: {note}")
+                message, tone = self._describe_duplicate(str(note))
+                self._set_scan_message(message, tone)
             else:
-                self.status.set("✅ Успішно додано")
+                self._set_scan_message("BoxID та ТТН внесені", "success")
             self.sync_offline()
         
         def on_error(exc: Exception) -> None:
             self.app.tracking_offline.add(record)
             self.inflight.set(len(self.app.tracking_offline.list()))
+            self.scan_message.set("Збережено локально (офлайн)")
+            self.scan_message_label.config(fg=Colors.INFO)
             self.status.set("📦 Збережено локально (офлайн)")
         
         run_async(self, task, on_success, on_error)
