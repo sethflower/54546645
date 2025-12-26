@@ -11,7 +11,7 @@ from platformdirs import user_data_dir
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-BASE_URL = "http://173.242.53.38:1000"
+BASE_URL = "http://173.242.53.38:10000"
 SCANPAK_BASE_PATH = "/scanpak"
 APP_NAME = "TrackingApp"
 
