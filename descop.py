@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
+import winsound
 from platformdirs import user_data_dir
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -807,8 +808,8 @@ class TrackingScanTab(tk.Frame):
         if winsound:
             tones = {
                 "success": (880, 140),
-                "duplicate": (220, 220),
-                "partial": (440, 200),
+                "negative": (220, 220),
+                "both": (440, 200),
                 "warning": (330, 160),
             }
             frequency, duration = tones.get(tone, (330, 160))
@@ -819,8 +820,8 @@ class TrackingScanTab(tk.Frame):
     def _set_scan_message(self, message: str, tone: str) -> None:
         colors = {
             "success": Colors.SUCCESS,
-            "duplicate": Colors.ERROR,
-            "partial": Colors.WARNING,
+            "negative": Colors.ERROR,
+            "both": Colors.WARNING,
             "warning": Colors.WARNING,
             "info": Colors.TEXT_SECONDARY,
         }
@@ -834,12 +835,12 @@ class TrackingScanTab(tk.Frame):
         has_boxid = "box" in note_lower
         has_ttn = "ттн" in note_lower or "ttn" in note_lower
         if has_boxid and has_ttn:
-            return ("Такі BoxID та ТТН вже було внесено", "duplicate")
+            return ("Такий BoxID та ТТН уже було внесено", "both")
         if has_boxid:
-            return ("Такий BoxID вже було внесено", "partial")
+            return ("Такий BoxID вже було внесено", "negative")
         if has_ttn:
-            return ("Такий ТТН вже було внесено", "partial")
-        return ("Такий запис вже було внесено", "duplicate")
+            return ("Такий ТТН вже було внесено", "negative")
+        return ("Такий запис вже було внесено", "negative")
     
     def refresh(self) -> None:
         self.inflight.set(len(self.app.tracking_offline.list()))
