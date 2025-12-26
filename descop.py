@@ -23,7 +23,8 @@ APP_VENDOR = "TrackingApp"
 TRACKING_API_HOST = "173.242.53.38"
 TRACKING_API_PORT = 10000
 
-SCANPAK_API_HOST = "tracking-api-b4jb.onrender.com"
+SCANPAK_API_HOST = "173.242.53.38"
+SCANPAK_API_PORT = 10000
 SCANPAK_BASE_PATH = "/scanpak"
 
 
@@ -32,7 +33,7 @@ def api_base_url() -> str:
 
 
 def scanpak_base_url() -> str:
-    return f"https://{SCANPAK_API_HOST}{SCANPAK_BASE_PATH}"
+    return f"http://{SCANPAK_API_HOST}:{SCANPAK_API_PORT}:{SCANPAK_BASE_PATH}"
 
 
 class Settings:
