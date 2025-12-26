@@ -701,7 +701,7 @@ class ModernTreeview(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class StartFrame(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         
@@ -792,7 +792,7 @@ class StartFrame(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TrackingLoginFrame(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.is_busy = False
@@ -1054,7 +1054,7 @@ class TrackingLoginFrame(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TrackingMainFrame(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.status = tk.StringVar(value="")
@@ -1192,7 +1192,7 @@ class TrackingMainFrame(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TrackingScanTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, status: tk.StringVar) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp", status: tk.StringVar) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.status = status
@@ -1362,7 +1362,7 @@ class TrackingScanTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class HistoryTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.records: List[Dict[str, Any]] = []
@@ -1577,7 +1577,7 @@ class HistoryTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ErrorsTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.records: List[Dict[str, Any]] = []
@@ -1718,7 +1718,7 @@ class ErrorsTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class StatisticsTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.history: List[Dict[str, Any]] = []
@@ -1891,7 +1891,7 @@ class StatisticsTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ScanpakMainFrame(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.status = tk.StringVar(value="")
@@ -1970,7 +1970,7 @@ class ScanpakMainFrame(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ScanpakScanTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, status: tk.StringVar) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp", status: tk.StringVar) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.status = status
@@ -2088,7 +2088,7 @@ class ScanpakScanTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ScanpakHistoryTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.records: List[Dict[str, Any]] = []
@@ -2228,7 +2228,7 @@ class ScanpakHistoryTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ScanpakStatsTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp") -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.records: List[Dict[str, Any]] = []
@@ -2374,7 +2374,7 @@ class ScanpakStatsTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class AdminPanel(tk.Toplevel):
-    def __init__(self, parent: tk.Misc, app: TrackingApp, token: str) -> None:
+    def __init__(self, parent: tk.Misc, app: "TrackingApp", token: str) -> None:
         super().__init__(parent)
         self.app = app
         self.token = token
@@ -2421,7 +2421,7 @@ class AdminPanel(tk.Toplevel):
 
 
 class AdminPendingTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, token: str) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp", token: str) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.token = token
@@ -2571,7 +2571,7 @@ class AdminPendingTab(tk.Frame):
 
 
 class AdminUsersTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, token: str) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp", token: str) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.token = token
@@ -2703,7 +2703,7 @@ class AdminUsersTab(tk.Frame):
 
 
 class AdminPasswordsTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, token: str) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp", token: str) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.token = token
@@ -2832,7 +2832,7 @@ class AdminPasswordsTab(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ScanpakAdminPanel(tk.Toplevel):
-    def __init__(self, parent: tk.Misc, app: TrackingApp, token: str) -> None:
+    def __init__(self, parent: tk.Misc, app: "TrackingApp", token: str) -> None:
         super().__init__(parent)
         self.app = app
         self.token = token
@@ -2877,7 +2877,7 @@ class ScanpakAdminPanel(tk.Toplevel):
 
 
 class ScanpakAdminPendingTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, token: str) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp", token: str) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.token = token
@@ -2975,7 +2975,7 @@ class ScanpakAdminPendingTab(tk.Frame):
 
 
 class ScanpakAdminUsersTab(tk.Frame):
-    def __init__(self, parent: tk.Frame, app: TrackingApp, token: str) -> None:
+    def __init__(self, parent: tk.Frame, app: "TrackingApp", token: str) -> None:
         super().__init__(parent, bg=Colors.BG_PRIMARY)
         self.app = app
         self.token = token
