@@ -694,61 +694,6 @@ class ModernTreeview(tk.Frame):
         self.tree.delete(*items)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ГЛАВНОЕ ПРИЛОЖЕНИЕ
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TrackingApp(tk.Tk):
-    def __init__(self) -> None:
-        super().__init__()
-        self.title("TrackingApp")
-        self.geometry("1280x800")
-        self.minsize(1100, 700)
-        self.configure(bg=Colors.BG_PRIMARY)
-        
-        # Инициализация данных
-        self.store = LocalStore()
-        self.state_data = self.store.load_state()
-        self.api = ApiClient(BASE_URL)
-        self.scanpak_api = ApiClient(f"{BASE_URL}{SCANPAK_BASE_PATH}")
-        self.tracking_offline = OfflineQueue(self.store, self.store.tracking_offline_path)
-        self.scanpak_offline = OfflineQueue(self.store, self.store.scanpak_offline_path)
-        
-        # Основной контейнер
-        self.container = tk.Frame(self, bg=Colors.BG_PRIMARY)
-        self.container.pack(fill=tk.BOTH, expand=True)
-        self.container.grid_rowconfigure(0, weight=1)
-        self.container.grid_columnconfigure(0, weight=1)
-        
-        # Создаем фреймы
-        self.frames: Dict[str, tk.Frame] = {}
-        for frame_class in (
-            StartFrame,
-            TrackingLoginFrame,
-            ScanpakLoginFrame,
-            TrackingMainFrame,
-            ScanpakMainFrame,
-        ):
-            frame = frame_class(self.container, self)
-            self.frames[frame_class.__name__] = frame
-            frame.grid(row=0, column=0, sticky="nsew")
-        
-        self.show_frame("StartFrame")
-    
-    def show_frame(self, name: str) -> None:
-        frame = self.frames[name]
-        frame.tkraise()
-        if hasattr(frame, "refresh"):
-            frame.refresh()
-    
-    def update_state(self, updates: Dict[str, Any]) -> None:
-        self.state_data.update(updates)
-        self.store.save_state(self.state_data)
-    
-    def clear_state(self, keys: List[str]) -> None:
-        for key in keys:
-            self.state_data.pop(key, None)
-        self.store.save_state(self.state_data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3195,6 +3140,62 @@ def simple_prompt(root: tk.Misc, prompt: str) -> Optional[str]:
     
     dialog.wait_window()
     return result[0]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ГЛАВНОЕ ПРИЛОЖЕНИЕ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TrackingApp(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("TrackingApp")
+        self.geometry("1280x800")
+        self.minsize(1100, 700)
+        self.configure(bg=Colors.BG_PRIMARY)
+        
+        # Инициализация данных
+        self.store = LocalStore()
+        self.state_data = self.store.load_state()
+        self.api = ApiClient(BASE_URL)
+        self.scanpak_api = ApiClient(f"{BASE_URL}{SCANPAK_BASE_PATH}")
+        self.tracking_offline = OfflineQueue(self.store, self.store.tracking_offline_path)
+        self.scanpak_offline = OfflineQueue(self.store, self.store.scanpak_offline_path)
+        
+        # Основной контейнер
+        self.container = tk.Frame(self, bg=Colors.BG_PRIMARY)
+        self.container.pack(fill=tk.BOTH, expand=True)
+        self.container.grid_rowconfigure(0, weight=1)
+        self.container.grid_columnconfigure(0, weight=1)
+        
+        # Создаем фреймы
+        self.frames: Dict[str, tk.Frame] = {}
+        for frame_class in (
+            StartFrame,
+            TrackingLoginFrame,
+            ScanpakLoginFrame,
+            TrackingMainFrame,
+            ScanpakMainFrame,
+        ):
+            frame = frame_class(self.container, self)
+            self.frames[frame_class.__name__] = frame
+            frame.grid(row=0, column=0, sticky="nsew")
+        
+        self.show_frame("StartFrame")
+    
+    def show_frame(self, name: str) -> None:
+        frame = self.frames[name]
+        frame.tkraise()
+        if hasattr(frame, "refresh"):
+            frame.refresh()
+    
+    def update_state(self, updates: Dict[str, Any]) -> None:
+        self.state_data.update(updates)
+        self.store.save_state(self.state_data)
+    
+    def clear_state(self, keys: List[str]) -> None:
+        for key in keys:
+            self.state_data.pop(key, None)
+        self.store.save_state(self.state_data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
