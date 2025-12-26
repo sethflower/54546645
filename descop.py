@@ -221,36 +221,112 @@ class TrackingApp(tk.Tk):
     def _init_style(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
-        self.configure(bg="#F2F5FA")
-        style.configure("TFrame", background="#F2F5FA")
-        style.configure("Card.TFrame", background="#FFFFFF", relief="flat")
+        palette = {
+            "bg": "#F1F5F9",
+            "card": "#FFFFFF",
+            "text": "#0F172A",
+            "muted": "#64748B",
+            "accent": "#2563EB",
+            "accent_hover": "#1D4ED8",
+            "accent_soft": "#DBEAFE",
+            "border": "#E2E8F0",
+        }
+        self.option_add("*Font", "Segoe UI 10")
+        self.configure(bg=palette["bg"])
+        style.configure(".", background=palette["bg"], foreground=palette["text"])
+        style.configure("TFrame", background=palette["bg"])
+        style.configure(
+            "Card.TFrame",
+            background=palette["card"],
+            borderwidth=1,
+            relief="solid",
+        )
+        style.configure(
+            "Header.TFrame",
+            background=palette["card"],
+            borderwidth=1,
+            relief="solid",
+        )
         style.configure(
             "Accent.TButton",
-            background="#2563EB",
+            background=palette["accent"],
             foreground="#FFFFFF",
-            padding=10,
+            padding=(16, 10),
             font=("Segoe UI", 10, "bold"),
+            borderwidth=0,
         )
         style.map(
             "Accent.TButton",
-            background=[("active", "#1D4ED8"), ("disabled", "#94A3B8")],
+            background=[
+                ("active", palette["accent_hover"]),
+                ("disabled", "#94A3B8"),
+            ],
         )
         style.configure(
             "Secondary.TButton",
-            background="#E2E8F0",
-            foreground="#1E293B",
-            padding=8,
+            background=palette["border"],
+            foreground=palette["text"],
+            padding=(14, 9),
+            borderwidth=0,
         )
         style.map(
             "Secondary.TButton",
             background=[("active", "#CBD5F5")],
         )
-        style.configure("Title.TLabel", font=("Segoe UI", 22, "bold"))
-        style.configure("Subtitle.TLabel", font=("Segoe UI", 12))
-        style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"))
-        style.configure("Status.TLabel", font=("Segoe UI", 11))
-        style.configure("Treeview", font=("Segoe UI", 10), rowheight=24)
-        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+        style.configure(
+            "TEntry",
+            fieldbackground=palette["card"],
+            foreground=palette["text"],
+            bordercolor=palette["border"],
+            padding=6,
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=palette["card"],
+            foreground=palette["text"],
+            padding=6,
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=palette["card"],
+            foreground=palette["text"],
+            padding=6,
+        )
+        style.configure("Title.TLabel", font=("Segoe UI", 22, "bold"), background=palette["card"])
+        style.configure("Subtitle.TLabel", font=("Segoe UI", 12), foreground=palette["muted"], background=palette["card"])
+        style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"), background=palette["card"])
+        style.configure("Meta.TLabel", foreground=palette["muted"], background=palette["card"])
+        style.configure("Status.TLabel", font=("Segoe UI", 11), foreground=palette["muted"])
+        style.configure("TLabel", background=palette["bg"], foreground=palette["text"])
+        style.configure("TLabelframe", background=palette["bg"], bordercolor=palette["border"])
+        style.configure("TLabelframe.Label", background=palette["bg"], foreground=palette["muted"])
+        style.configure("TNotebook", background=palette["bg"], borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            background=palette["border"],
+            foreground=palette["muted"],
+            padding=(14, 8),
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", palette["card"])],
+            foreground=[("selected", palette["text"])],
+        )
+        style.configure(
+            "Treeview",
+            font=("Segoe UI", 10),
+            rowheight=26,
+            background=palette["card"],
+            fieldbackground=palette["card"],
+            bordercolor=palette["border"],
+        )
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"), background=palette["border"])
+        style.map(
+            "Treeview",
+            background=[("selected", palette["accent_soft"])],
+            foreground=[("selected", "#1E3A8A")],
+        )
 
     def show_frame(self, name: str) -> None:
         frame = self.frames[name]
@@ -692,13 +768,17 @@ class TrackingMainFrame(ttk.Frame):
         self.role_label = tk.StringVar(value="")
         self.access_level = None
 
-        header = ttk.Frame(self)
-        header.pack(fill=tk.X)
+        header = ttk.Frame(self, style="Header.TFrame", padding=12)
+        header.pack(fill=tk.X, pady=(0, 12))
         ttk.Label(header, text="TrackingApp", style="Header.TLabel").pack(
             side=tk.LEFT
         )
-        ttk.Label(header, textvariable=self.user_label).pack(side=tk.LEFT, padx=20)
-        ttk.Label(header, textvariable=self.role_label).pack(side=tk.LEFT)
+        ttk.Label(header, textvariable=self.user_label, style="Meta.TLabel").pack(
+            side=tk.LEFT, padx=20
+        )
+        ttk.Label(header, textvariable=self.role_label, style="Meta.TLabel").pack(
+            side=tk.LEFT
+        )
         ttk.Button(
             header,
             text="Вийти",
@@ -707,7 +787,7 @@ class TrackingMainFrame(ttk.Frame):
         ).pack(side=tk.RIGHT)
 
         self.tabs = ttk.Notebook(self)
-        self.tabs.pack(fill=tk.BOTH, expand=True, pady=12)
+        self.tabs.pack(fill=tk.BOTH, expand=True)
 
         self.scan_tab = TrackingScanTab(self.tabs, app, self.status)
         self.history_tab = HistoryTab(self.tabs, app)
@@ -1318,10 +1398,12 @@ class ScanpakMainFrame(ttk.Frame):
         self.status = tk.StringVar(value="")
         self.user_label = tk.StringVar(value="")
 
-        header = ttk.Frame(self)
-        header.pack(fill=tk.X)
+        header = ttk.Frame(self, style="Header.TFrame", padding=12)
+        header.pack(fill=tk.X, pady=(0, 12))
         ttk.Label(header, text="СканПак", style="Header.TLabel").pack(side=tk.LEFT)
-        ttk.Label(header, textvariable=self.user_label).pack(side=tk.LEFT, padx=20)
+        ttk.Label(header, textvariable=self.user_label, style="Meta.TLabel").pack(
+            side=tk.LEFT, padx=20
+        )
         ttk.Button(
             header,
             text="Вийти",
@@ -1330,7 +1412,7 @@ class ScanpakMainFrame(ttk.Frame):
         ).pack(side=tk.RIGHT)
 
         self.tabs = ttk.Notebook(self)
-        self.tabs.pack(fill=tk.BOTH, expand=True, pady=12)
+        self.tabs.pack(fill=tk.BOTH, expand=True)
 
         self.scan_tab = ScanpakScanTab(self.tabs, app, self.status)
         self.history_tab = ScanpakHistoryTab(self.tabs, app)
