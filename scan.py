@@ -524,7 +524,7 @@ class LoginFrame(tk.Frame):
         # Версия
         version_label = tk.Label(
             center_container,
-            text="v2.0.0 • © 2024 СканПак Systems",
+            text="V1 • © 2026 СканПак by DimonVR",
             font=Fonts.SMALL,
             bg=Colors.BG_DARK,
             fg=Colors.TEXT_MUTED
