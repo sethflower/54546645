@@ -437,7 +437,7 @@ class LoginFrame(tk.Frame):
         logo_canvas.create_oval(5, 5, 75, 75, fill=Colors.PRIMARY, outline="")
         logo_canvas.create_text(
             40, 40,
-            text="SP",
+            text="СП",
             font=("Segoe UI", 24, "bold"),
             fill=Colors.TEXT_PRIMARY
         )
@@ -445,7 +445,7 @@ class LoginFrame(tk.Frame):
         # Заголовок
         title_label = tk.Label(
             center_container,
-            text="ScanPak",
+            text="СканПак",
             font=Fonts.TITLE_LARGE,
             bg=Colors.BG_DARK,
             fg=Colors.TEXT_PRIMARY
@@ -524,7 +524,7 @@ class LoginFrame(tk.Frame):
         # Версия
         version_label = tk.Label(
             center_container,
-            text="v2.0.0 • © 2024 ScanPak Systems",
+            text="v2.0.0 • © 2024 СканПак Systems",
             font=Fonts.SMALL,
             bg=Colors.BG_DARK,
             fg=Colors.TEXT_MUTED
@@ -599,11 +599,11 @@ class MainFrame(tk.Frame):
         )
         logo_canvas.pack(side="left")
         logo_canvas.create_oval(3, 3, 47, 47, fill=Colors.PRIMARY, outline="")
-        logo_canvas.create_text(25, 25, text="SP", font=("Segoe UI", 14, "bold"), fill="white")
+        logo_canvas.create_text(25, 25, text="СП", font=("Segoe UI", 14, "bold"), fill="white")
         
         logo_text = tk.Label(
             logo_frame,
-            text="ScanPak",
+            text="СканПак",
             font=Fonts.SUBTITLE,
             bg=Colors.BG_MEDIUM,
             fg=Colors.TEXT_PRIMARY
@@ -880,40 +880,9 @@ class MainFrame(tk.Frame):
         )
         self.scan_feedback.pack()
         
-        # Статистика
-        stats_frame = tk.Frame(page, bg=Colors.BG_DARK)
-        stats_frame.pack(fill="x")
-        
-        self._create_stat_card(stats_frame, "Сьогодні", "0", Colors.PRIMARY).pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self._create_stat_card(stats_frame, "Цього тижня", "0", Colors.SUCCESS).pack(side="left", fill="x", expand=True, padx=10)
-        self._create_stat_card(stats_frame, "Всього", "0", Colors.WARNING).pack(side="left", fill="x", expand=True, padx=(10, 0))
+        # Блоки статистики УДАЛЕНЫ
         
         return page
-    
-    def _create_stat_card(self, parent, title: str, value: str, color: str) -> tk.Frame:
-        """Создание карточки статистики"""
-        card = tk.Frame(parent, bg=Colors.BG_CARD)
-        
-        content = tk.Frame(card, bg=Colors.BG_CARD, padx=20, pady=20)
-        content.pack(fill="both", expand=True)
-        
-        tk.Label(
-            content,
-            text=title,
-            font=Fonts.SMALL,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_MUTED
-        ).pack(anchor="w")
-        
-        tk.Label(
-            content,
-            text=value,
-            font=Fonts.TITLE,
-            bg=Colors.BG_CARD,
-            fg=color
-        ).pack(anchor="w", pady=(5, 0))
-        
-        return card
     
     def _build_history_page(self) -> tk.Frame:
         """Построение страницы истории"""
@@ -1139,7 +1108,6 @@ class MainFrame(tk.Frame):
             self.records = self.api.fetch_history(token)
             self.filtered = list(self.records)
             self._render_history()
-            self._update_stats()
             self.sidebar_status.config(text="✓ Історія оновлена", fg=Colors.SUCCESS)
         except (requests.RequestException, RuntimeError) as exc:
             self.sidebar_status.config(text=f"⚠ {str(exc)}", fg=Colors.ERROR)
@@ -1151,18 +1119,6 @@ class MainFrame(tk.Frame):
             self.history_tree.insert(
                 "", tk.END, values=(record.number, record.user, display_time)
             )
-    
-    def _update_stats(self) -> None:
-        """Обновление статистики"""
-        today = dt.date.today()
-        week_start = today - dt.timedelta(days=today.weekday())
-        
-        today_count = sum(1 for r in self.records if r.timestamp.date() == today)
-        week_count = sum(1 for r in self.records if r.timestamp.date() >= week_start)
-        total_count = len(self.records)
-        
-        # Обновляем карточки статистики (если они есть)
-        # В данной реализации статистика статична, но её можно сделать динамической
 
     def _handle_scan(self) -> None:
         raw = self.scan_entry.get().strip()
@@ -1196,8 +1152,9 @@ class MainFrame(tk.Frame):
         self.records.insert(0, record)
         self.filtered = list(self.records)
         self._render_history()
+        # ИЗМЕНЕНО: убрано время из сообщения
         self.scan_feedback.config(
-            text=f"✓ Збережено для {record.user} о {record.timestamp.strftime('%H:%M')}",
+            text=f"✓ Збережено для {record.user}",
             fg=Colors.SUCCESS
         )
         self.scan_entry.delete(0, tk.END)
@@ -1214,7 +1171,7 @@ class MainFrame(tk.Frame):
 class ScanpakApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("ScanPak — Система управління скануванням")
+        self.title("СканПак — Система управління скануванням")
         self.geometry("1100x700")
         self.minsize(900, 600)
         self.configure(bg=Colors.BG_DARK)
