@@ -524,7 +524,7 @@ class LoginFrame(tk.Frame):
         # Версия
         version_label = tk.Label(
             center_container,
-            text="V1 • © 2026 СканПак by DimonVR",
+            text="Windows version • © 2026 СканПак by DimonVR",
             font=Fonts.SMALL,
             bg=Colors.BG_DARK,
             fg=Colors.TEXT_MUTED
@@ -578,6 +578,27 @@ class MainFrame(tk.Frame):
         self._build_ui()
         self._refresh_history()
 
+    def _is_admin(self) -> bool:
+        """Проверка, является ли пользователь администратором"""
+        role = self.session.get("role", "").lower()
+        # Проверяем различные варианты написания роли админа
+        return role in ("admin", "адмін", "админ", "administrator", "адміністратор")
+
+    def _get_current_username(self) -> str:
+        """Получение имени текущего пользователя"""
+        return self.session.get("surname", "")
+
+    def _filter_records_by_user(self, records: List[ScanRecord]) -> List[ScanRecord]:
+        """Фильтрация записей по текущему пользователю (если не админ)"""
+        if self._is_admin():
+            return records
+        
+        current_user = self._get_current_username().lower()
+        return [
+            record for record in records
+            if record.user.lower() == current_user
+        ]
+
     def _build_ui(self) -> None:
         # ═══════════════════════════════════════════════════════════════════
         # БОКОВАЯ ПАНЕЛЬ
@@ -617,6 +638,9 @@ class MainFrame(tk.Frame):
         user_frame = tk.Frame(sidebar, bg=Colors.BG_MEDIUM)
         user_frame.pack(fill="x", padx=20, pady=15)
         
+        # Цвет иконки зависит от роли (админ - особый цвет)
+        icon_color = Colors.WARNING if self._is_admin() else Colors.SUCCESS
+        
         user_icon = tk.Canvas(
             user_frame,
             width=40,
@@ -625,7 +649,7 @@ class MainFrame(tk.Frame):
             highlightthickness=0
         )
         user_icon.pack(side="left")
-        user_icon.create_oval(2, 2, 38, 38, fill=Colors.SUCCESS, outline="")
+        user_icon.create_oval(2, 2, 38, 38, fill=icon_color, outline="")
         user_icon.create_text(
             20, 20,
             text=self.session.get('surname', 'U')[0].upper(),
@@ -644,12 +668,16 @@ class MainFrame(tk.Frame):
             fg=Colors.TEXT_PRIMARY
         ).pack(anchor="w")
         
+        # Показываем роль с особым форматированием для админа
+        role_text = self.session.get('role', 'Оператор')
+        role_color = Colors.WARNING if self._is_admin() else Colors.TEXT_MUTED
+        
         tk.Label(
             user_info,
-            text=self.session.get('role', 'Оператор'),
+            text=role_text,
             font=Fonts.SMALL,
             bg=Colors.BG_MEDIUM,
-            fg=Colors.TEXT_MUTED
+            fg=role_color
         ).pack(anchor="w")
         
         # Разделитель
@@ -880,8 +908,6 @@ class MainFrame(tk.Frame):
         )
         self.scan_feedback.pack()
         
-        # Блоки статистики УДАЛЕНЫ
-        
         return page
     
     def _build_history_page(self) -> tk.Frame:
@@ -924,22 +950,28 @@ class MainFrame(tk.Frame):
         self.filter_box_entry.inner_frame.config(bg=Colors.BG_LIGHT)
         self.filter_box_entry.entry.config(bg=Colors.BG_LIGHT, width=15)
         
-        # Користувач фильтр
-        user_filter_frame = tk.Frame(filter_row, bg=Colors.BG_CARD)
-        user_filter_frame.pack(side="left", fill="x", expand=True, padx=10)
+        # Фильтр по пользователю - ТОЛЬКО ДЛЯ АДМИНА
+        self.user_filter_frame = tk.Frame(filter_row, bg=Colors.BG_CARD)
         
-        tk.Label(
-            user_filter_frame,
-            text="Користувач",
-            font=Fonts.SMALL,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_SECONDARY
-        ).pack(anchor="w", pady=(0, 5))
-        
-        self.filter_user_entry = ModernEntry(user_filter_frame, placeholder="")
-        self.filter_user_entry.pack(fill="x")
-        self.filter_user_entry.inner_frame.config(bg=Colors.BG_LIGHT)
-        self.filter_user_entry.entry.config(bg=Colors.BG_LIGHT, width=15)
+        if self._is_admin():
+            # Показываем фильтр по пользователю только для админа
+            self.user_filter_frame.pack(side="left", fill="x", expand=True, padx=10)
+            
+            tk.Label(
+                self.user_filter_frame,
+                text="Користувач",
+                font=Fonts.SMALL,
+                bg=Colors.BG_CARD,
+                fg=Colors.TEXT_SECONDARY
+            ).pack(anchor="w", pady=(0, 5))
+            
+            self.filter_user_entry = ModernEntry(self.user_filter_frame, placeholder="")
+            self.filter_user_entry.pack(fill="x")
+            self.filter_user_entry.inner_frame.config(bg=Colors.BG_LIGHT)
+            self.filter_user_entry.entry.config(bg=Colors.BG_LIGHT, width=15)
+        else:
+            # Для обычных пользователей создаём пустой entry (для совместимости)
+            self.filter_user_entry = None
         
         # Дата фильтр
         date_filter_frame = tk.Frame(filter_row, bg=Colors.BG_CARD)
@@ -995,6 +1027,17 @@ class MainFrame(tk.Frame):
         )
         refresh_btn.pack(side="left")
         
+        # Информационное сообщение для не-админов
+        if not self._is_admin():
+            info_label = tk.Label(
+                filters_content,
+                text=f"📋 Показано тільки ваші сканування ({self._get_current_username()})",
+                font=Fonts.SMALL,
+                bg=Colors.BG_CARD,
+                fg=Colors.TEXT_MUTED
+            )
+            info_label.pack(anchor="w", pady=(10, 0))
+        
         # Таблица
         table_card = tk.Frame(page, bg=Colors.BG_CARD)
         table_card.pack(fill="both", expand=True)
@@ -1034,9 +1077,16 @@ class MainFrame(tk.Frame):
         tree_frame = tk.Frame(table_content, bg=Colors.BG_CARD)
         tree_frame.pack(fill="both", expand=True)
         
+        # Определяем колонки в зависимости от роли
+        if self._is_admin():
+            columns = ("number", "user", "time")
+        else:
+            # Для обычных пользователей не показываем колонку пользователя
+            columns = ("number", "user", "time")
+        
         self.history_tree = ttk.Treeview(
             tree_frame,
-            columns=("number", "user", "time"),
+            columns=columns,
             show="headings",
             style="Custom.Treeview"
         )
@@ -1063,20 +1113,29 @@ class MainFrame(tk.Frame):
 
     def _apply_filters(self) -> None:
         box_filter = self.filter_box_entry.get().strip()
-        user_filter = self.filter_user_entry.get().strip().lower()
         date_filter = self.filter_date_entry.get().strip()
+        
+        # Фильтр по пользователю только для админа
+        user_filter = ""
+        if self._is_admin() and self.filter_user_entry:
+            user_filter = self.filter_user_entry.get().strip().lower()
 
+        # Начинаем с записей, уже отфильтрованных по пользователю
         filtered = list(self.records)
+        
         if box_filter:
             filtered = [
                 record for record in filtered if box_filter in record.number
             ]
-        if user_filter:
+        
+        # Фильтр по пользователю только для админа
+        if user_filter and self._is_admin():
             filtered = [
                 record
                 for record in filtered
                 if user_filter in record.user.lower()
             ]
+        
         if date_filter:
             try:
                 target = dt.datetime.strptime(date_filter, "%Y-%m-%d").date()
@@ -1093,7 +1152,8 @@ class MainFrame(tk.Frame):
 
     def _clear_filters(self) -> None:
         self.filter_box_entry.delete(0, tk.END)
-        self.filter_user_entry.delete(0, tk.END)
+        if self._is_admin() and self.filter_user_entry:
+            self.filter_user_entry.delete(0, tk.END)
         self.filter_date_entry.delete(0, tk.END)
         self.filtered = list(self.records)
         self._render_history()
@@ -1105,10 +1165,22 @@ class MainFrame(tk.Frame):
         self.sidebar_status.config(text="⏳ Оновлюємо історію...", fg=Colors.WARNING)
         self.update_idletasks()
         try:
-            self.records = self.api.fetch_history(token)
+            # Получаем все записи с сервера
+            all_records = self.api.fetch_history(token)
+            
+            # Фильтруем записи по пользователю (если не админ)
+            self.records = self._filter_records_by_user(all_records)
             self.filtered = list(self.records)
+            
             self._render_history()
-            self.sidebar_status.config(text="✓ Історія оновлена", fg=Colors.SUCCESS)
+            
+            # Обновляем статус с информацией о количестве записей
+            count = len(self.records)
+            if self._is_admin():
+                self.sidebar_status.config(text=f"✓ Історія оновлена ({count} записів)", fg=Colors.SUCCESS)
+            else:
+                self.sidebar_status.config(text=f"✓ Ваша історія оновлена ({count} записів)", fg=Colors.SUCCESS)
+                
         except (requests.RequestException, RuntimeError) as exc:
             self.sidebar_status.config(text=f"⚠ {str(exc)}", fg=Colors.ERROR)
 
@@ -1149,10 +1221,13 @@ class MainFrame(tk.Frame):
             self.scan_feedback.config(text="⚠ Помилка збереження", fg=Colors.ERROR)
             return
 
-        self.records.insert(0, record)
-        self.filtered = list(self.records)
-        self._render_history()
-        # ИЗМЕНЕНО: убрано время из сообщения
+        # Добавляем запись в историю только если она принадлежит текущему пользователю
+        # или если пользователь админ
+        if self._is_admin() or record.user.lower() == self._get_current_username().lower():
+            self.records.insert(0, record)
+            self.filtered = list(self.records)
+            self._render_history()
+        
         self.scan_feedback.config(
             text=f"✓ Збережено для {record.user}",
             fg=Colors.SUCCESS
@@ -1175,9 +1250,6 @@ class ScanpakApp(tk.Tk):
         self.geometry("1100x700")
         self.minsize(900, 600)
         self.configure(bg=Colors.BG_DARK)
-        
-        # Иконка приложения (опционально)
-        # self.iconbitmap("icon.ico")
         
         self.api = ScanpakApi(API_HOST, API_PORT, API_BASE_PATH)
         self.session: dict = {}
