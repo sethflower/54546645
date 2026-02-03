@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Warehouse management system for 3PL operators.
+"""Wareh1ouse management system for 3PL operators.
 
 Features:
 - Manage clients, warehouses, and products
