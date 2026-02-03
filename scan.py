@@ -1,1302 +1,620 @@
+#!/usr/bin/env python3
+"""Warehouse management system for 3PL operators.
+
+Features:
+- Manage clients, warehouses, and products
+- Inbound and outbound orders
+- Inventory tracking per warehouse
+- Stock movements audit trail
+- Reports for inventory and movements
+"""
+
+from __future__ import annotations
+
+import argparse
 import datetime as dt
-import json
-import tkinter as tk
+import sqlite3
 from dataclasses import dataclass
-from tkinter import messagebox, ttk
-from typing import List, Optional
-
-import requests
-
-API_HOST = "173.242.53.38"
-API_PORT = 10000
-API_BASE_PATH = "/scanpak"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ЦВЕТОВАЯ СХЕМА И КОНСТАНТЫ ДИЗАЙНА
-# ══════════════════════════════════════════════════════════════════════════════
-
-class Colors:
-    # Основные цвета
-    PRIMARY = "#1a73e8"
-    PRIMARY_DARK = "#1557b0"
-    PRIMARY_LIGHT = "#4285f4"
-    
-    # Фоновые цвета
-    BG_DARK = "#1e1e2e"
-    BG_MEDIUM = "#2d2d44"
-    BG_LIGHT = "#383850"
-    BG_CARD = "#3d3d5c"
-    
-    # Текст
-    TEXT_PRIMARY = "#ffffff"
-    TEXT_SECONDARY = "#b4b4c4"
-    TEXT_MUTED = "#8888a0"
-    
-    # Акценты
-    SUCCESS = "#00c853"
-    SUCCESS_DARK = "#00a844"
-    WARNING = "#ffab00"
-    ERROR = "#ff5252"
-    ERROR_DARK = "#d32f2f"
-    
-    # Границы и разделители
-    BORDER = "#4a4a6a"
-    BORDER_LIGHT = "#5a5a7a"
-    
-    # Hover эффекты
-    HOVER = "#4a4a6a"
-    PRESSED = "#5a5a7a"
+from typing import Iterable, Optional
 
 
-class Fonts:
-    TITLE_LARGE = ("Segoe UI", 28, "bold")
-    TITLE = ("Segoe UI", 20, "bold")
-    SUBTITLE = ("Segoe UI", 14, "bold")
-    BODY = ("Segoe UI", 11)
-    BODY_BOLD = ("Segoe UI", 11, "bold")
-    SMALL = ("Segoe UI", 10)
-    BUTTON = ("Segoe UI", 11, "bold")
-    INPUT = ("Segoe UI", 12)
+DB_PATH_DEFAULT = "warehouse.db"
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# МОДЕЛИ ДАННЫХ
-# ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True)
-class ScanRecord:
-    number: str
-    user: str
-    timestamp: dt.datetime
-
-    @staticmethod
-    def from_json(payload: dict) -> "ScanRecord":
-        number = str(payload.get("parcel_number") or "").strip()
-        user = str(payload.get("username") or "").strip()
-        raw_time = str(payload.get("scanned_at") or "").strip()
-        if not number:
-            raise ValueError("Некоректні дані сканування")
-        return ScanRecord(number=number, user=user, timestamp=parse_timestamp(raw_time))
+class Client:
+    id: int
+    name: str
 
 
-def parse_timestamp(raw: str) -> dt.datetime:
-    if not raw:
-        raise ValueError("Некоректні дані сканування")
-    normalized = raw.replace("Z", "+00:00")
-    try:
-        parsed = dt.datetime.fromisoformat(normalized)
-    except ValueError as exc:
-        raise ValueError("Некоректні дані сканування") from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone()
+@dataclass(frozen=True)
+class Warehouse:
+    id: int
+    name: str
+    location: str
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API КЛИЕНТ
-# ══════════════════════════════════════════════════════════════════════════════
+@dataclass(frozen=True)
+class Product:
+    id: int
+    sku: str
+    name: str
+    unit: str
 
-class ScanpakApi:
-    def __init__(self, host: str, port: int, base_path: str) -> None:
-        self.host = host
-        self.port = port
-        self.base_path = base_path
 
-    def _url(self, path: str) -> str:
-        return f"http://{self.host}:{self.port}{self.base_path}{path}"
+def connect(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    def login(self, surname: str, password: str) -> dict:
-        response = requests.post(
-            self._url("/login"),
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            data=json.dumps({"surname": surname, "password": password}),
-            timeout=10,
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
+        );
+
+        CREATE TABLE IF NOT EXISTS warehouses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            location TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            unit TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory (
+            warehouse_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (warehouse_id, product_id),
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS inbound_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            warehouse_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (client_id) REFERENCES clients(id),
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS inbound_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inbound_order_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity REAL NOT NULL,
+            FOREIGN KEY (inbound_order_id) REFERENCES inbound_orders(id),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS outbound_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            warehouse_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (client_id) REFERENCES clients(id),
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS outbound_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            outbound_order_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity REAL NOT NULL,
+            FOREIGN KEY (outbound_order_id) REFERENCES outbound_orders(id),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS stock_movements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            warehouse_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity_change REAL NOT NULL,
+            reason TEXT NOT NULL,
+            ref_type TEXT NOT NULL,
+            ref_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );
+        """
+    )
+    conn.commit()
+
+
+def now_ts() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def add_client(conn: sqlite3.Connection, name: str) -> int:
+    cursor = conn.execute("INSERT INTO clients (name) VALUES (?)", (name,))
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def add_warehouse(conn: sqlite3.Connection, name: str, location: str) -> int:
+    cursor = conn.execute(
+        "INSERT INTO warehouses (name, location) VALUES (?, ?)",
+        (name, location),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def add_product(conn: sqlite3.Connection, sku: str, name: str, unit: str) -> int:
+    cursor = conn.execute(
+        "INSERT INTO products (sku, name, unit) VALUES (?, ?, ?)",
+        (sku, name, unit),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def ensure_inventory_row(
+    conn: sqlite3.Connection, warehouse_id: int, product_id: int
+) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO inventory (warehouse_id, product_id, quantity) VALUES (?, ?, 0)",
+        (warehouse_id, product_id),
+    )
+
+
+def create_inbound_order(
+    conn: sqlite3.Connection, client_id: int, warehouse_id: int
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO inbound_orders (client_id, warehouse_id, status, created_at) VALUES (?, ?, ?, ?)",
+        (client_id, warehouse_id, "created", now_ts()),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def add_inbound_item(
+    conn: sqlite3.Connection, inbound_order_id: int, product_id: int, quantity: float
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO inbound_items (inbound_order_id, product_id, quantity) VALUES (?, ?, ?)",
+        (inbound_order_id, product_id, quantity),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def receive_inbound_order(conn: sqlite3.Connection, inbound_order_id: int) -> None:
+    order = conn.execute(
+        "SELECT id, warehouse_id, status FROM inbound_orders WHERE id = ?",
+        (inbound_order_id,),
+    ).fetchone()
+    if order is None:
+        raise ValueError("Inbound order not found")
+    if order["status"] == "received":
+        raise ValueError("Inbound order already received")
+
+    items = conn.execute(
+        "SELECT product_id, quantity FROM inbound_items WHERE inbound_order_id = ?",
+        (inbound_order_id,),
+    ).fetchall()
+    if not items:
+        raise ValueError("Inbound order has no items")
+
+    for item in items:
+        ensure_inventory_row(conn, order["warehouse_id"], item["product_id"])
+        conn.execute(
+            "UPDATE inventory SET quantity = quantity + ? WHERE warehouse_id = ? AND product_id = ?",
+            (item["quantity"], order["warehouse_id"], item["product_id"]),
         )
-        if response.status_code != 200:
-            raise RuntimeError(self._extract_message(response))
-        data = response.json()
-        if not isinstance(data, dict):
-            raise RuntimeError("Неправильна відповідь сервера")
-        token = str(data.get("token") or "").strip()
-        if not token:
-            raise RuntimeError("Сервер не повернув коректний токен")
-        return data
-
-    def fetch_history(self, token: str) -> List[ScanRecord]:
-        response = requests.get(
-            self._url("/history"),
-            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
-            timeout=15,
+        conn.execute(
+            "INSERT INTO stock_movements (warehouse_id, product_id, quantity_change, reason, ref_type, ref_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                order["warehouse_id"],
+                item["product_id"],
+                item["quantity"],
+                "Inbound receipt",
+                "inbound_order",
+                inbound_order_id,
+                now_ts(),
+            ),
         )
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Не вдалося отримати історію ({response.status_code})"
+
+    conn.execute(
+        "UPDATE inbound_orders SET status = ? WHERE id = ?",
+        ("received", inbound_order_id),
+    )
+    conn.commit()
+
+
+def create_outbound_order(
+    conn: sqlite3.Connection, client_id: int, warehouse_id: int
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO outbound_orders (client_id, warehouse_id, status, created_at) VALUES (?, ?, ?, ?)",
+        (client_id, warehouse_id, "created", now_ts()),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def add_outbound_item(
+    conn: sqlite3.Connection, outbound_order_id: int, product_id: int, quantity: float
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO outbound_items (outbound_order_id, product_id, quantity) VALUES (?, ?, ?)",
+        (outbound_order_id, product_id, quantity),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def ship_outbound_order(conn: sqlite3.Connection, outbound_order_id: int) -> None:
+    order = conn.execute(
+        "SELECT id, warehouse_id, status FROM outbound_orders WHERE id = ?",
+        (outbound_order_id,),
+    ).fetchone()
+    if order is None:
+        raise ValueError("Outbound order not found")
+    if order["status"] == "shipped":
+        raise ValueError("Outbound order already shipped")
+
+    items = conn.execute(
+        "SELECT product_id, quantity FROM outbound_items WHERE outbound_order_id = ?",
+        (outbound_order_id,),
+    ).fetchall()
+    if not items:
+        raise ValueError("Outbound order has no items")
+
+    for item in items:
+        row = conn.execute(
+            "SELECT quantity FROM inventory WHERE warehouse_id = ? AND product_id = ?",
+            (order["warehouse_id"], item["product_id"]),
+        ).fetchone()
+        available = row["quantity"] if row else 0
+        if available < item["quantity"]:
+            raise ValueError(
+                f"Insufficient stock for product {item['product_id']}: {available} available"
             )
-        payload = response.json()
-        if not isinstance(payload, list):
-            return []
-        records = []
-        for item in payload:
-            if isinstance(item, dict):
-                try:
-                    records.append(ScanRecord.from_json(item))
-                except ValueError:
-                    continue
-        return records
 
-    def send_scan(self, token: str, parcel_number: str) -> ScanRecord:
-        response = requests.post(
-            self._url("/scans"),
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            data=json.dumps({"parcel_number": parcel_number}),
-            timeout=10,
+    for item in items:
+        conn.execute(
+            "UPDATE inventory SET quantity = quantity - ? WHERE warehouse_id = ? AND product_id = ?",
+            (item["quantity"], order["warehouse_id"], item["product_id"]),
         )
-        if response.status_code == 401:
-            raise RuntimeError("Сесію завершено. Увійдіть знову")
-        if response.status_code != 200:
-            raise RuntimeError(f"Не вдалося зберегти: {response.status_code}")
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("Некоректна відповідь сервера")
-        return ScanRecord.from_json(payload)
-
-    @staticmethod
-    def _extract_message(response: requests.Response) -> str:
-        try:
-            payload = response.json()
-            if isinstance(payload, dict):
-                detail = payload.get("detail") or payload.get("message")
-                if isinstance(detail, str) and detail.strip():
-                    return detail
-        except json.JSONDecodeError:
-            pass
-        return f"Помилка ({response.status_code})"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# КАСТОМНЫЕ ВИДЖЕТЫ
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ModernButton(tk.Canvas):
-    """Современная кнопка с эффектами hover и нажатия"""
-    
-    def __init__(
-        self,
-        master,
-        text: str,
-        command=None,
-        width: int = 140,
-        height: int = 42,
-        bg_color: str = Colors.PRIMARY,
-        hover_color: str = Colors.PRIMARY_DARK,
-        text_color: str = Colors.TEXT_PRIMARY,
-        corner_radius: int = 8,
-        **kwargs
-    ):
-        super().__init__(
-            master,
-            width=width,
-            height=height,
-            bg=master.cget("bg") if hasattr(master, "cget") else Colors.BG_DARK,
-            highlightthickness=0,
-            **kwargs
+        conn.execute(
+            "INSERT INTO stock_movements (warehouse_id, product_id, quantity_change, reason, ref_type, ref_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                order["warehouse_id"],
+                item["product_id"],
+                -item["quantity"],
+                "Outbound shipment",
+                "outbound_order",
+                outbound_order_id,
+                now_ts(),
+            ),
         )
-        
-        self.command = command
-        self.text = text
-        self.width = width
-        self.height = height
-        self.bg_color = bg_color
-        self.hover_color = hover_color
-        self.text_color = text_color
-        self.corner_radius = corner_radius
-        self.is_disabled = False
-        
-        self._draw_button(self.bg_color)
-        
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-        self.bind("<Button-1>", self._on_click)
-        self.bind("<ButtonRelease-1>", self._on_release)
-    
-    def _draw_button(self, color: str) -> None:
-        self.delete("all")
-        r = self.corner_radius
-        w, h = self.width, self.height
-        
-        # Рисуем скругленный прямоугольник
-        self.create_arc(0, 0, r*2, r*2, start=90, extent=90, fill=color, outline=color)
-        self.create_arc(w-r*2, 0, w, r*2, start=0, extent=90, fill=color, outline=color)
-        self.create_arc(0, h-r*2, r*2, h, start=180, extent=90, fill=color, outline=color)
-        self.create_arc(w-r*2, h-r*2, w, h, start=270, extent=90, fill=color, outline=color)
-        self.create_rectangle(r, 0, w-r, h, fill=color, outline=color)
-        self.create_rectangle(0, r, w, h-r, fill=color, outline=color)
-        
-        # Текст
-        self.create_text(
-            w/2, h/2,
-            text=self.text,
-            fill=self.text_color if not self.is_disabled else Colors.TEXT_MUTED,
-            font=Fonts.BUTTON
-        )
-    
-    def _on_enter(self, event) -> None:
-        if not self.is_disabled:
-            self._draw_button(self.hover_color)
-    
-    def _on_leave(self, event) -> None:
-        if not self.is_disabled:
-            self._draw_button(self.bg_color)
-    
-    def _on_click(self, event) -> None:
-        if not self.is_disabled:
-            self._draw_button(Colors.PRESSED)
-    
-    def _on_release(self, event) -> None:
-        if not self.is_disabled:
-            self._draw_button(self.hover_color)
-            if self.command:
-                self.command()
-    
-    def config(self, **kwargs) -> None:
-        if "state" in kwargs:
-            self.is_disabled = kwargs["state"] == "disabled"
-            self._draw_button(Colors.BG_LIGHT if self.is_disabled else self.bg_color)
-        if "text" in kwargs:
-            self.text = kwargs["text"]
-            self._draw_button(self.bg_color)
+
+    conn.execute(
+        "UPDATE outbound_orders SET status = ? WHERE id = ?",
+        ("shipped", outbound_order_id),
+    )
+    conn.commit()
 
 
-class ModernEntry(tk.Frame):
-    """Современное поле ввода с подсветкой фокуса"""
-    
-    def __init__(
-        self,
-        master,
-        placeholder: str = "",
-        show: str = "",
-        width: int = 300,
-        **kwargs
-    ):
-        super().__init__(master, bg=Colors.BG_DARK)
-        
-        self.placeholder = placeholder
-        self.show_char = show
-        self.is_focused = False
-        
-        # Контейнер с границей
-        self.border_frame = tk.Frame(
-            self,
-            bg=Colors.BORDER,
-            padx=2,
-            pady=2
-        )
-        self.border_frame.pack(fill="x")
-        
-        # Внутренний контейнер
-        self.inner_frame = tk.Frame(
-            self.border_frame,
-            bg=Colors.BG_LIGHT,
-            padx=12,
-            pady=10
-        )
-        self.inner_frame.pack(fill="x")
-        
-        # Поле ввода
-        self.entry = tk.Entry(
-            self.inner_frame,
-            font=Fonts.INPUT,
-            bg=Colors.BG_LIGHT,
-            fg=Colors.TEXT_PRIMARY,
-            insertbackground=Colors.TEXT_PRIMARY,
-            relief="flat",
-            width=width // 10,
-            show=show
-        )
-        self.entry.pack(fill="x")
-        
-        # Placeholder
-        if placeholder:
-            self.entry.insert(0, placeholder)
-            self.entry.config(fg=Colors.TEXT_MUTED)
-        
-        # Биндинги
-        self.entry.bind("<FocusIn>", self._on_focus_in)
-        self.entry.bind("<FocusOut>", self._on_focus_out)
-    
-    def _on_focus_in(self, event) -> None:
-        self.is_focused = True
-        self.border_frame.config(bg=Colors.PRIMARY)
-        if self.entry.get() == self.placeholder:
-            self.entry.delete(0, tk.END)
-            self.entry.config(fg=Colors.TEXT_PRIMARY)
-    
-    def _on_focus_out(self, event) -> None:
-        self.is_focused = False
-        self.border_frame.config(bg=Colors.BORDER)
-        if not self.entry.get() and self.placeholder:
-            self.entry.insert(0, self.placeholder)
-            self.entry.config(fg=Colors.TEXT_MUTED)
-    
-    def get(self) -> str:
-        value = self.entry.get()
-        return "" if value == self.placeholder else value
-    
-    def delete(self, first, last) -> None:
-        self.entry.delete(first, last)
-    
-    def focus(self) -> None:
-        self.entry.focus()
-    
-    def bind(self, sequence, func) -> None:
-        self.entry.bind(sequence, func)
+def fetch_all(conn: sqlite3.Connection, query: str, params: Iterable[object] = ()) -> list[sqlite3.Row]:
+    return list(conn.execute(query, tuple(params)).fetchall())
 
 
-class ModernCard(tk.Frame):
-    """Карточка с тенью и скруглёнными углами"""
-    
-    def __init__(self, master, title: str = "", **kwargs):
-        super().__init__(master, bg=Colors.BG_CARD, **kwargs)
-        
-        self.config(padx=24, pady=20)
-        
-        if title:
-            title_label = tk.Label(
-                self,
-                text=title,
-                font=Fonts.SUBTITLE,
-                bg=Colors.BG_CARD,
-                fg=Colors.TEXT_PRIMARY
-            )
-            title_label.pack(anchor="w", pady=(0, 16))
+def list_clients(conn: sqlite3.Connection) -> list[Client]:
+    return [Client(id=row["id"], name=row["name"]) for row in fetch_all(conn, "SELECT id, name FROM clients")]
 
 
-class StatusBadge(tk.Frame):
-    """Бейдж статуса"""
-    
-    def __init__(self, master, text: str = "", status: str = "info", **kwargs):
-        super().__init__(master, **kwargs)
-        
-        colors = {
-            "success": (Colors.SUCCESS, "#e8f5e9"),
-            "warning": (Colors.WARNING, "#fff3e0"),
-            "error": (Colors.ERROR, "#ffebee"),
-            "info": (Colors.PRIMARY, "#e3f2fd")
-        }
-        
-        bg_color, _ = colors.get(status, colors["info"])
-        
-        self.config(bg=bg_color, padx=12, pady=4)
-        
-        self.label = tk.Label(
-            self,
-            text=text,
-            font=Fonts.SMALL,
-            bg=bg_color,
-            fg=Colors.TEXT_PRIMARY
-        )
-        self.label.pack()
-    
-    def set_text(self, text: str) -> None:
-        self.label.config(text=text)
+def list_warehouses(conn: sqlite3.Connection) -> list[Warehouse]:
+    return [
+        Warehouse(id=row["id"], name=row["name"], location=row["location"])
+        for row in fetch_all(conn, "SELECT id, name, location FROM warehouses")
+    ]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ЭКРАН ВХОДА
-# ══════════════════════════════════════════════════════════════════════════════
+def list_products(conn: sqlite3.Connection) -> list[Product]:
+    return [
+        Product(id=row["id"], sku=row["sku"], name=row["name"], unit=row["unit"])
+        for row in fetch_all(conn, "SELECT id, sku, name, unit FROM products")
+    ]
 
-class LoginFrame(tk.Frame):
-    def __init__(self, master: tk.Tk, api: ScanpakApi, on_success) -> None:
-        super().__init__(master, bg=Colors.BG_DARK)
-        self.api = api
-        self.on_success = on_success
-        self._build_ui()
 
-    def _build_ui(self) -> None:
-        # Центральный контейнер
-        center_container = tk.Frame(self, bg=Colors.BG_DARK)
-        center_container.place(relx=0.5, rely=0.5, anchor="center")
-        
-        # Логотип / иконка
-        logo_frame = tk.Frame(center_container, bg=Colors.BG_DARK)
-        logo_frame.pack(pady=(0, 20))
-        
-        # Круглый логотип
-        logo_canvas = tk.Canvas(
-            logo_frame,
-            width=80,
-            height=80,
-            bg=Colors.BG_DARK,
-            highlightthickness=0
-        )
-        logo_canvas.pack()
-        logo_canvas.create_oval(5, 5, 75, 75, fill=Colors.PRIMARY, outline="")
-        logo_canvas.create_text(
-            40, 40,
-            text="СП",
-            font=("Segoe UI", 24, "bold"),
-            fill=Colors.TEXT_PRIMARY
-        )
-        
-        # Заголовок
-        title_label = tk.Label(
-            center_container,
-            text="СканПак",
-            font=Fonts.TITLE_LARGE,
-            bg=Colors.BG_DARK,
-            fg=Colors.TEXT_PRIMARY
-        )
-        title_label.pack(pady=(0, 5))
-        
-        subtitle_label = tk.Label(
-            center_container,
-            text="Система управління скануванням",
-            font=Fonts.BODY,
-            bg=Colors.BG_DARK,
-            fg=Colors.TEXT_SECONDARY
-        )
-        subtitle_label.pack(pady=(0, 30))
-        
-        # Карточка формы
-        form_card = tk.Frame(
-            center_container,
-            bg=Colors.BG_CARD,
-            padx=40,
-            pady=35
-        )
-        form_card.pack()
-        
-        # Поля ввода
-        surname_label = tk.Label(
-            form_card,
-            text="Прізвище",
-            font=Fonts.BODY_BOLD,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_SECONDARY
-        )
-        surname_label.pack(anchor="w", pady=(0, 8))
-        
-        self.surname_entry = ModernEntry(form_card, placeholder="Введіть прізвище")
-        self.surname_entry.pack(fill="x", pady=(0, 20))
-        self.surname_entry.inner_frame.config(bg=Colors.BG_LIGHT)
-        self.surname_entry.entry.config(bg=Colors.BG_LIGHT)
-        
-        password_label = tk.Label(
-            form_card,
-            text="Пароль",
-            font=Fonts.BODY_BOLD,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_SECONDARY
-        )
-        password_label.pack(anchor="w", pady=(0, 8))
-        
-        self.password_entry = ModernEntry(form_card, placeholder="Введіть пароль", show="●")
-        self.password_entry.pack(fill="x", pady=(0, 10))
-        self.password_entry.inner_frame.config(bg=Colors.BG_LIGHT)
-        self.password_entry.entry.config(bg=Colors.BG_LIGHT)
-        
-        # Статус ошибки
-        self.status_label = tk.Label(
-            form_card,
-            text="",
-            font=Fonts.SMALL,
-            bg=Colors.BG_CARD,
-            fg=Colors.ERROR
-        )
-        self.status_label.pack(anchor="w", pady=(5, 15))
-        
-        # Кнопка входа
-        self.login_button = ModernButton(
-            form_card,
-            text="Увійти",
-            command=self._handle_login,
-            width=280,
-            height=48,
-            bg_color=Colors.PRIMARY,
-            hover_color=Colors.PRIMARY_DARK
-        )
-        self.login_button.pack(pady=(10, 0))
-        
-        # Версия
-        version_label = tk.Label(
-            center_container,
-            text="Windows version • © 2026 СканПак by DimonVR",
-            font=Fonts.SMALL,
-            bg=Colors.BG_DARK,
-            fg=Colors.TEXT_MUTED
-        )
-        version_label.pack(pady=(25, 0))
-        
-        # Биндинги
-        self.surname_entry.focus()
-        self.password_entry.bind("<Return>", lambda _: self._handle_login())
+def inventory_report(conn: sqlite3.Connection, warehouse_id: Optional[int] = None) -> list[sqlite3.Row]:
+    base = (
+        "SELECT w.name AS warehouse, p.sku, p.name AS product, p.unit, i.quantity "
+        "FROM inventory i "
+        "JOIN warehouses w ON w.id = i.warehouse_id "
+        "JOIN products p ON p.id = i.product_id"
+    )
+    params: list[object] = []
+    if warehouse_id is not None:
+        base += " WHERE i.warehouse_id = ?"
+        params.append(warehouse_id)
+    base += " ORDER BY w.name, p.sku"
+    return fetch_all(conn, base, params)
 
-    def _handle_login(self) -> None:
-        surname = self.surname_entry.get().strip()
-        password = self.password_entry.get().strip()
 
-        if not surname or not password:
-            self.status_label.config(text="⚠ Введіть прізвище та пароль")
-            return
+def movement_report(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
+    return fetch_all(
+        conn,
+        "SELECT m.created_at, w.name AS warehouse, p.sku, p.name AS product, m.quantity_change, m.reason, m.ref_type, m.ref_id "
+        "FROM stock_movements m "
+        "JOIN warehouses w ON w.id = m.warehouse_id "
+        "JOIN products p ON p.id = m.product_id "
+        "ORDER BY m.created_at DESC LIMIT ?",
+        (limit,),
+    )
 
-        self.login_button.config(state="disabled")
-        self.status_label.config(text="")
-        self.update_idletasks()
+
+def print_table(rows: Iterable[sqlite3.Row], headers: list[str]) -> None:
+    rows_list = list(rows)
+    widths = [len(header) for header in headers]
+    for row in rows_list:
+        for idx, header in enumerate(headers):
+            widths[idx] = max(widths[idx], len(str(row[header])))
+    line = " | ".join(header.ljust(widths[idx]) for idx, header in enumerate(headers))
+    print(line)
+    print("-+-".join("-" * width for width in widths))
+    for row in rows_list:
+        print(" | ".join(str(row[header]).ljust(widths[idx]) for idx, header in enumerate(headers)))
+
+
+def run_interactive(conn: sqlite3.Connection) -> None:
+    menu = {
+        "1": "Add client",
+        "2": "Add warehouse",
+        "3": "Add product",
+        "4": "Create inbound order",
+        "5": "Add inbound item",
+        "6": "Receive inbound order",
+        "7": "Create outbound order",
+        "8": "Add outbound item",
+        "9": "Ship outbound order",
+        "10": "Inventory report",
+        "11": "Movement report",
+        "12": "List master data",
+        "0": "Exit",
+    }
+    while True:
+        print("\n=== 3PL Warehouse Management ===")
+        for key, label in menu.items():
+            print(f"{key}. {label}")
+        choice = input("Select option: ").strip()
 
         try:
-            data = self.api.login(surname, password)
-        except (requests.RequestException, RuntimeError) as exc:
-            self.status_label.config(text=f"⚠ {str(exc)}")
-            self.login_button.config(state="normal")
-            return
-
-        self.login_button.config(state="normal")
-        self.on_success(
-            token=str(data.get("token")),
-            surname=str(data.get("surname") or surname),
-            role=str(data.get("role") or ""),
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ГЛАВНЫЙ ЭКРАН
-# ══════════════════════════════════════════════════════════════════════════════
-
-class MainFrame(tk.Frame):
-    def __init__(self, master: tk.Tk, api: ScanpakApi, session: dict, on_logout) -> None:
-        super().__init__(master, bg=Colors.BG_DARK)
-        self.api = api
-        self.session = session
-        self.on_logout = on_logout
-        self.records: List[ScanRecord] = []
-        self.filtered: List[ScanRecord] = []
-        self.current_tab = "scan"
-        self._build_ui()
-        self._refresh_history()
-
-    def _is_admin(self) -> bool:
-        """Проверка, является ли пользователь администратором"""
-        role = self.session.get("role", "").lower()
-        # Проверяем различные варианты написания роли админа
-        return role in ("admin", "адмін", "админ", "administrator", "адміністратор")
-
-    def _get_current_username(self) -> str:
-        """Получение имени текущего пользователя"""
-        return self.session.get("surname", "")
-
-    def _filter_records_by_user(self, records: List[ScanRecord]) -> List[ScanRecord]:
-        """Фильтрация записей по текущему пользователю (если не админ)"""
-        if self._is_admin():
-            return records
-        
-        current_user = self._get_current_username().lower()
-        return [
-            record for record in records
-            if record.user.lower() == current_user
-        ]
-
-    def _build_ui(self) -> None:
-        # ═══════════════════════════════════════════════════════════════════
-        # БОКОВАЯ ПАНЕЛЬ
-        # ═══════════════════════════════════════════════════════════════════
-        sidebar = tk.Frame(self, bg=Colors.BG_MEDIUM, width=240)
-        sidebar.pack(side="left", fill="y")
-        sidebar.pack_propagate(False)
-        
-        # Логотип в сайдбаре
-        logo_frame = tk.Frame(sidebar, bg=Colors.BG_MEDIUM)
-        logo_frame.pack(fill="x", pady=25, padx=20)
-        
-        logo_canvas = tk.Canvas(
-            logo_frame,
-            width=50,
-            height=50,
-            bg=Colors.BG_MEDIUM,
-            highlightthickness=0
-        )
-        logo_canvas.pack(side="left")
-        logo_canvas.create_oval(3, 3, 47, 47, fill=Colors.PRIMARY, outline="")
-        logo_canvas.create_text(25, 25, text="СП", font=("Segoe UI", 14, "bold"), fill="white")
-        
-        logo_text = tk.Label(
-            logo_frame,
-            text="СканПак",
-            font=Fonts.SUBTITLE,
-            bg=Colors.BG_MEDIUM,
-            fg=Colors.TEXT_PRIMARY
-        )
-        logo_text.pack(side="left", padx=12)
-        
-        # Разделитель
-        tk.Frame(sidebar, bg=Colors.BORDER, height=1).pack(fill="x", pady=10)
-        
-        # Информация о пользователе
-        user_frame = tk.Frame(sidebar, bg=Colors.BG_MEDIUM)
-        user_frame.pack(fill="x", padx=20, pady=15)
-        
-        # Цвет иконки зависит от роли (админ - особый цвет)
-        icon_color = Colors.WARNING if self._is_admin() else Colors.SUCCESS
-        
-        user_icon = tk.Canvas(
-            user_frame,
-            width=40,
-            height=40,
-            bg=Colors.BG_MEDIUM,
-            highlightthickness=0
-        )
-        user_icon.pack(side="left")
-        user_icon.create_oval(2, 2, 38, 38, fill=icon_color, outline="")
-        user_icon.create_text(
-            20, 20,
-            text=self.session.get('surname', 'U')[0].upper(),
-            font=("Segoe UI", 14, "bold"),
-            fill="white"
-        )
-        
-        user_info = tk.Frame(user_frame, bg=Colors.BG_MEDIUM)
-        user_info.pack(side="left", padx=10)
-        
-        tk.Label(
-            user_info,
-            text=self.session.get('surname', 'Користувач'),
-            font=Fonts.BODY_BOLD,
-            bg=Colors.BG_MEDIUM,
-            fg=Colors.TEXT_PRIMARY
-        ).pack(anchor="w")
-        
-        # Показываем роль с особым форматированием для админа
-        role_text = self.session.get('role', 'Оператор')
-        role_color = Colors.WARNING if self._is_admin() else Colors.TEXT_MUTED
-        
-        tk.Label(
-            user_info,
-            text=role_text,
-            font=Fonts.SMALL,
-            bg=Colors.BG_MEDIUM,
-            fg=role_color
-        ).pack(anchor="w")
-        
-        # Разделитель
-        tk.Frame(sidebar, bg=Colors.BORDER, height=1).pack(fill="x", pady=10)
-        
-        # Навигация
-        nav_frame = tk.Frame(sidebar, bg=Colors.BG_MEDIUM)
-        nav_frame.pack(fill="x", pady=10)
-        
-        self.nav_buttons = {}
-        
-        self.nav_buttons["scan"] = self._create_nav_button(
-            nav_frame, "📦  Сканування", "scan", True
-        )
-        self.nav_buttons["history"] = self._create_nav_button(
-            nav_frame, "📋  Історія", "history", False
-        )
-        
-        # Статус в сайдбаре
-        self.sidebar_status = tk.Label(
-            sidebar,
-            text="",
-            font=Fonts.SMALL,
-            bg=Colors.BG_MEDIUM,
-            fg=Colors.SUCCESS,
-            wraplength=200
-        )
-        self.sidebar_status.pack(fill="x", padx=20, pady=20, side="bottom")
-        
-        # Кнопка выхода
-        logout_frame = tk.Frame(sidebar, bg=Colors.BG_MEDIUM)
-        logout_frame.pack(fill="x", side="bottom", pady=20, padx=20)
-        
-        logout_btn = ModernButton(
-            logout_frame,
-            text="Вийти",
-            command=self._logout,
-            width=200,
-            height=40,
-            bg_color=Colors.ERROR,
-            hover_color=Colors.ERROR_DARK
-        )
-        logout_btn.pack()
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # ОСНОВНОЙ КОНТЕНТ
-        # ═══════════════════════════════════════════════════════════════════
-        self.content_frame = tk.Frame(self, bg=Colors.BG_DARK)
-        self.content_frame.pack(side="right", fill="both", expand=True)
-        
-        # Хедер контента
-        header = tk.Frame(self.content_frame, bg=Colors.BG_DARK)
-        header.pack(fill="x", padx=30, pady=25)
-        
-        self.page_title = tk.Label(
-            header,
-            text="Сканування",
-            font=Fonts.TITLE,
-            bg=Colors.BG_DARK,
-            fg=Colors.TEXT_PRIMARY
-        )
-        self.page_title.pack(side="left")
-        
-        # Время и дата
-        time_frame = tk.Frame(header, bg=Colors.BG_DARK)
-        time_frame.pack(side="right")
-        
-        self.time_label = tk.Label(
-            time_frame,
-            text="",
-            font=Fonts.BODY,
-            bg=Colors.BG_DARK,
-            fg=Colors.TEXT_SECONDARY
-        )
-        self.time_label.pack()
-        self._update_time()
-        
-        # Контейнер для страниц
-        self.pages_container = tk.Frame(self.content_frame, bg=Colors.BG_DARK)
-        self.pages_container.pack(fill="both", expand=True, padx=30, pady=(0, 30))
-        
-        # Создаём страницы
-        self.scan_page = self._build_scan_page()
-        self.history_page = self._build_history_page()
-        
-        # Показываем страницу сканирования по умолчанию
-        self.scan_page.pack(fill="both", expand=True)
-    
-    def _create_nav_button(self, parent, text: str, tab_name: str, active: bool) -> tk.Frame:
-        """Создание кнопки навигации"""
-        btn_frame = tk.Frame(parent, bg=Colors.BG_MEDIUM)
-        btn_frame.pack(fill="x", pady=2)
-        
-        bg_color = Colors.PRIMARY if active else Colors.BG_MEDIUM
-        
-        btn = tk.Label(
-            btn_frame,
-            text=text,
-            font=Fonts.BODY_BOLD if active else Fonts.BODY,
-            bg=bg_color,
-            fg=Colors.TEXT_PRIMARY,
-            padx=20,
-            pady=12,
-            anchor="w",
-            cursor="hand2"
-        )
-        btn.pack(fill="x", padx=10)
-        
-        # Индикатор активной вкладки
-        if active:
-            indicator = tk.Frame(btn_frame, bg=Colors.PRIMARY_LIGHT, width=4)
-            indicator.place(x=0, y=0, relheight=1)
-        
-        btn.bind("<Button-1>", lambda e: self._switch_tab(tab_name))
-        btn.bind("<Enter>", lambda e: btn.config(bg=Colors.PRIMARY if active else Colors.HOVER))
-        btn.bind("<Leave>", lambda e: btn.config(bg=bg_color))
-        
-        btn_frame.btn = btn
-        btn_frame.active = active
-        
-        return btn_frame
-    
-    def _switch_tab(self, tab_name: str) -> None:
-        """Переключение вкладки"""
-        if tab_name == self.current_tab:
-            return
-        
-        self.current_tab = tab_name
-        
-        # Обновляем навигацию
-        for name, btn_frame in self.nav_buttons.items():
-            is_active = name == tab_name
-            btn_frame.active = is_active
-            btn_frame.btn.config(
-                bg=Colors.PRIMARY if is_active else Colors.BG_MEDIUM,
-                font=Fonts.BODY_BOLD if is_active else Fonts.BODY
-            )
-        
-        # Переключаем страницы
-        self.scan_page.pack_forget()
-        self.history_page.pack_forget()
-        
-        if tab_name == "scan":
-            self.page_title.config(text="Сканування")
-            self.scan_page.pack(fill="both", expand=True)
-        else:
-            self.page_title.config(text="Історія сканувань")
-            self.history_page.pack(fill="both", expand=True)
-    
-    def _update_time(self) -> None:
-        """Обновление времени"""
-        now = dt.datetime.now()
-        self.time_label.config(text=now.strftime("%d.%m.%Y  •  %H:%M:%S"))
-        self.after(1000, self._update_time)
-    
-    def _build_scan_page(self) -> tk.Frame:
-        """Построение страницы сканирования"""
-        page = tk.Frame(self.pages_container, bg=Colors.BG_DARK)
-        
-        # Основная карточка сканирования
-        scan_card = tk.Frame(page, bg=Colors.BG_CARD)
-        scan_card.pack(fill="x", pady=(0, 20))
-        
-        card_content = tk.Frame(scan_card, bg=Colors.BG_CARD, padx=30, pady=30)
-        card_content.pack(fill="x")
-        
-        # Иконка сканера
-        icon_frame = tk.Frame(card_content, bg=Colors.BG_CARD)
-        icon_frame.pack(pady=(0, 20))
-        
-        icon_canvas = tk.Canvas(
-            icon_frame,
-            width=70,
-            height=70,
-            bg=Colors.BG_CARD,
-            highlightthickness=0
-        )
-        icon_canvas.pack()
-        icon_canvas.create_oval(5, 5, 65, 65, fill=Colors.PRIMARY, outline="")
-        icon_canvas.create_text(35, 35, text="📦", font=("Segoe UI", 24))
-        
-        # Заголовок
-        tk.Label(
-            card_content,
-            text="Сканування посилки",
-            font=Fonts.SUBTITLE,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_PRIMARY
-        ).pack(pady=(0, 5))
-        
-        tk.Label(
-            card_content,
-            text="Введіть або відскануйте Box ID",
-            font=Fonts.BODY,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_SECONDARY
-        ).pack(pady=(0, 25))
-        
-        # Поле ввода
-        input_frame = tk.Frame(card_content, bg=Colors.BG_CARD)
-        input_frame.pack(fill="x")
-        
-        self.scan_entry = ModernEntry(input_frame, placeholder="Box ID")
-        self.scan_entry.pack(pady=(0, 20))
-        self.scan_entry.inner_frame.config(bg=Colors.BG_LIGHT)
-        self.scan_entry.entry.config(bg=Colors.BG_LIGHT, width=40)
-        self.scan_entry.bind("<Return>", lambda _: self._handle_scan())
-        
-        # Кнопка отправки
-        send_btn = ModernButton(
-            card_content,
-            text="Надіслати",
-            command=self._handle_scan,
-            width=200,
-            height=48,
-            bg_color=Colors.SUCCESS,
-            hover_color=Colors.SUCCESS_DARK
-        )
-        send_btn.pack(pady=(0, 20))
-        
-        # Фидбек
-        self.scan_feedback = tk.Label(
-            card_content,
-            text="",
-            font=Fonts.BODY,
-            bg=Colors.BG_CARD,
-            fg=Colors.SUCCESS
-        )
-        self.scan_feedback.pack()
-        
-        return page
-    
-    def _build_history_page(self) -> tk.Frame:
-        """Построение страницы истории"""
-        page = tk.Frame(self.pages_container, bg=Colors.BG_DARK)
-        
-        # Фильтры
-        filters_card = tk.Frame(page, bg=Colors.BG_CARD)
-        filters_card.pack(fill="x", pady=(0, 20))
-        
-        filters_content = tk.Frame(filters_card, bg=Colors.BG_CARD, padx=25, pady=20)
-        filters_content.pack(fill="x")
-        
-        tk.Label(
-            filters_content,
-            text="🔍 Фільтри",
-            font=Fonts.SUBTITLE,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_PRIMARY
-        ).pack(anchor="w", pady=(0, 15))
-        
-        # Строка фильтров
-        filter_row = tk.Frame(filters_content, bg=Colors.BG_CARD)
-        filter_row.pack(fill="x")
-        
-        # Box ID фильтр
-        box_filter_frame = tk.Frame(filter_row, bg=Colors.BG_CARD)
-        box_filter_frame.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        
-        tk.Label(
-            box_filter_frame,
-            text="Box ID",
-            font=Fonts.SMALL,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_SECONDARY
-        ).pack(anchor="w", pady=(0, 5))
-        
-        self.filter_box_entry = ModernEntry(box_filter_frame, placeholder="")
-        self.filter_box_entry.pack(fill="x")
-        self.filter_box_entry.inner_frame.config(bg=Colors.BG_LIGHT)
-        self.filter_box_entry.entry.config(bg=Colors.BG_LIGHT, width=15)
-        
-        # Фильтр по пользователю - ТОЛЬКО ДЛЯ АДМИНА
-        self.user_filter_frame = tk.Frame(filter_row, bg=Colors.BG_CARD)
-        
-        if self._is_admin():
-            # Показываем фильтр по пользователю только для админа
-            self.user_filter_frame.pack(side="left", fill="x", expand=True, padx=10)
-            
-            tk.Label(
-                self.user_filter_frame,
-                text="Користувач",
-                font=Fonts.SMALL,
-                bg=Colors.BG_CARD,
-                fg=Colors.TEXT_SECONDARY
-            ).pack(anchor="w", pady=(0, 5))
-            
-            self.filter_user_entry = ModernEntry(self.user_filter_frame, placeholder="")
-            self.filter_user_entry.pack(fill="x")
-            self.filter_user_entry.inner_frame.config(bg=Colors.BG_LIGHT)
-            self.filter_user_entry.entry.config(bg=Colors.BG_LIGHT, width=15)
-        else:
-            # Для обычных пользователей создаём пустой entry (для совместимости)
-            self.filter_user_entry = None
-        
-        # Дата фильтр
-        date_filter_frame = tk.Frame(filter_row, bg=Colors.BG_CARD)
-        date_filter_frame.pack(side="left", fill="x", expand=True, padx=(10, 0))
-        
-        tk.Label(
-            date_filter_frame,
-            text="Дата (YYYY-MM-DD)",
-            font=Fonts.SMALL,
-            bg=Colors.BG_CARD,
-            fg=Colors.TEXT_SECONDARY
-        ).pack(anchor="w", pady=(0, 5))
-        
-        self.filter_date_entry = ModernEntry(date_filter_frame, placeholder="")
-        self.filter_date_entry.pack(fill="x")
-        self.filter_date_entry.inner_frame.config(bg=Colors.BG_LIGHT)
-        self.filter_date_entry.entry.config(bg=Colors.BG_LIGHT, width=15)
-        
-        # Кнопки фильтров
-        buttons_row = tk.Frame(filters_content, bg=Colors.BG_CARD)
-        buttons_row.pack(fill="x", pady=(15, 0))
-        
-        apply_btn = ModernButton(
-            buttons_row,
-            text="Застосувати",
-            command=self._apply_filters,
-            width=130,
-            height=38,
-            bg_color=Colors.PRIMARY,
-            hover_color=Colors.PRIMARY_DARK
-        )
-        apply_btn.pack(side="left", padx=(0, 10))
-        
-        clear_btn = ModernButton(
-            buttons_row,
-            text="Очистити",
-            command=self._clear_filters,
-            width=110,
-            height=38,
-            bg_color=Colors.BG_LIGHT,
-            hover_color=Colors.HOVER
-        )
-        clear_btn.pack(side="left", padx=(0, 10))
-        
-        refresh_btn = ModernButton(
-            buttons_row,
-            text="Оновити",
-            command=self._refresh_history,
-            width=110,
-            height=38,
-            bg_color=Colors.SUCCESS,
-            hover_color=Colors.SUCCESS_DARK
-        )
-        refresh_btn.pack(side="left")
-        
-        # Информационное сообщение для не-админов
-        if not self._is_admin():
-            info_label = tk.Label(
-                filters_content,
-                text=f"📋 Показано тільки ваші сканування ({self._get_current_username()})",
-                font=Fonts.SMALL,
-                bg=Colors.BG_CARD,
-                fg=Colors.TEXT_MUTED
-            )
-            info_label.pack(anchor="w", pady=(10, 0))
-        
-        # Таблица
-        table_card = tk.Frame(page, bg=Colors.BG_CARD)
-        table_card.pack(fill="both", expand=True)
-        
-        table_content = tk.Frame(table_card, bg=Colors.BG_CARD, padx=20, pady=20)
-        table_content.pack(fill="both", expand=True)
-        
-        # Стилизация Treeview
-        style = ttk.Style()
-        style.theme_use("clam")
-        
-        style.configure(
-            "Custom.Treeview",
-            background=Colors.BG_LIGHT,
-            foreground=Colors.TEXT_PRIMARY,
-            fieldbackground=Colors.BG_LIGHT,
-            borderwidth=0,
-            font=Fonts.BODY,
-            rowheight=40
-        )
-        
-        style.configure(
-            "Custom.Treeview.Heading",
-            background=Colors.BG_MEDIUM,
-            foreground=Colors.TEXT_PRIMARY,
-            borderwidth=0,
-            font=Fonts.BODY_BOLD
-        )
-        
-        style.map(
-            "Custom.Treeview",
-            background=[("selected", Colors.PRIMARY)],
-            foreground=[("selected", Colors.TEXT_PRIMARY)]
-        )
-        
-        # Контейнер для таблицы со скроллбаром
-        tree_frame = tk.Frame(table_content, bg=Colors.BG_CARD)
-        tree_frame.pack(fill="both", expand=True)
-        
-        # Определяем колонки в зависимости от роли
-        if self._is_admin():
-            columns = ("number", "user", "time")
-        else:
-            # Для обычных пользователей не показываем колонку пользователя
-            columns = ("number", "user", "time")
-        
-        self.history_tree = ttk.Treeview(
-            tree_frame,
-            columns=columns,
-            show="headings",
-            style="Custom.Treeview"
-        )
-        
-        self.history_tree.heading("number", text="Box ID")
-        self.history_tree.heading("user", text="Користувач")
-        self.history_tree.heading("time", text="Час сканування")
-        
-        self.history_tree.column("number", width=180, anchor="center")
-        self.history_tree.column("user", width=180, anchor="center")
-        self.history_tree.column("time", width=220, anchor="center")
-        
-        # Скроллбар
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.history_tree.yview)
-        self.history_tree.configure(yscrollcommand=scrollbar.set)
-        
-        self.history_tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        return page
-    
-    def _logout(self) -> None:
-        self.on_logout()
-
-    def _apply_filters(self) -> None:
-        box_filter = self.filter_box_entry.get().strip()
-        date_filter = self.filter_date_entry.get().strip()
-        
-        # Фильтр по пользователю только для админа
-        user_filter = ""
-        if self._is_admin() and self.filter_user_entry:
-            user_filter = self.filter_user_entry.get().strip().lower()
-
-        # Начинаем с записей, уже отфильтрованных по пользователю
-        filtered = list(self.records)
-        
-        if box_filter:
-            filtered = [
-                record for record in filtered if box_filter in record.number
-            ]
-        
-        # Фильтр по пользователю только для админа
-        if user_filter and self._is_admin():
-            filtered = [
-                record
-                for record in filtered
-                if user_filter in record.user.lower()
-            ]
-        
-        if date_filter:
-            try:
-                target = dt.datetime.strptime(date_filter, "%Y-%m-%d").date()
-                filtered = [
-                    record
-                    for record in filtered
-                    if record.timestamp.date() == target
-                ]
-            except ValueError:
-                messagebox.showwarning("Фільтр", "Невірний формат дати")
-
-        self.filtered = filtered
-        self._render_history()
-
-    def _clear_filters(self) -> None:
-        self.filter_box_entry.delete(0, tk.END)
-        if self._is_admin() and self.filter_user_entry:
-            self.filter_user_entry.delete(0, tk.END)
-        self.filter_date_entry.delete(0, tk.END)
-        self.filtered = list(self.records)
-        self._render_history()
-
-    def _refresh_history(self) -> None:
-        token = self.session.get("token")
-        if not token:
-            return
-        self.sidebar_status.config(text="⏳ Оновлюємо історію...", fg=Colors.WARNING)
-        self.update_idletasks()
-        try:
-            # Получаем все записи с сервера
-            all_records = self.api.fetch_history(token)
-            
-            # Фильтруем записи по пользователю (если не админ)
-            self.records = self._filter_records_by_user(all_records)
-            self.filtered = list(self.records)
-            
-            self._render_history()
-            
-            # Обновляем статус с информацией о количестве записей
-            count = len(self.records)
-            if self._is_admin():
-                self.sidebar_status.config(text=f"✓ Історія оновлена ({count} записів)", fg=Colors.SUCCESS)
+            if choice == "1":
+                name = input("Client name: ").strip()
+                client_id = add_client(conn, name)
+                print(f"Client created with ID {client_id}")
+            elif choice == "2":
+                name = input("Warehouse name: ").strip()
+                location = input("Location: ").strip()
+                warehouse_id = add_warehouse(conn, name, location)
+                print(f"Warehouse created with ID {warehouse_id}")
+            elif choice == "3":
+                sku = input("SKU: ").strip()
+                name = input("Product name: ").strip()
+                unit = input("Unit (e.g. pcs, kg): ").strip()
+                product_id = add_product(conn, sku, name, unit)
+                print(f"Product created with ID {product_id}")
+            elif choice == "4":
+                client_id = int(input("Client ID: ").strip())
+                warehouse_id = int(input("Warehouse ID: ").strip())
+                order_id = create_inbound_order(conn, client_id, warehouse_id)
+                print(f"Inbound order created with ID {order_id}")
+            elif choice == "5":
+                order_id = int(input("Inbound order ID: ").strip())
+                product_id = int(input("Product ID: ").strip())
+                quantity = float(input("Quantity: ").strip())
+                add_inbound_item(conn, order_id, product_id, quantity)
+                print("Inbound item added")
+            elif choice == "6":
+                order_id = int(input("Inbound order ID: ").strip())
+                receive_inbound_order(conn, order_id)
+                print("Inbound order received")
+            elif choice == "7":
+                client_id = int(input("Client ID: ").strip())
+                warehouse_id = int(input("Warehouse ID: ").strip())
+                order_id = create_outbound_order(conn, client_id, warehouse_id)
+                print(f"Outbound order created with ID {order_id}")
+            elif choice == "8":
+                order_id = int(input("Outbound order ID: ").strip())
+                product_id = int(input("Product ID: ").strip())
+                quantity = float(input("Quantity: ").strip())
+                add_outbound_item(conn, order_id, product_id, quantity)
+                print("Outbound item added")
+            elif choice == "9":
+                order_id = int(input("Outbound order ID: ").strip())
+                ship_outbound_order(conn, order_id)
+                print("Outbound order shipped")
+            elif choice == "10":
+                warehouse_raw = input("Warehouse ID (blank for all): ").strip()
+                warehouse_id = int(warehouse_raw) if warehouse_raw else None
+                rows = inventory_report(conn, warehouse_id)
+                if rows:
+                    print_table(rows, ["warehouse", "sku", "product", "unit", "quantity"])
+                else:
+                    print("No inventory records")
+            elif choice == "11":
+                limit_raw = input("Limit (default 50): ").strip()
+                limit = int(limit_raw) if limit_raw else 50
+                rows = movement_report(conn, limit)
+                if rows:
+                    print_table(
+                        rows,
+                        [
+                            "created_at",
+                            "warehouse",
+                            "sku",
+                            "product",
+                            "quantity_change",
+                            "reason",
+                            "ref_type",
+                            "ref_id",
+                        ],
+                    )
+                else:
+                    print("No movements found")
+            elif choice == "12":
+                print("\nClients:")
+                for client in list_clients(conn):
+                    print(f"{client.id}: {client.name}")
+                print("\nWarehouses:")
+                for warehouse in list_warehouses(conn):
+                    print(f"{warehouse.id}: {warehouse.name} ({warehouse.location})")
+                print("\nProducts:")
+                for product in list_products(conn):
+                    print(f"{product.id}: {product.sku} - {product.name} ({product.unit})")
+            elif choice == "0":
+                print("Goodbye")
+                break
             else:
-                self.sidebar_status.config(text=f"✓ Ваша історія оновлена ({count} записів)", fg=Colors.SUCCESS)
-                
-        except (requests.RequestException, RuntimeError) as exc:
-            self.sidebar_status.config(text=f"⚠ {str(exc)}", fg=Colors.ERROR)
-
-    def _render_history(self) -> None:
-        self.history_tree.delete(*self.history_tree.get_children())
-        for record in self.filtered:
-            display_time = record.timestamp.strftime("%Y-%m-%d  •  %H:%M:%S")
-            self.history_tree.insert(
-                "", tk.END, values=(record.number, record.user, display_time)
-            )
-
-    def _handle_scan(self) -> None:
-        raw = self.scan_entry.get().strip()
-        digits = "".join(ch for ch in raw if ch.isdigit())
-        if not digits:
-            self.scan_feedback.config(text="⚠ Не знайшли цифр у введенні", fg=Colors.WARNING)
-            self.scan_entry.focus()
-            return
-
-        if self._is_duplicate(digits):
-            self.scan_feedback.config(text="⚠ Увага, це дублікат. Не збережено", fg=Colors.WARNING)
-            self.scan_entry.delete(0, tk.END)
-            self.scan_entry.focus()
-            return
-
-        token = self.session.get("token")
-        if not token:
-            messagebox.showwarning("Сесія", "Сесію завершено. Увійдіть знову")
-            self.on_logout()
-            return
-
-        self.scan_feedback.config(text="⏳ Відправляємо...", fg=Colors.TEXT_SECONDARY)
-        self.update_idletasks()
-        try:
-            record = self.api.send_scan(token, digits)
-        except (requests.RequestException, RuntimeError) as exc:
-            messagebox.showerror("Сканування", str(exc))
-            self.scan_feedback.config(text="⚠ Помилка збереження", fg=Colors.ERROR)
-            return
-
-        # Добавляем запись в историю только если она принадлежит текущему пользователю
-        # или если пользователь админ
-        if self._is_admin() or record.user.lower() == self._get_current_username().lower():
-            self.records.insert(0, record)
-            self.filtered = list(self.records)
-            self._render_history()
-        
-        self.scan_feedback.config(
-            text=f"✓ Збережено для {record.user}",
-            fg=Colors.SUCCESS
-        )
-        self.scan_entry.delete(0, tk.END)
-        self.scan_entry.focus()
-
-    def _is_duplicate(self, digits: str) -> bool:
-        return any(record.number == digits for record in self.records)
+                print("Unknown option")
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            print(f"Error: {exc}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ГЛАВНОЕ ПРИЛОЖЕНИЕ
-# ══════════════════════════════════════════════════════════════════════════════
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="3PL warehouse management system")
+    parser.add_argument("--db", default=DB_PATH_DEFAULT, help="Path to SQLite database")
 
-class ScanpakApp(tk.Tk):
-    def __init__(self) -> None:
-        super().__init__()
-        self.title("СканПак — Система управління скануванням")
-        self.geometry("1100x700")
-        self.minsize(900, 600)
-        self.configure(bg=Colors.BG_DARK)
-        
-        self.api = ScanpakApi(API_HOST, API_PORT, API_BASE_PATH)
-        self.session: dict = {}
+    subparsers = parser.add_subparsers(dest="command")
 
-        self.container = tk.Frame(self, bg=Colors.BG_DARK)
-        self.container.pack(fill="both", expand=True)
+    subparsers.add_parser("init", help="Initialize database")
 
-        self.login_frame: Optional[LoginFrame] = LoginFrame(
-            self.container, self.api, self._handle_login
-        )
-        self.main_frame: Optional[MainFrame] = None
-        self.login_frame.pack(fill="both", expand=True)
-        
-        # Центрирование окна
-        self._center_window()
-    
-    def _center_window(self) -> None:
-        """Центрирование окна на экране"""
-        self.update_idletasks()
-        width = self.winfo_width()
-        height = self.winfo_height()
-        x = (self.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.winfo_screenheight() // 2) - (height // 2)
-        self.geometry(f"{width}x{height}+{x}+{y}")
+    add_client_parser = subparsers.add_parser("add-client", help="Add client")
+    add_client_parser.add_argument("name")
 
-    def _handle_login(self, token: str, surname: str, role: str) -> None:
-        self.session = {"token": token, "surname": surname, "role": role}
-        if self.login_frame:
-            self.login_frame.pack_forget()
-        self.main_frame = MainFrame(
-            self.container, self.api, self.session, self._handle_logout
-        )
-        self.main_frame.pack(fill="both", expand=True)
+    add_warehouse_parser = subparsers.add_parser("add-warehouse", help="Add warehouse")
+    add_warehouse_parser.add_argument("name")
+    add_warehouse_parser.add_argument("location")
 
-    def _handle_logout(self) -> None:
-        if self.main_frame is not None:
-            self.main_frame.pack_forget()
-            self.main_frame.destroy()
-            self.main_frame = None
-        self.session = {}
-        self.login_frame = LoginFrame(self.container, self.api, self._handle_login)
-        self.login_frame.pack(fill="both", expand=True)
+    add_product_parser = subparsers.add_parser("add-product", help="Add product")
+    add_product_parser.add_argument("sku")
+    add_product_parser.add_argument("name")
+    add_product_parser.add_argument("unit")
+
+    inbound_parser = subparsers.add_parser("create-inbound", help="Create inbound order")
+    inbound_parser.add_argument("client_id", type=int)
+    inbound_parser.add_argument("warehouse_id", type=int)
+
+    inbound_item_parser = subparsers.add_parser("add-inbound-item", help="Add inbound order item")
+    inbound_item_parser.add_argument("order_id", type=int)
+    inbound_item_parser.add_argument("product_id", type=int)
+    inbound_item_parser.add_argument("quantity", type=float)
+
+    receive_inbound_parser = subparsers.add_parser("receive-inbound", help="Receive inbound order")
+    receive_inbound_parser.add_argument("order_id", type=int)
+
+    outbound_parser = subparsers.add_parser("create-outbound", help="Create outbound order")
+    outbound_parser.add_argument("client_id", type=int)
+    outbound_parser.add_argument("warehouse_id", type=int)
+
+    outbound_item_parser = subparsers.add_parser("add-outbound-item", help="Add outbound order item")
+    outbound_item_parser.add_argument("order_id", type=int)
+    outbound_item_parser.add_argument("product_id", type=int)
+    outbound_item_parser.add_argument("quantity", type=float)
+
+    ship_outbound_parser = subparsers.add_parser("ship-outbound", help="Ship outbound order")
+    ship_outbound_parser.add_argument("order_id", type=int)
+
+    report_inventory_parser = subparsers.add_parser("report-inventory", help="Inventory report")
+    report_inventory_parser.add_argument("--warehouse-id", type=int)
+
+    report_movement_parser = subparsers.add_parser("report-movements", help="Movement report")
+    report_movement_parser.add_argument("--limit", type=int, default=50)
+
+    subparsers.add_parser("interactive", help="Run interactive menu")
+
+    return parser
 
 
 def main() -> None:
-    app = ScanpakApp()
-    app.mainloop()
+    parser = build_parser()
+    args = parser.parse_args()
+
+    conn = connect(args.db)
+    init_db(conn)
+
+    if args.command in (None, "interactive"):
+        run_interactive(conn)
+        return
+
+    try:
+        if args.command == "init":
+            print("Database initialized")
+        elif args.command == "add-client":
+            client_id = add_client(conn, args.name)
+            print(f"Client created with ID {client_id}")
+        elif args.command == "add-warehouse":
+            warehouse_id = add_warehouse(conn, args.name, args.location)
+            print(f"Warehouse created with ID {warehouse_id}")
+        elif args.command == "add-product":
+            product_id = add_product(conn, args.sku, args.name, args.unit)
+            print(f"Product created with ID {product_id}")
+        elif args.command == "create-inbound":
+            order_id = create_inbound_order(conn, args.client_id, args.warehouse_id)
+            print(f"Inbound order created with ID {order_id}")
+        elif args.command == "add-inbound-item":
+            add_inbound_item(conn, args.order_id, args.product_id, args.quantity)
+            print("Inbound item added")
+        elif args.command == "receive-inbound":
+            receive_inbound_order(conn, args.order_id)
+            print("Inbound order received")
+        elif args.command == "create-outbound":
+            order_id = create_outbound_order(conn, args.client_id, args.warehouse_id)
+            print(f"Outbound order created with ID {order_id}")
+        elif args.command == "add-outbound-item":
+            add_outbound_item(conn, args.order_id, args.product_id, args.quantity)
+            print("Outbound item added")
+        elif args.command == "ship-outbound":
+            ship_outbound_order(conn, args.order_id)
+            print("Outbound order shipped")
+        elif args.command == "report-inventory":
+            rows = inventory_report(conn, args.warehouse_id)
+            if rows:
+                print_table(rows, ["warehouse", "sku", "product", "unit", "quantity"])
+            else:
+                print("No inventory records")
+        elif args.command == "report-movements":
+            rows = movement_report(conn, args.limit)
+            if rows:
+                print_table(
+                    rows,
+                    [
+                        "created_at",
+                        "warehouse",
+                        "sku",
+                        "product",
+                        "quantity_change",
+                        "reason",
+                        "ref_type",
+                        "ref_id",
+                    ],
+                )
+            else:
+                print("No movements found")
+        else:
+            parser.print_help()
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        print(f"Error: {exc}")
 
 
 if __name__ == "__main__":
