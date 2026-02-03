@@ -20,10 +20,10 @@ jobs:
           pip install pyinstaller
 
       - name: Build EXE
-        run: pyinstaller --onefile --noconsole --hidden-import tkcalendar scan.py
+        run: pyinstaller --onefile --noconsole --hidden-import tkcalendar warehouse_system.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: TrackingApp-win
-          path: dist/scan.exe
+          path: dist/warehouse_system.exe
