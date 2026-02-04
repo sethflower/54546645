@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wareh1ouse management system for 3PL operators.
+"""Warehouse management system for 3PL operators.
 
 Features:
 - Manage clients, warehouses, and products
@@ -11,11 +11,13 @@ Features:
 
 from __future__ import annotations
 
-import argparse
 import datetime as dt
+import os
 import sqlite3
 from dataclasses import dataclass
 from typing import Iterable, Optional
+
+from flask import Flask, redirect, render_template_string, request, url_for
 
 
 DB_PATH_DEFAULT = "warehouse.db"
@@ -363,259 +365,733 @@ def movement_report(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.R
     )
 
 
-def print_table(rows: Iterable[sqlite3.Row], headers: list[str]) -> None:
-    rows_list = list(rows)
-    widths = [len(header) for header in headers]
-    for row in rows_list:
-        for idx, header in enumerate(headers):
-            widths[idx] = max(widths[idx], len(str(row[header])))
-    line = " | ".join(header.ljust(widths[idx]) for idx, header in enumerate(headers))
-    print(line)
-    print("-+-".join("-" * width for width in widths))
-    for row in rows_list:
-        print(" | ".join(str(row[header]).ljust(widths[idx]) for idx, header in enumerate(headers)))
+TEMPLATES = {
+    "base": """\
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3PL Warehouse System</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #f5f7fb;
+        color: #1f2a44;
+      }
+      header {
+        background: #1f4b99;
+        color: #fff;
+        padding: 16px 32px;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 20px;
+      }
+      nav {
+        background: #fff;
+        padding: 12px 32px;
+        border-bottom: 1px solid #e4e7ef;
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      nav a {
+        text-decoration: none;
+        color: #1f4b99;
+        font-weight: 600;
+      }
+      main {
+        padding: 24px 32px 48px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px;
+      }
+      .card {
+        background: #fff;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.08);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+      }
+      th, td {
+        text-align: left;
+        padding: 8px 12px;
+        border-bottom: 1px solid #e4e7ef;
+      }
+      th {
+        background: #f0f4ff;
+      }
+      form.inline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: flex-end;
+      }
+      input, select, button {
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #c9d3ea;
+        font-size: 14px;
+      }
+      button {
+        background: #1f4b99;
+        color: #fff;
+        border: none;
+        cursor: pointer;
+      }
+      .muted {
+        color: #6b7280;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>3PL Warehouse Management System</h1>
+    </header>
+    <nav>
+      <a href="{{ url_for('index') }}">Обзор</a>
+      <a href="{{ url_for('clients_page') }}">Клиенты</a>
+      <a href="{{ url_for('warehouses_page') }}">Склады</a>
+      <a href="{{ url_for('products_page') }}">Товары</a>
+      <a href="{{ url_for('inbound_new') }}">Новый приход</a>
+      <a href="{{ url_for('outbound_new') }}">Новая отгрузка</a>
+      <a href="{{ url_for('inventory_page') }}">Остатки</a>
+      <a href="{{ url_for('movements_page') }}">Движения</a>
+    </nav>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>
+""",
+    "index": """\
+{% extends "base" %}
+{% block content %}
+  <div class="grid">
+    <div class="card">
+      <h3>Клиенты</h3>
+      <p class="muted">Всего: {{ clients | length }}</p>
+    </div>
+    <div class="card">
+      <h3>Склады</h3>
+      <p class="muted">Всего: {{ warehouses | length }}</p>
+    </div>
+    <div class="card">
+      <h3>Товары</h3>
+      <p class="muted">Всего: {{ products | length }}</p>
+    </div>
+  </div>
+
+  <h2>Остатки</h2>
+  {% if inventory_rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>Склад</th>
+          <th>SKU</th>
+          <th>Товар</th>
+          <th>Ед.</th>
+          <th>Кол-во</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in inventory_rows %}
+          <tr>
+            <td>{{ row['warehouse'] }}</td>
+            <td>{{ row['sku'] }}</td>
+            <td>{{ row['product'] }}</td>
+            <td>{{ row['unit'] }}</td>
+            <td>{{ row['quantity'] }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Нет остатков.</p>
+  {% endif %}
+
+  <h2>Последние движения</h2>
+  {% if movement_rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>Дата</th>
+          <th>Склад</th>
+          <th>SKU</th>
+          <th>Товар</th>
+          <th>Изменение</th>
+          <th>Причина</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in movement_rows %}
+          <tr>
+            <td>{{ row['created_at'] }}</td>
+            <td>{{ row['warehouse'] }}</td>
+            <td>{{ row['sku'] }}</td>
+            <td>{{ row['product'] }}</td>
+            <td>{{ row['quantity_change'] }}</td>
+            <td>{{ row['reason'] }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Нет движений.</p>
+  {% endif %}
+{% endblock %}
+""",
+    "clients": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Клиенты</h2>
+  <form method="post" class="inline">
+    <div>
+      <label>Название</label><br />
+      <input type="text" name="name" required />
+    </div>
+    <button type="submit">Добавить</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Название</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for client in clients %}
+        <tr>
+          <td>{{ client.id }}</td>
+          <td>{{ client.name }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="2" class="muted">Нет записей</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
+""",
+    "warehouses": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Склады</h2>
+  <form method="post" class="inline">
+    <div>
+      <label>Название</label><br />
+      <input type="text" name="name" required />
+    </div>
+    <div>
+      <label>Локация</label><br />
+      <input type="text" name="location" required />
+    </div>
+    <button type="submit">Добавить</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Название</th>
+        <th>Локация</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for warehouse in warehouses %}
+        <tr>
+          <td>{{ warehouse.id }}</td>
+          <td>{{ warehouse.name }}</td>
+          <td>{{ warehouse.location }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="3" class="muted">Нет записей</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
+""",
+    "products": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Товары</h2>
+  <form method="post" class="inline">
+    <div>
+      <label>SKU</label><br />
+      <input type="text" name="sku" required />
+    </div>
+    <div>
+      <label>Название</label><br />
+      <input type="text" name="name" required />
+    </div>
+    <div>
+      <label>Ед.</label><br />
+      <input type="text" name="unit" placeholder="pcs" required />
+    </div>
+    <button type="submit">Добавить</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>SKU</th>
+        <th>Название</th>
+        <th>Ед.</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for product in products %}
+        <tr>
+          <td>{{ product.id }}</td>
+          <td>{{ product.sku }}</td>
+          <td>{{ product.name }}</td>
+          <td>{{ product.unit }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="4" class="muted">Нет записей</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
+""",
+    "inbound_new": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Новый приход</h2>
+  <form method="post" class="inline">
+    <div>
+      <label>Клиент</label><br />
+      <select name="client_id" required>
+        {% for client in clients %}
+          <option value="{{ client.id }}">{{ client.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Склад</label><br />
+      <select name="warehouse_id" required>
+        {% for warehouse in warehouses %}
+          <option value="{{ warehouse.id }}">{{ warehouse.name }} ({{ warehouse.location }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit">Создать приход</button>
+  </form>
+{% endblock %}
+""",
+    "inbound_detail": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Приход №{{ order.id }}</h2>
+  <p class="muted">Клиент: {{ order.client }} · Склад: {{ order.warehouse }} · Статус: {{ order.status }}</p>
+
+  <form method="post" class="inline">
+    <input type="hidden" name="action" value="add-item" />
+    <div>
+      <label>Товар</label><br />
+      <select name="product_id" required>
+        {% for product in products %}
+          <option value="{{ product.id }}">{{ product.sku }} — {{ product.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Количество</label><br />
+      <input type="number" name="quantity" step="0.01" required />
+    </div>
+    <button type="submit">Добавить позицию</button>
+  </form>
+
+  <h3>Позиции</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>SKU</th>
+        <th>Товар</th>
+        <th>Ед.</th>
+        <th>Кол-во</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+        <tr>
+          <td>{{ item.sku }}</td>
+          <td>{{ item.name }}</td>
+          <td>{{ item.unit }}</td>
+          <td>{{ item.quantity }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="4" class="muted">Нет позиций</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <form method="post" style="margin-top: 16px;">
+    <input type="hidden" name="action" value="receive" />
+    <button type="submit">Принять приход</button>
+  </form>
+{% endblock %}
+""",
+    "outbound_new": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Новая отгрузка</h2>
+  <form method="post" class="inline">
+    <div>
+      <label>Клиент</label><br />
+      <select name="client_id" required>
+        {% for client in clients %}
+          <option value="{{ client.id }}">{{ client.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Склад</label><br />
+      <select name="warehouse_id" required>
+        {% for warehouse in warehouses %}
+          <option value="{{ warehouse.id }}">{{ warehouse.name }} ({{ warehouse.location }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit">Создать отгрузку</button>
+  </form>
+{% endblock %}
+""",
+    "outbound_detail": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Отгрузка №{{ order.id }}</h2>
+  <p class="muted">Клиент: {{ order.client }} · Склад: {{ order.warehouse }} · Статус: {{ order.status }}</p>
+
+  <form method="post" class="inline">
+    <input type="hidden" name="action" value="add-item" />
+    <div>
+      <label>Товар</label><br />
+      <select name="product_id" required>
+        {% for product in products %}
+          <option value="{{ product.id }}">{{ product.sku }} — {{ product.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Количество</label><br />
+      <input type="number" name="quantity" step="0.01" required />
+    </div>
+    <button type="submit">Добавить позицию</button>
+  </form>
+
+  <h3>Позиции</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>SKU</th>
+        <th>Товар</th>
+        <th>Ед.</th>
+        <th>Кол-во</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+        <tr>
+          <td>{{ item.sku }}</td>
+          <td>{{ item.name }}</td>
+          <td>{{ item.unit }}</td>
+          <td>{{ item.quantity }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="4" class="muted">Нет позиций</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <form method="post" style="margin-top: 16px;">
+    <input type="hidden" name="action" value="ship" />
+    <button type="submit">Отгрузить</button>
+  </form>
+{% endblock %}
+""",
+    "inventory": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Остатки</h2>
+  <form method="get" class="inline">
+    <div>
+      <label>Склад</label><br />
+      <select name="warehouse_id">
+        <option value="">Все</option>
+        {% for warehouse in warehouses %}
+          <option value="{{ warehouse.id }}" {% if selected_warehouse == warehouse.id %}selected{% endif %}>
+            {{ warehouse.name }} ({{ warehouse.location }})
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit">Показать</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Склад</th>
+        <th>SKU</th>
+        <th>Товар</th>
+        <th>Ед.</th>
+        <th>Кол-во</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row['warehouse'] }}</td>
+          <td>{{ row['sku'] }}</td>
+          <td>{{ row['product'] }}</td>
+          <td>{{ row['unit'] }}</td>
+          <td>{{ row['quantity'] }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="5" class="muted">Нет остатков</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
+""",
+    "movements": """\
+{% extends "base" %}
+{% block content %}
+  <h2>Движения</h2>
+  <form method="get" class="inline">
+    <div>
+      <label>Лимит</label><br />
+      <input type="number" name="limit" value="{{ limit }}" min="1" max="500" />
+    </div>
+    <button type="submit">Показать</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Дата</th>
+        <th>Склад</th>
+        <th>SKU</th>
+        <th>Товар</th>
+        <th>Изменение</th>
+        <th>Причина</th>
+        <th>Тип</th>
+        <th>ID</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row['created_at'] }}</td>
+          <td>{{ row['warehouse'] }}</td>
+          <td>{{ row['sku'] }}</td>
+          <td>{{ row['product'] }}</td>
+          <td>{{ row['quantity_change'] }}</td>
+          <td>{{ row['reason'] }}</td>
+          <td>{{ row['ref_type'] }}</td>
+          <td>{{ row['ref_id'] }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="8" class="muted">Нет движений</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
+""",
+}
 
 
-def run_interactive(conn: sqlite3.Connection) -> None:
-    menu = {
-        "1": "Add client",
-        "2": "Add warehouse",
-        "3": "Add product",
-        "4": "Create inbound order",
-        "5": "Add inbound item",
-        "6": "Receive inbound order",
-        "7": "Create outbound order",
-        "8": "Add outbound item",
-        "9": "Ship outbound order",
-        "10": "Inventory report",
-        "11": "Movement report",
-        "12": "List master data",
-        "0": "Exit",
-    }
-    while True:
-        print("\n=== 3PL Warehouse Management ===")
-        for key, label in menu.items():
-            print(f"{key}. {label}")
-        choice = input("Select option: ").strip()
+def render_template(name: str, **context: object) -> str:
+    return render_template_string(TEMPLATES[name], **context)
 
-        try:
-            if choice == "1":
-                name = input("Client name: ").strip()
-                client_id = add_client(conn, name)
-                print(f"Client created with ID {client_id}")
-            elif choice == "2":
-                name = input("Warehouse name: ").strip()
-                location = input("Location: ").strip()
-                warehouse_id = add_warehouse(conn, name, location)
-                print(f"Warehouse created with ID {warehouse_id}")
-            elif choice == "3":
-                sku = input("SKU: ").strip()
-                name = input("Product name: ").strip()
-                unit = input("Unit (e.g. pcs, kg): ").strip()
-                product_id = add_product(conn, sku, name, unit)
-                print(f"Product created with ID {product_id}")
-            elif choice == "4":
-                client_id = int(input("Client ID: ").strip())
-                warehouse_id = int(input("Warehouse ID: ").strip())
-                order_id = create_inbound_order(conn, client_id, warehouse_id)
-                print(f"Inbound order created with ID {order_id}")
-            elif choice == "5":
-                order_id = int(input("Inbound order ID: ").strip())
-                product_id = int(input("Product ID: ").strip())
-                quantity = float(input("Quantity: ").strip())
+
+def create_app(db_path: Optional[str] = None) -> Flask:
+    app = Flask(__name__)
+    app.config["DB_PATH"] = db_path or os.environ.get("WAREHOUSE_DB", DB_PATH_DEFAULT)
+
+    def get_conn() -> sqlite3.Connection:
+        conn = connect(app.config["DB_PATH"])
+        init_db(conn)
+        return conn
+
+    @app.route("/")
+    def index():
+        conn = get_conn()
+        return render_template(
+            "index",
+            clients=list_clients(conn),
+            warehouses=list_warehouses(conn),
+            products=list_products(conn),
+            inventory_rows=inventory_report(conn),
+            movement_rows=movement_report(conn, limit=10),
+        )
+
+    @app.route("/clients", methods=["GET", "POST"])
+    def clients_page():
+        conn = get_conn()
+        if request.method == "POST":
+            name = request.form.get("name", "").strip()
+            if name:
+                add_client(conn, name)
+            return redirect(url_for("clients_page"))
+        return render_template("clients", clients=list_clients(conn))
+
+    @app.route("/warehouses", methods=["GET", "POST"])
+    def warehouses_page():
+        conn = get_conn()
+        if request.method == "POST":
+            name = request.form.get("name", "").strip()
+            location = request.form.get("location", "").strip()
+            if name and location:
+                add_warehouse(conn, name, location)
+            return redirect(url_for("warehouses_page"))
+        return render_template("warehouses", warehouses=list_warehouses(conn))
+
+    @app.route("/products", methods=["GET", "POST"])
+    def products_page():
+        conn = get_conn()
+        if request.method == "POST":
+            sku = request.form.get("sku", "").strip()
+            name = request.form.get("name", "").strip()
+            unit = request.form.get("unit", "").strip()
+            if sku and name and unit:
+                add_product(conn, sku, name, unit)
+            return redirect(url_for("products_page"))
+        return render_template("products", products=list_products(conn))
+
+    @app.route("/inbound/new", methods=["GET", "POST"])
+    def inbound_new():
+        conn = get_conn()
+        clients = list_clients(conn)
+        warehouses = list_warehouses(conn)
+        if request.method == "POST":
+            client_id = int(request.form["client_id"])
+            warehouse_id = int(request.form["warehouse_id"])
+            order_id = create_inbound_order(conn, client_id, warehouse_id)
+            return redirect(url_for("inbound_detail", order_id=order_id))
+        return render_template("inbound_new", clients=clients, warehouses=warehouses)
+
+    @app.route("/inbound/<int:order_id>", methods=["GET", "POST"])
+    def inbound_detail(order_id: int):
+        conn = get_conn()
+        products = list_products(conn)
+        if request.method == "POST":
+            action = request.form.get("action")
+            if action == "add-item":
+                product_id = int(request.form["product_id"])
+                quantity = float(request.form["quantity"])
                 add_inbound_item(conn, order_id, product_id, quantity)
-                print("Inbound item added")
-            elif choice == "6":
-                order_id = int(input("Inbound order ID: ").strip())
+            elif action == "receive":
                 receive_inbound_order(conn, order_id)
-                print("Inbound order received")
-            elif choice == "7":
-                client_id = int(input("Client ID: ").strip())
-                warehouse_id = int(input("Warehouse ID: ").strip())
-                order_id = create_outbound_order(conn, client_id, warehouse_id)
-                print(f"Outbound order created with ID {order_id}")
-            elif choice == "8":
-                order_id = int(input("Outbound order ID: ").strip())
-                product_id = int(input("Product ID: ").strip())
-                quantity = float(input("Quantity: ").strip())
+            return redirect(url_for("inbound_detail", order_id=order_id))
+
+        order = conn.execute(
+            "SELECT o.id, o.status, o.created_at, c.name AS client, w.name AS warehouse "
+            "FROM inbound_orders o "
+            "JOIN clients c ON c.id = o.client_id "
+            "JOIN warehouses w ON w.id = o.warehouse_id "
+            "WHERE o.id = ?",
+            (order_id,),
+        ).fetchone()
+        items = conn.execute(
+            "SELECT i.id, p.sku, p.name, p.unit, i.quantity "
+            "FROM inbound_items i "
+            "JOIN products p ON p.id = i.product_id "
+            "WHERE i.inbound_order_id = ?",
+            (order_id,),
+        ).fetchall()
+        return render_template("inbound_detail", order=order, items=items, products=products)
+
+    @app.route("/outbound/new", methods=["GET", "POST"])
+    def outbound_new():
+        conn = get_conn()
+        clients = list_clients(conn)
+        warehouses = list_warehouses(conn)
+        if request.method == "POST":
+            client_id = int(request.form["client_id"])
+            warehouse_id = int(request.form["warehouse_id"])
+            order_id = create_outbound_order(conn, client_id, warehouse_id)
+            return redirect(url_for("outbound_detail", order_id=order_id))
+        return render_template("outbound_new", clients=clients, warehouses=warehouses)
+
+    @app.route("/outbound/<int:order_id>", methods=["GET", "POST"])
+    def outbound_detail(order_id: int):
+        conn = get_conn()
+        products = list_products(conn)
+        if request.method == "POST":
+            action = request.form.get("action")
+            if action == "add-item":
+                product_id = int(request.form["product_id"])
+                quantity = float(request.form["quantity"])
                 add_outbound_item(conn, order_id, product_id, quantity)
-                print("Outbound item added")
-            elif choice == "9":
-                order_id = int(input("Outbound order ID: ").strip())
+            elif action == "ship":
                 ship_outbound_order(conn, order_id)
-                print("Outbound order shipped")
-            elif choice == "10":
-                warehouse_raw = input("Warehouse ID (blank for all): ").strip()
-                warehouse_id = int(warehouse_raw) if warehouse_raw else None
-                rows = inventory_report(conn, warehouse_id)
-                if rows:
-                    print_table(rows, ["warehouse", "sku", "product", "unit", "quantity"])
-                else:
-                    print("No inventory records")
-            elif choice == "11":
-                limit_raw = input("Limit (default 50): ").strip()
-                limit = int(limit_raw) if limit_raw else 50
-                rows = movement_report(conn, limit)
-                if rows:
-                    print_table(
-                        rows,
-                        [
-                            "created_at",
-                            "warehouse",
-                            "sku",
-                            "product",
-                            "quantity_change",
-                            "reason",
-                            "ref_type",
-                            "ref_id",
-                        ],
-                    )
-                else:
-                    print("No movements found")
-            elif choice == "12":
-                print("\nClients:")
-                for client in list_clients(conn):
-                    print(f"{client.id}: {client.name}")
-                print("\nWarehouses:")
-                for warehouse in list_warehouses(conn):
-                    print(f"{warehouse.id}: {warehouse.name} ({warehouse.location})")
-                print("\nProducts:")
-                for product in list_products(conn):
-                    print(f"{product.id}: {product.sku} - {product.name} ({product.unit})")
-            elif choice == "0":
-                print("Goodbye")
-                break
-            else:
-                print("Unknown option")
-        except (ValueError, sqlite3.IntegrityError) as exc:
-            print(f"Error: {exc}")
+            return redirect(url_for("outbound_detail", order_id=order_id))
 
+        order = conn.execute(
+            "SELECT o.id, o.status, o.created_at, c.name AS client, w.name AS warehouse "
+            "FROM outbound_orders o "
+            "JOIN clients c ON c.id = o.client_id "
+            "JOIN warehouses w ON w.id = o.warehouse_id "
+            "WHERE o.id = ?",
+            (order_id,),
+        ).fetchone()
+        items = conn.execute(
+            "SELECT i.id, p.sku, p.name, p.unit, i.quantity "
+            "FROM outbound_items i "
+            "JOIN products p ON p.id = i.product_id "
+            "WHERE i.outbound_order_id = ?",
+            (order_id,),
+        ).fetchall()
+        return render_template("outbound_detail", order=order, items=items, products=products)
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="3PL warehouse management system")
-    parser.add_argument("--db", default=DB_PATH_DEFAULT, help="Path to SQLite database")
+    @app.route("/inventory")
+    def inventory_page():
+        conn = get_conn()
+        warehouse_id = request.args.get("warehouse_id", type=int)
+        return render_template(
+            "inventory",
+            rows=inventory_report(conn, warehouse_id),
+            warehouses=list_warehouses(conn),
+            selected_warehouse=warehouse_id,
+        )
 
-    subparsers = parser.add_subparsers(dest="command")
+    @app.route("/movements")
+    def movements_page():
+        conn = get_conn()
+        limit = request.args.get("limit", default=50, type=int)
+        return render_template("movements", rows=movement_report(conn, limit), limit=limit)
 
-    subparsers.add_parser("init", help="Initialize database")
-
-    add_client_parser = subparsers.add_parser("add-client", help="Add client")
-    add_client_parser.add_argument("name")
-
-    add_warehouse_parser = subparsers.add_parser("add-warehouse", help="Add warehouse")
-    add_warehouse_parser.add_argument("name")
-    add_warehouse_parser.add_argument("location")
-
-    add_product_parser = subparsers.add_parser("add-product", help="Add product")
-    add_product_parser.add_argument("sku")
-    add_product_parser.add_argument("name")
-    add_product_parser.add_argument("unit")
-
-    inbound_parser = subparsers.add_parser("create-inbound", help="Create inbound order")
-    inbound_parser.add_argument("client_id", type=int)
-    inbound_parser.add_argument("warehouse_id", type=int)
-
-    inbound_item_parser = subparsers.add_parser("add-inbound-item", help="Add inbound order item")
-    inbound_item_parser.add_argument("order_id", type=int)
-    inbound_item_parser.add_argument("product_id", type=int)
-    inbound_item_parser.add_argument("quantity", type=float)
-
-    receive_inbound_parser = subparsers.add_parser("receive-inbound", help="Receive inbound order")
-    receive_inbound_parser.add_argument("order_id", type=int)
-
-    outbound_parser = subparsers.add_parser("create-outbound", help="Create outbound order")
-    outbound_parser.add_argument("client_id", type=int)
-    outbound_parser.add_argument("warehouse_id", type=int)
-
-    outbound_item_parser = subparsers.add_parser("add-outbound-item", help="Add outbound order item")
-    outbound_item_parser.add_argument("order_id", type=int)
-    outbound_item_parser.add_argument("product_id", type=int)
-    outbound_item_parser.add_argument("quantity", type=float)
-
-    ship_outbound_parser = subparsers.add_parser("ship-outbound", help="Ship outbound order")
-    ship_outbound_parser.add_argument("order_id", type=int)
-
-    report_inventory_parser = subparsers.add_parser("report-inventory", help="Inventory report")
-    report_inventory_parser.add_argument("--warehouse-id", type=int)
-
-    report_movement_parser = subparsers.add_parser("report-movements", help="Movement report")
-    report_movement_parser.add_argument("--limit", type=int, default=50)
-
-    subparsers.add_parser("interactive", help="Run interactive menu")
-
-    return parser
-
-
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-
-    conn = connect(args.db)
-    init_db(conn)
-
-    if args.command in (None, "interactive"):
-        run_interactive(conn)
-        return
-
-    try:
-        if args.command == "init":
-            print("Database initialized")
-        elif args.command == "add-client":
-            client_id = add_client(conn, args.name)
-            print(f"Client created with ID {client_id}")
-        elif args.command == "add-warehouse":
-            warehouse_id = add_warehouse(conn, args.name, args.location)
-            print(f"Warehouse created with ID {warehouse_id}")
-        elif args.command == "add-product":
-            product_id = add_product(conn, args.sku, args.name, args.unit)
-            print(f"Product created with ID {product_id}")
-        elif args.command == "create-inbound":
-            order_id = create_inbound_order(conn, args.client_id, args.warehouse_id)
-            print(f"Inbound order created with ID {order_id}")
-        elif args.command == "add-inbound-item":
-            add_inbound_item(conn, args.order_id, args.product_id, args.quantity)
-            print("Inbound item added")
-        elif args.command == "receive-inbound":
-            receive_inbound_order(conn, args.order_id)
-            print("Inbound order received")
-        elif args.command == "create-outbound":
-            order_id = create_outbound_order(conn, args.client_id, args.warehouse_id)
-            print(f"Outbound order created with ID {order_id}")
-        elif args.command == "add-outbound-item":
-            add_outbound_item(conn, args.order_id, args.product_id, args.quantity)
-            print("Outbound item added")
-        elif args.command == "ship-outbound":
-            ship_outbound_order(conn, args.order_id)
-            print("Outbound order shipped")
-        elif args.command == "report-inventory":
-            rows = inventory_report(conn, args.warehouse_id)
-            if rows:
-                print_table(rows, ["warehouse", "sku", "product", "unit", "quantity"])
-            else:
-                print("No inventory records")
-        elif args.command == "report-movements":
-            rows = movement_report(conn, args.limit)
-            if rows:
-                print_table(
-                    rows,
-                    [
-                        "created_at",
-                        "warehouse",
-                        "sku",
-                        "product",
-                        "quantity_change",
-                        "reason",
-                        "ref_type",
-                        "ref_id",
-                    ],
-                )
-            else:
-                print("No movements found")
-        else:
-            parser.print_help()
-    except (ValueError, sqlite3.IntegrityError) as exc:
-        print(f"Error: {exc}")
+    return app
 
 
 if __name__ == "__main__":
-    main()
+    create_app().run(host="0.0.0.0", port=8000, debug=True)
