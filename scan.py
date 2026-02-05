@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import sqlite3
 import uuid
 import hashlib
@@ -1785,7 +1785,13 @@ class WMSApp(tk.Tk):
         self.wait_window(window)
         return vars_map
 
-    def open_lookup(self, target_var: tk.StringVar, table: str, display_field: str) -> None:
+    def open_lookup(
+        self,
+        target_var: tk.StringVar,
+        table: str,
+        display_field: str,
+        category_var: tk.StringVar | None = None,
+    ) -> None:
         window = tk.Toplevel(self)
         window.title("Вибір значення")
         window.geometry("500x400")
@@ -1820,15 +1826,51 @@ class WMSApp(tk.Tk):
             target_var.set(str(selected[0]))
             window.destroy()
 
+        def create_new() -> None:
+            if table == "categories":
+                name = simpledialog.askstring("Нова категорія", "Назва категорії:", parent=window)
+                if not name:
+                    return
+                self.db.execute(
+                    "INSERT INTO categories (id, name, created_at) VALUES (?, ?, ?)",
+                    (generate_id(), name, now_str()),
+                )
+                self.db.commit()
+                load_rows()
+                return
+            if table == "subcategories":
+                name = simpledialog.askstring("Нова підкатегорія", "Назва підкатегорії:", parent=window)
+                if not name:
+                    return
+                category_id = category_var.get() if category_var and category_var.get() else ""
+                if not category_id:
+                    category_id = self.select_lookup_value("categories", "name")
+                if not category_id:
+                    messagebox.showerror("Помилка", "Оберіть категорію")
+                    return
+                self.db.execute(
+                    "INSERT INTO subcategories (id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+                    (generate_id(), category_id, name, now_str()),
+                )
+                self.db.commit()
+                load_rows()
+
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(fill="x", pady=4)
         ttk.Button(btn_frame, text="Обрати", command=choose).pack(side="left", padx=4)
+        if table in {"categories", "subcategories"}:
+            ttk.Button(btn_frame, text="Створити", command=create_new).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Закрити", command=window.destroy).pack(side="right")
         search_entry.bind("<KeyRelease>", lambda _event: load_rows())
         load_rows()
         search_entry.focus()
         window.grab_set()
         self.wait_window(window)
+
+    def select_lookup_value(self, table: str, display_field: str) -> str:
+        selected_value = tk.StringVar()
+        self.open_lookup(selected_value, table, display_field)
+        return selected_value.get()
 
     def get_item_client(self, item_id: str) -> str:
         row = self.db.execute("SELECT client_id FROM items WHERE id = ?", (item_id,)).fetchone()
@@ -1879,10 +1921,11 @@ class WMSApp(tk.Tk):
                     "subcategory_id": ("subcategories", "name"),
                 }
                 table, display = lookup_map[key]
+                category_var = vars_map.get("category_id") if key == "subcategory_id" else None
                 ttk.Button(
                     frame,
                     text="...",
-                    command=lambda v=var, t=table, d=display: self.open_lookup(v, t, d),
+                    command=lambda v=var, t=table, d=display, c=category_var: self.open_lookup(v, t, d, c),
                 ).grid(row=idx, column=2, padx=4)
             if key == "uom_base":
                 entry.destroy()
@@ -1979,10 +2022,11 @@ class WMSApp(tk.Tk):
                     "subcategory_id": ("subcategories", "name"),
                 }
                 table, display = lookup_map[key]
+                category_var = vars_map.get("category_id") if key == "subcategory_id" else None
                 ttk.Button(
                     frame,
                     text="...",
-                    command=lambda v=var, t=table, d=display: self.open_lookup(v, t, d),
+                    command=lambda v=var, t=table, d=display, c=category_var: self.open_lookup(v, t, d, c),
                 ).grid(row=idx, column=2, padx=4)
             if key == "uom_base":
                 entry.destroy()
