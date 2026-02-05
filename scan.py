@@ -30,6 +30,10 @@ def generate_id() -> str:
     return f"{timestamp}{random_part}"
 
 
+def generate_sku() -> str:
+    return f"ART-{generate_id()}"
+
+
 def today_str() -> str:
     return datetime.datetime.now().strftime(DATE_FMT)
 
@@ -164,12 +168,16 @@ class DBManager:
         CREATE TABLE IF NOT EXISTS items (
             id TEXT PRIMARY KEY,
             client_id TEXT NOT NULL,
+            supplier_id TEXT,
+            brand TEXT,
             sku TEXT NOT NULL,
             name_ua TEXT NOT NULL,
             name_en TEXT,
-            category TEXT,
+            category_id TEXT,
+            subcategory_id TEXT,
             uom_base TEXT NOT NULL,
             uom_alt TEXT,
+            volume REAL NOT NULL DEFAULT 0,
             weight REAL NOT NULL DEFAULT 0,
             length REAL NOT NULL DEFAULT 0,
             width REAL NOT NULL DEFAULT 0,
@@ -179,10 +187,28 @@ class DBManager:
             has_expiry INTEGER NOT NULL DEFAULT 0,
             temp_mode TEXT,
             storage_rules TEXT,
+            barcode TEXT,
+            product TEXT,
             status TEXT NOT NULL DEFAULT 'Активний',
             created_at TEXT NOT NULL,
             UNIQUE(client_id, sku),
-            FOREIGN KEY(client_id) REFERENCES clients(id)
+            FOREIGN KEY(client_id) REFERENCES clients(id),
+            FOREIGN KEY(supplier_id) REFERENCES suppliers(id),
+            FOREIGN KEY(category_id) REFERENCES categories(id),
+            FOREIGN KEY(subcategory_id) REFERENCES subcategories(id)
+        );
+        CREATE TABLE IF NOT EXISTS categories (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS subcategories (
+            id TEXT PRIMARY KEY,
+            category_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(category_id, name),
+            FOREIGN KEY(category_id) REFERENCES categories(id)
         );
         CREATE TABLE IF NOT EXISTS item_barcodes (
             id TEXT PRIMARY KEY,
@@ -439,7 +465,23 @@ class DBManager:
         CREATE INDEX IF NOT EXISTS idx_inventory_item ON inventory_balances(item_id);
         """
         self.connection.executescript(schema_sql)
+        self.ensure_columns()
         self.connection.commit()
+
+    def ensure_columns(self) -> None:
+        columns = {row["name"] for row in self.execute("PRAGMA table_info(items)").fetchall()}
+        additions = [
+            ("supplier_id", "TEXT"),
+            ("brand", "TEXT"),
+            ("category_id", "TEXT"),
+            ("subcategory_id", "TEXT"),
+            ("volume", "REAL NOT NULL DEFAULT 0"),
+            ("barcode", "TEXT"),
+            ("product", "TEXT"),
+        ]
+        for name, col_type in additions:
+            if name not in columns:
+                self.execute(f"ALTER TABLE items ADD COLUMN {name} {col_type}")
 
 
 class DAL:
@@ -480,9 +522,13 @@ class DAL:
         if client_id:
             return self.db.execute(
                 """
-                SELECT items.*, clients.name AS client_name
+                SELECT items.*, clients.name AS client_name, suppliers.name AS supplier_name,
+                       categories.name AS category_name, subcategories.name AS subcategory_name
                 FROM items
                 JOIN clients ON clients.id = items.client_id
+                LEFT JOIN suppliers ON suppliers.id = items.supplier_id
+                LEFT JOIN categories ON categories.id = items.category_id
+                LEFT JOIN subcategories ON subcategories.id = items.subcategory_id
                 WHERE items.client_id = ?
                 ORDER BY items.sku
                 """,
@@ -490,9 +536,13 @@ class DAL:
             ).fetchall()
         return self.db.execute(
             """
-            SELECT items.*, clients.name AS client_name
+            SELECT items.*, clients.name AS client_name, suppliers.name AS supplier_name,
+                   categories.name AS category_name, subcategories.name AS subcategory_name
             FROM items
             JOIN clients ON clients.id = items.client_id
+            LEFT JOIN suppliers ON suppliers.id = items.supplier_id
+            LEFT JOIN categories ON categories.id = items.category_id
+            LEFT JOIN subcategories ON subcategories.id = items.subcategory_id
             ORDER BY items.sku
             """
         ).fetchall()
@@ -751,6 +801,9 @@ class TableFrame(ttk.Frame):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
         self.tree.bind("<Control-c>", self.copy_selected)
+        self.menu = tk.Menu(self, tearoff=0)
+        self.menu.add_command(label="Копіювати", command=self.copy_selected)
+        self.tree.bind("<Button-3>", self.show_menu)
 
     def set_rows(self, rows: list[tuple]):
         self.tree.delete(*self.tree.get_children())
@@ -770,6 +823,9 @@ class TableFrame(ttk.Frame):
         text = "\t".join(str(v) for v in values)
         self.clipboard_clear()
         self.clipboard_append(text)
+
+    def show_menu(self, event: tk.Event) -> None:
+        self.menu.tk_popup(event.x_root, event.y_root)
 
 
 class WMSApp(tk.Tk):
@@ -887,16 +943,22 @@ class WMSApp(tk.Tk):
         header.pack(anchor="w", padx=8, pady=8)
         search_frame = ttk.Frame(self.content_frame)
         search_frame.pack(fill="x", padx=8)
-        ttk.Label(search_frame, text="Пошук:").pack(side="left")
+        ttk.Label(search_frame, text="Пошук по марці:").pack(side="left")
         search_entry = ttk.Entry(search_frame)
         search_entry.pack(side="left", fill="x", expand=True, padx=4)
         columns = [
-            ("id", "ID"),
             ("sku", "Артикул"),
-            ("name_ua", "Назва"),
-            ("client", "Клієнт"),
+            ("brand", "Марка"),
+            ("supplier", "Постачальник"),
+            ("client", "3PL клієнт"),
             ("uom", "Од."),
-            ("status", "Статус"),
+            ("volume", "Об'єм"),
+            ("weight", "Вага"),
+            ("barcode", "Штрих-код"),
+            ("serial", "Серійний облік"),
+            ("category", "Категорія"),
+            ("subcategory", "Підкатегорія"),
+            ("product", "Продакт"),
         ]
         table = TableFrame(self.content_frame, columns)
         table.pack(fill="both", expand=True, padx=8, pady=4)
@@ -905,15 +967,21 @@ class WMSApp(tk.Tk):
             data = self.dal.list_items()
             query = search_entry.get().strip().lower()
             if query:
-                data = [row for row in data if query in row["sku"].lower() or query in row["name_ua"].lower()]
+                data = [row for row in data if (row["brand"] or "").lower().find(query) >= 0]
             rows = [
                 (
-                    row["id"],
                     row["sku"],
-                    row["name_ua"],
+                    row["brand"],
+                    row["supplier_name"],
                     row["client_name"],
                     row["uom_base"],
-                    row["status"],
+                    row["volume"],
+                    row["weight"],
+                    row["barcode"],
+                    "Так" if row["is_serial"] else "Ні",
+                    row["category_name"],
+                    row["subcategory_name"],
+                    row["product"],
                 )
                 for row in data
             ]
@@ -1690,6 +1758,8 @@ class WMSApp(tk.Tk):
             "item_id": ("items", "sku"),
             "role_id": ("roles", "name"),
             "order_id": ("inbound_orders", "number"),
+            "category_id": ("categories", "name"),
+            "subcategory_id": ("subcategories", "name"),
         }
         for idx, (key, label) in enumerate(fields):
             ttk.Label(frame, text=label).grid(row=idx, column=0, sticky="w", pady=4)
@@ -1702,6 +1772,7 @@ class WMSApp(tk.Tk):
             vars_map[key] = var
             if key in lookup_map:
                 table, display = lookup_map[key]
+                entry.configure(state="readonly")
                 ttk.Button(
                     frame,
                     text="...",
@@ -1720,12 +1791,27 @@ class WMSApp(tk.Tk):
         window.geometry("500x400")
         frame = ttk.Frame(window, padding=10)
         frame.pack(fill="both", expand=True)
+        search_frame = ttk.Frame(frame)
+        search_frame.pack(fill="x", pady=4)
+        ttk.Label(search_frame, text="Пошук:").pack(side="left")
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=search_var)
+        search_entry.pack(side="left", fill="x", expand=True, padx=4)
         table_frame = TableFrame(frame, [("id", "ID"), ("display", "Назва")])
         table_frame.pack(fill="both", expand=True)
-        rows = []
-        for row in self.db.execute(f"SELECT id, {display_field} FROM {table} ORDER BY {display_field}").fetchall():
-            rows.append((row["id"], row[display_field]))
-        table_frame.set_rows(rows)
+
+        def load_rows() -> None:
+            query = search_var.get().strip()
+            if query:
+                rows = self.db.execute(
+                    f"SELECT id, {display_field} FROM {table} WHERE {display_field} LIKE ? ORDER BY {display_field}",
+                    (f"%{query}%",),
+                ).fetchall()
+            else:
+                rows = self.db.execute(
+                    f"SELECT id, {display_field} FROM {table} ORDER BY {display_field}"
+                ).fetchall()
+            table_frame.set_rows([(row["id"], row[display_field]) for row in rows])
 
         def choose():
             selected = table_frame.selected_values()
@@ -1738,6 +1824,9 @@ class WMSApp(tk.Tk):
         btn_frame.pack(fill="x", pady=4)
         ttk.Button(btn_frame, text="Обрати", command=choose).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Закрити", command=window.destroy).pack(side="right")
+        search_entry.bind("<KeyRelease>", lambda _event: load_rows())
+        load_rows()
+        search_entry.focus()
         window.grab_set()
         self.wait_window(window)
 
@@ -1752,38 +1841,97 @@ class WMSApp(tk.Tk):
         if not clients:
             messagebox.showerror("Помилка", "Спочатку створіть клієнта")
             return
-        data = self.create_simple_form(
-            "Створити номенклатуру",
-            [
-                ("client_id", "ID клієнта"),
-                ("sku", "Артикул"),
-                ("name_ua", "Назва"),
-                ("uom_base", "Од."),
-                ("category", "Категорія"),
-                ("status", "Статус"),
-            ],
-        )
-        if not data["sku"].get():
-            return
-        self.db.execute(
-            """
-            INSERT INTO items (id, client_id, sku, name_ua, category, uom_base, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                generate_id(),
-                data["client_id"].get(),
-                data["sku"].get(),
-                data["name_ua"].get(),
-                data["category"].get(),
-                data["uom_base"].get() or "шт",
-                data["status"].get() or "Активний",
-                now_str(),
-            ),
-        )
-        self.db.commit()
-        self.dal.insert_audit(self.current_user["id"], "create", "items", data["sku"].get(), "Створено")
-        self.refresh_current()
+        sku = generate_sku()
+        window = tk.Toplevel(self)
+        window.title("Створити номенклатуру")
+        window.geometry("520x520")
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        fields = [
+            ("brand", "Марка"),
+            ("sku", "Артикул"),
+            ("supplier_id", "Постачальник"),
+            ("client_id", "3PL клієнт"),
+            ("uom_base", "Од. виміру"),
+            ("volume", "Об'єм"),
+            ("weight", "Вага"),
+            ("barcode", "Штрихкод"),
+            ("is_serial", "Серійний облік"),
+            ("category_id", "Категорія"),
+            ("subcategory_id", "Підкатегорія"),
+            ("product", "Продакт"),
+        ]
+        vars_map: dict[str, tk.StringVar] = {}
+        for idx, (key, label) in enumerate(fields):
+            ttk.Label(frame, text=label).grid(row=idx, column=0, sticky="w", pady=4)
+            var = tk.StringVar()
+            entry = ttk.Entry(frame, textvariable=var)
+            if key == "sku":
+                var.set(sku)
+                entry.configure(state="readonly")
+            if key in {"supplier_id", "client_id", "category_id", "subcategory_id"}:
+                entry.configure(state="readonly")
+                lookup_map = {
+                    "supplier_id": ("suppliers", "name"),
+                    "client_id": ("clients", "name"),
+                    "category_id": ("categories", "name"),
+                    "subcategory_id": ("subcategories", "name"),
+                }
+                table, display = lookup_map[key]
+                ttk.Button(
+                    frame,
+                    text="...",
+                    command=lambda v=var, t=table, d=display: self.open_lookup(v, t, d),
+                ).grid(row=idx, column=2, padx=4)
+            if key == "uom_base":
+                entry.destroy()
+                entry = ttk.Combobox(frame, textvariable=var, values=["шт", "палета"], state="readonly")
+            if key == "is_serial":
+                entry.destroy()
+                entry = ttk.Combobox(frame, textvariable=var, values=["Так", "Ні"], state="readonly")
+            if key == "product":
+                var.set(self.current_user["username"])
+                entry.configure(state="readonly")
+            entry.grid(row=idx, column=1, sticky="ew", pady=4)
+            vars_map[key] = var
+
+        def save():
+            self.db.execute(
+                """
+                INSERT INTO items (
+                    id, client_id, supplier_id, brand, sku, name_ua, category_id, subcategory_id,
+                    uom_base, volume, weight, barcode, is_serial, product, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    generate_id(),
+                    vars_map["client_id"].get(),
+                    vars_map["supplier_id"].get(),
+                    vars_map["brand"].get(),
+                    vars_map["sku"].get(),
+                    vars_map["brand"].get() or vars_map["sku"].get(),
+                    vars_map["category_id"].get(),
+                    vars_map["subcategory_id"].get(),
+                    vars_map["uom_base"].get() or "шт",
+                    safe_float(vars_map["volume"].get()),
+                    safe_float(vars_map["weight"].get()),
+                    vars_map["barcode"].get(),
+                    1 if vars_map["is_serial"].get() == "Так" else 0,
+                    vars_map["product"].get(),
+                    "Активний",
+                    now_str(),
+                ),
+            )
+            self.db.commit()
+            self.dal.insert_audit(self.current_user["id"], "create", "items", vars_map["sku"].get(), "Створено")
+            window.destroy()
+            self.refresh_current()
+
+        frame.columnconfigure(1, weight=1)
+        ttk.Button(frame, text="Зберегти", command=save).grid(row=len(fields), column=0, columnspan=2, pady=8)
+        window.grab_set()
+        self.wait_window(window)
 
     def edit_item(self) -> None:
         if not self.ensure_perm("items.edit"):
@@ -1795,36 +1943,90 @@ class WMSApp(tk.Tk):
         item = self.db.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
         if not item:
             return
-        data = self.create_simple_form(
-            "Редагувати номенклатуру",
-            [
-                ("client_id", "ID клієнта"),
-                ("sku", "Артикул"),
-                ("name_ua", "Назва"),
-                ("uom_base", "Од."),
-                ("category", "Категорія"),
-                ("status", "Статус"),
-            ],
-            dict(item),
-        )
-        self.db.execute(
-            """
-            UPDATE items SET client_id = ?, sku = ?, name_ua = ?, uom_base = ?, category = ?, status = ?
-            WHERE id = ?
-            """,
-            (
-                data["client_id"].get(),
-                data["sku"].get(),
-                data["name_ua"].get(),
-                data["uom_base"].get(),
-                data["category"].get(),
-                data["status"].get(),
-                item_id,
-            ),
-        )
-        self.db.commit()
-        self.dal.insert_audit(self.current_user["id"], "update", "items", item_id, "Оновлено")
-        self.refresh_current()
+        window = tk.Toplevel(self)
+        window.title("Редагувати номенклатуру")
+        window.geometry("520x520")
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+        fields = [
+            ("brand", "Марка"),
+            ("sku", "Артикул"),
+            ("supplier_id", "Постачальник"),
+            ("client_id", "3PL клієнт"),
+            ("uom_base", "Од. виміру"),
+            ("volume", "Об'єм"),
+            ("weight", "Вага"),
+            ("barcode", "Штрихкод"),
+            ("is_serial", "Серійний облік"),
+            ("category_id", "Категорія"),
+            ("subcategory_id", "Підкатегорія"),
+            ("product", "Продакт"),
+        ]
+        vars_map: dict[str, tk.StringVar] = {}
+        for idx, (key, label) in enumerate(fields):
+            ttk.Label(frame, text=label).grid(row=idx, column=0, sticky="w", pady=4)
+            value = str(item[key]) if key in item.keys() else ""
+            var = tk.StringVar(value=value)
+            entry = ttk.Entry(frame, textvariable=var)
+            if key == "sku":
+                entry.configure(state="readonly")
+            if key in {"supplier_id", "client_id", "category_id", "subcategory_id"}:
+                entry.configure(state="readonly")
+                lookup_map = {
+                    "supplier_id": ("suppliers", "name"),
+                    "client_id": ("clients", "name"),
+                    "category_id": ("categories", "name"),
+                    "subcategory_id": ("subcategories", "name"),
+                }
+                table, display = lookup_map[key]
+                ttk.Button(
+                    frame,
+                    text="...",
+                    command=lambda v=var, t=table, d=display: self.open_lookup(v, t, d),
+                ).grid(row=idx, column=2, padx=4)
+            if key == "uom_base":
+                entry.destroy()
+                entry = ttk.Combobox(frame, textvariable=var, values=["шт", "палета"], state="readonly")
+            if key == "is_serial":
+                entry.destroy()
+                entry = ttk.Combobox(frame, textvariable=var, values=["Так", "Ні"], state="readonly")
+                var.set("Так" if item["is_serial"] else "Ні")
+            if key == "product":
+                entry.configure(state="readonly")
+            entry.grid(row=idx, column=1, sticky="ew", pady=4)
+            vars_map[key] = var
+
+        def save():
+            self.db.execute(
+                """
+                UPDATE items SET client_id = ?, supplier_id = ?, brand = ?, uom_base = ?, volume = ?, weight = ?,
+                    barcode = ?, is_serial = ?, category_id = ?, subcategory_id = ?, product = ?
+                WHERE id = ?
+                """,
+                (
+                    vars_map["client_id"].get(),
+                    vars_map["supplier_id"].get(),
+                    vars_map["brand"].get(),
+                    vars_map["uom_base"].get(),
+                    safe_float(vars_map["volume"].get()),
+                    safe_float(vars_map["weight"].get()),
+                    vars_map["barcode"].get(),
+                    1 if vars_map["is_serial"].get() == "Так" else 0,
+                    vars_map["category_id"].get(),
+                    vars_map["subcategory_id"].get(),
+                    vars_map["product"].get(),
+                    item_id,
+                ),
+            )
+            self.db.commit()
+            self.dal.insert_audit(self.current_user["id"], "update", "items", item_id, "Оновлено")
+            window.destroy()
+            self.refresh_current()
+
+        frame.columnconfigure(1, weight=1)
+        ttk.Button(frame, text="Зберегти", command=save).grid(row=len(fields), column=0, columnspan=2, pady=8)
+        window.grab_set()
+        self.wait_window(window)
 
     def delete_item(self) -> None:
         if not self.ensure_perm("items.edit"):
