@@ -24,8 +24,10 @@ logging.basicConfig(
 )
 
 
-def generate_uuid() -> str:
-    return str(uuid.uuid4())
+def generate_id() -> str:
+    timestamp = int(datetime.datetime.now().timestamp() * 1000)
+    random_part = str(uuid.uuid4().int % 1_000_000).zfill(6)
+    return f"{timestamp}{random_part}"
 
 
 def today_str() -> str:
@@ -535,7 +537,7 @@ class DAL:
             INSERT INTO audit_log (id, user_id, action, entity, entity_id, description, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (generate_uuid(), user_id, action, entity, entity_id, description, now_str()),
+            (generate_id(), user_id, action, entity, entity_id, description, now_str()),
         )
         self.db.commit()
 
@@ -576,7 +578,7 @@ class WMSService:
         expiry_date: str | None = None,
         note: str | None = None,
     ) -> None:
-        move_id = generate_uuid()
+        move_id = generate_id()
         self.db.execute(
             """
             INSERT INTO stock_moves (
@@ -656,7 +658,7 @@ class WMSService:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    generate_uuid(),
+                    generate_id(),
                     client_id,
                     warehouse_id,
                     location_id,
@@ -748,6 +750,7 @@ class TableFrame(ttk.Frame):
         yscroll.grid(row=0, column=1, sticky="ns")
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
+        self.tree.bind("<Control-c>", self.copy_selected)
 
     def set_rows(self, rows: list[tuple]):
         self.tree.delete(*self.tree.get_children())
@@ -759,6 +762,14 @@ class TableFrame(ttk.Frame):
         if not selected:
             return None
         return self.tree.item(selected[0])["values"]
+
+    def copy_selected(self, _event=None) -> None:
+        values = self.selected_values()
+        if not values:
+            return
+        text = "\t".join(str(v) for v in values)
+        self.clipboard_clear()
+        self.clipboard_append(text)
 
 
 class WMSApp(tk.Tk):
@@ -1658,18 +1669,81 @@ class WMSApp(tk.Tk):
         frame = ttk.Frame(window, padding=12)
         frame.pack(fill="both", expand=True)
         vars_map: dict[str, tk.StringVar] = {}
+        menu = tk.Menu(window, tearoff=0)
+        menu.add_command(label="Копіювати", command=lambda: window.focus_get().event_generate("<<Copy>>"))
+        menu.add_command(label="Вставити", command=lambda: window.focus_get().event_generate("<<Paste>>"))
+        menu.add_command(label="Вирізати", command=lambda: window.focus_get().event_generate("<<Cut>>"))
+
+        def show_menu(event: tk.Event) -> None:
+            menu.tk_popup(event.x_root, event.y_root)
+
+        def digits_only(value: str) -> bool:
+            return value.isdigit() or value == ""
+
+        vcmd = (window.register(digits_only), "%P")
+        lookup_map = {
+            "client_id": ("clients", "name"),
+            "supplier_id": ("suppliers", "name"),
+            "warehouse_id": ("warehouses", "name"),
+            "zone_id": ("zones", "name"),
+            "location_id": ("locations", "code"),
+            "item_id": ("items", "sku"),
+            "role_id": ("roles", "name"),
+            "order_id": ("inbound_orders", "number"),
+        }
         for idx, (key, label) in enumerate(fields):
             ttk.Label(frame, text=label).grid(row=idx, column=0, sticky="w", pady=4)
             var = tk.StringVar(value=(initial.get(key) if initial else ""))
             entry = ttk.Entry(frame, textvariable=var)
+            if key.endswith("_id"):
+                entry.configure(validate="key", validatecommand=vcmd)
             entry.grid(row=idx, column=1, sticky="ew", pady=4)
+            entry.bind("<Button-3>", show_menu)
             vars_map[key] = var
+            if key in lookup_map:
+                table, display = lookup_map[key]
+                ttk.Button(
+                    frame,
+                    text="...",
+                    command=lambda v=var, t=table, d=display: self.open_lookup(v, t, d),
+                ).grid(row=idx, column=2, padx=4)
         frame.columnconfigure(1, weight=1)
         btn = ttk.Button(frame, text="Зберегти", command=window.destroy)
         btn.grid(row=len(fields), column=0, columnspan=2, pady=8)
         window.grab_set()
         self.wait_window(window)
         return vars_map
+
+    def open_lookup(self, target_var: tk.StringVar, table: str, display_field: str) -> None:
+        window = tk.Toplevel(self)
+        window.title("Вибір значення")
+        window.geometry("500x400")
+        frame = ttk.Frame(window, padding=10)
+        frame.pack(fill="both", expand=True)
+        table_frame = TableFrame(frame, [("id", "ID"), ("display", "Назва")])
+        table_frame.pack(fill="both", expand=True)
+        rows = []
+        for row in self.db.execute(f"SELECT id, {display_field} FROM {table} ORDER BY {display_field}").fetchall():
+            rows.append((row["id"], row[display_field]))
+        table_frame.set_rows(rows)
+
+        def choose():
+            selected = table_frame.selected_values()
+            if not selected:
+                return
+            target_var.set(str(selected[0]))
+            window.destroy()
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill="x", pady=4)
+        ttk.Button(btn_frame, text="Обрати", command=choose).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Закрити", command=window.destroy).pack(side="right")
+        window.grab_set()
+        self.wait_window(window)
+
+    def get_item_client(self, item_id: str) -> str:
+        row = self.db.execute("SELECT client_id FROM items WHERE id = ?", (item_id,)).fetchone()
+        return row["client_id"] if row else ""
 
     def create_item(self) -> None:
         if not self.ensure_perm("items.edit"):
@@ -1697,7 +1771,7 @@ class WMSApp(tk.Tk):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                generate_uuid(),
+                generate_id(),
                 data["client_id"].get(),
                 data["sku"].get(),
                 data["name_ua"].get(),
@@ -1786,7 +1860,7 @@ class WMSApp(tk.Tk):
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                generate_uuid(),
+                generate_id(),
                 data["name"].get(),
                 data["code"].get(),
                 data["contract"].get(),
@@ -1863,7 +1937,7 @@ class WMSApp(tk.Tk):
             INSERT INTO suppliers (id, name, code, contact, created_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (generate_uuid(), data["name"].get(), data["code"].get(), data["contact"].get(), now_str()),
+            (generate_id(), data["name"].get(), data["code"].get(), data["contact"].get(), now_str()),
         )
         self.db.commit()
         self.dal.insert_audit(self.current_user["id"], "create", "suppliers", data["code"].get(), "Створено")
@@ -1918,7 +1992,7 @@ class WMSApp(tk.Tk):
             INSERT INTO warehouses (id, name, code, address, created_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (generate_uuid(), data["name"].get(), data["code"].get(), data["address"].get(), now_str()),
+            (generate_id(), data["name"].get(), data["code"].get(), data["address"].get(), now_str()),
         )
         self.db.commit()
         self.dal.insert_audit(self.current_user["id"], "create", "warehouses", data["code"].get(), "Створено")
@@ -1974,7 +2048,7 @@ class WMSApp(tk.Tk):
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                generate_uuid(),
+                generate_id(),
                 data["warehouse_id"].get(),
                 data["name"].get(),
                 data["code"].get(),
@@ -2050,7 +2124,7 @@ class WMSApp(tk.Tk):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                generate_uuid(),
+                generate_id(),
                 data["zone_id"].get(),
                 data["code"].get(),
                 data["location_type"].get(),
@@ -2135,7 +2209,7 @@ class WMSApp(tk.Tk):
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                generate_uuid(),
+                generate_id(),
                 data["username"].get(),
                 data["full_name"].get(),
                 data["role_id"].get(),
@@ -2203,13 +2277,13 @@ class WMSApp(tk.Tk):
         data = self.create_simple_form("Створити роль", [("name", "Назва"), ("permissions", "Права через кому")])
         if not data["name"].get():
             return
-        role_id = generate_uuid()
+        role_id = generate_id()
         self.db.execute("INSERT INTO roles (id, name) VALUES (?, ?)", (role_id, data["name"].get()))
         perms = [perm.strip() for perm in data["permissions"].get().split(",") if perm.strip()]
         for perm in perms:
             self.db.execute(
                 "INSERT INTO role_permissions (id, role_id, permission) VALUES (?, ?, ?)",
-                (generate_uuid(), role_id, perm),
+                (generate_id(), role_id, perm),
             )
         self.db.commit()
         self.dal.insert_audit(self.current_user["id"], "create", "roles", role_id, "Створено")
@@ -2237,7 +2311,7 @@ class WMSApp(tk.Tk):
         for perm in perms:
             self.db.execute(
                 "INSERT INTO role_permissions (id, role_id, permission) VALUES (?, ?, ?)",
-                (generate_uuid(), role_id, perm),
+                (generate_id(), role_id, perm),
             )
         self.db.commit()
         self.dal.insert_audit(self.current_user["id"], "update", "roles", role_id, "Оновлено")
@@ -2273,7 +2347,7 @@ class WMSApp(tk.Tk):
         )
         if not data["number"].get():
             return
-        order_id = generate_uuid()
+        order_id = generate_id()
         self.db.execute(
             """
             INSERT INTO inbound_orders (id, number, status, client_id, supplier_id, warehouse_id,
@@ -2378,7 +2452,7 @@ class WMSApp(tk.Tk):
                 return
             self.db.execute(
                 "INSERT INTO inbound_order_lines (id, order_id, item_id, qty_plan) VALUES (?, ?, ?, ?)",
-                (generate_uuid(), order_id, data["item_id"].get(), safe_float(data["qty_plan"].get())),
+                (generate_id(), order_id, data["item_id"].get(), safe_float(data["qty_plan"].get())),
             )
             self.db.commit()
             load()
@@ -2448,7 +2522,7 @@ class WMSApp(tk.Tk):
         )
         if not data["number"].get():
             return
-        receipt_id = generate_uuid()
+        receipt_id = generate_id()
         self.db.execute(
             """
             INSERT INTO receipts (id, number, status, order_id, client_id, warehouse_id, received_at, created_by, created_at)
@@ -2544,7 +2618,7 @@ class WMSApp(tk.Tk):
                 return
             self.db.execute(
                 "INSERT INTO receipt_lines (id, receipt_id, item_id, qty) VALUES (?, ?, ?, ?)",
-                (generate_uuid(), receipt_id, data["item_id"].get(), safe_float(data["qty"].get())),
+                (generate_id(), receipt_id, data["item_id"].get(), safe_float(data["qty"].get())),
             )
             self.db.commit()
             load()
@@ -2614,7 +2688,7 @@ class WMSApp(tk.Tk):
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                generate_uuid(),
+                generate_id(),
                 data["receipt_id"].get(),
                 data["item_id"].get(),
                 safe_float(data["qty"].get()),
@@ -2684,7 +2758,7 @@ class WMSApp(tk.Tk):
         )
         if not data["number"].get():
             return
-        order_id = generate_uuid()
+        order_id = generate_id()
         self.db.execute(
             """
             INSERT INTO outbound_orders (id, number, status, client_id, warehouse_id, ship_to, carrier,
@@ -2791,7 +2865,7 @@ class WMSApp(tk.Tk):
                 return
             self.db.execute(
                 "INSERT INTO outbound_order_lines (id, order_id, item_id, qty_plan) VALUES (?, ?, ?, ?)",
-                (generate_uuid(), order_id, data["item_id"].get(), safe_float(data["qty_plan"].get())),
+                (generate_id(), order_id, data["item_id"].get(), safe_float(data["qty_plan"].get())),
             )
             self.db.commit()
             load()
@@ -2855,7 +2929,7 @@ class WMSApp(tk.Tk):
         )
         if not data["number"].get():
             return
-        count_id = generate_uuid()
+        count_id = generate_id()
         self.db.execute(
             """
             INSERT INTO inventory_counts (id, number, status, warehouse_id, zone_id, location_id, created_by, created_at)
@@ -2952,7 +3026,7 @@ class WMSApp(tk.Tk):
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    generate_uuid(),
+                    generate_id(),
                     count_id,
                     data["item_id"].get(),
                     safe_float(data["qty_system"].get()),
@@ -2997,11 +3071,14 @@ class WMSApp(tk.Tk):
                 delta = line["qty_count"] - line["qty_system"]
                 if delta == 0:
                     continue
+                client_id = self.get_item_client(line["item_id"])
+                if not client_id:
+                    raise ValueError("Невірний клієнт для товару")
                 self.service.create_stock_move(
                     "ADJUSTMENT",
                     "INVENTORY",
                     count_id,
-                    "",
+                    client_id,
                     count["warehouse_id"],
                     line["item_id"],
                     delta,
@@ -3023,7 +3100,7 @@ class WMSApp(tk.Tk):
         )
         if not data["number"].get():
             return
-        return_id = generate_uuid()
+        return_id = generate_id()
         self.db.execute(
             """
             INSERT INTO returns (id, number, status, client_id, warehouse_id, created_by, created_at)
@@ -3111,7 +3188,7 @@ class WMSApp(tk.Tk):
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    generate_uuid(),
+                    generate_id(),
                     return_id,
                     data["item_id"].get(),
                     safe_float(data["qty"].get()),
@@ -3179,7 +3256,7 @@ class WMSApp(tk.Tk):
         )
         if not data["number"].get():
             return
-        writeoff_id = generate_uuid()
+        writeoff_id = generate_id()
         self.db.execute(
             """
             INSERT INTO writeoffs (id, number, status, warehouse_id, reason, created_by, created_at)
@@ -3260,7 +3337,7 @@ class WMSApp(tk.Tk):
                 return
             self.db.execute(
                 "INSERT INTO writeoff_lines (id, writeoff_id, item_id, qty) VALUES (?, ?, ?, ?)",
-                (generate_uuid(), writeoff_id, data["item_id"].get(), safe_float(data["qty"].get())),
+                (generate_id(), writeoff_id, data["item_id"].get(), safe_float(data["qty"].get())),
             )
             self.db.commit()
             load()
@@ -3297,11 +3374,14 @@ class WMSApp(tk.Tk):
             return
         try:
             for line in lines:
+                client_id = self.get_item_client(line["item_id"])
+                if not client_id:
+                    raise ValueError("Невірний клієнт для товару")
                 self.service.create_stock_move(
                     "WRITE_OFF",
                     "WRITEOFF",
                     writeoff_id,
-                    "",
+                    client_id,
                     writeoff["warehouse_id"],
                     line["item_id"],
                     -float(line["qty"]),
@@ -3318,18 +3398,18 @@ class WMSApp(tk.Tk):
 def init_defaults(db: DBManager) -> None:
     if db.execute("SELECT COUNT(*) as cnt FROM roles").fetchone()["cnt"] > 0:
         return
-    role_admin = generate_uuid()
+    role_admin = generate_id()
     roles = [
         (role_admin, "Адміністратор"),
-        (generate_uuid(), "Комірник"),
-        (generate_uuid(), "Супервайзер складу"),
-        (generate_uuid(), "Менеджер логістики"),
-        (generate_uuid(), "Клієнт"),
-        (generate_uuid(), "Бухгалтер"),
+        (generate_id(), "Комірник"),
+        (generate_id(), "Супервайзер складу"),
+        (generate_id(), "Менеджер логістики"),
+        (generate_id(), "Клієнт"),
+        (generate_id(), "Бухгалтер"),
     ]
     db.executemany("INSERT INTO roles (id, name) VALUES (?, ?)", roles)
     permissions = [
-        (generate_uuid(), role_admin, "all"),
+        (generate_id(), role_admin, "all"),
     ]
     db.executemany(
         "INSERT INTO role_permissions (id, role_id, permission) VALUES (?, ?, ?)",
@@ -3341,7 +3421,7 @@ def init_defaults(db: DBManager) -> None:
         INSERT INTO users (id, username, full_name, role_id, salt, password_hash, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (generate_uuid(), "admin", "Адміністратор", role_admin, salt, pw_hash, now_str()),
+        (generate_id(), "admin", "Адміністратор", role_admin, salt, pw_hash, now_str()),
     )
     db.commit()
 
