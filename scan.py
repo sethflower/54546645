@@ -14,10 +14,10 @@ from __future__ import annotations
 import datetime as dt
 import os
 import sqlite3
+import tkinter as tk
+from tkinter import messagebox, ttk
 from dataclasses import dataclass
 from typing import Iterable, Optional
-
-from flask import Flask, redirect, render_template_string, request, url_for
 
 
 DB_PATH_DEFAULT = "warehouse.db"
@@ -365,733 +365,610 @@ def movement_report(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.R
     )
 
 
-TEMPLATES = {
-    "base": """\
-<!doctype html>
-<html lang="ru">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3PL Warehouse System</title>
-    <style>
-      :root {
-        color-scheme: light;
-        font-family: "Segoe UI", system-ui, sans-serif;
-      }
-      body {
-        margin: 0;
-        background: #f5f7fb;
-        color: #1f2a44;
-      }
-      header {
-        background: #1f4b99;
-        color: #fff;
-        padding: 16px 32px;
-      }
-      header h1 {
-        margin: 0;
-        font-size: 20px;
-      }
-      nav {
-        background: #fff;
-        padding: 12px 32px;
-        border-bottom: 1px solid #e4e7ef;
-        display: flex;
-        gap: 16px;
-        flex-wrap: wrap;
-      }
-      nav a {
-        text-decoration: none;
-        color: #1f4b99;
-        font-weight: 600;
-      }
-      main {
-        padding: 24px 32px 48px;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 16px;
-      }
-      .card {
-        background: #fff;
-        border-radius: 12px;
-        padding: 16px;
-        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.08);
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        background: #fff;
-      }
-      th, td {
-        text-align: left;
-        padding: 8px 12px;
-        border-bottom: 1px solid #e4e7ef;
-      }
-      th {
-        background: #f0f4ff;
-      }
-      form.inline {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        align-items: flex-end;
-      }
-      input, select, button {
-        padding: 8px 10px;
-        border-radius: 8px;
-        border: 1px solid #c9d3ea;
-        font-size: 14px;
-      }
-      button {
-        background: #1f4b99;
-        color: #fff;
-        border: none;
-        cursor: pointer;
-      }
-      .muted {
-        color: #6b7280;
-        font-size: 14px;
-      }
-    </style>
-  </head>
-  <body>
-    <header>
-      <h1>3PL Warehouse Management System</h1>
-    </header>
-    <nav>
-      <a href="{{ url_for('index') }}">Обзор</a>
-      <a href="{{ url_for('clients_page') }}">Клиенты</a>
-      <a href="{{ url_for('warehouses_page') }}">Склады</a>
-      <a href="{{ url_for('products_page') }}">Товары</a>
-      <a href="{{ url_for('inbound_new') }}">Новый приход</a>
-      <a href="{{ url_for('outbound_new') }}">Новая отгрузка</a>
-      <a href="{{ url_for('inventory_page') }}">Остатки</a>
-      <a href="{{ url_for('movements_page') }}">Движения</a>
-    </nav>
-    <main>
-      {% block content %}{% endblock %}
-    </main>
-  </body>
-</html>
-""",
-    "index": """\
-{% extends "base" %}
-{% block content %}
-  <div class="grid">
-    <div class="card">
-      <h3>Клиенты</h3>
-      <p class="muted">Всего: {{ clients | length }}</p>
-    </div>
-    <div class="card">
-      <h3>Склады</h3>
-      <p class="muted">Всего: {{ warehouses | length }}</p>
-    </div>
-    <div class="card">
-      <h3>Товары</h3>
-      <p class="muted">Всего: {{ products | length }}</p>
-    </div>
-  </div>
+def get_db_path() -> str:
+    return os.environ.get("WAREHOUSE_DB", DB_PATH_DEFAULT)
 
-  <h2>Остатки</h2>
-  {% if inventory_rows %}
-    <table>
-      <thead>
-        <tr>
-          <th>Склад</th>
-          <th>SKU</th>
-          <th>Товар</th>
-          <th>Ед.</th>
-          <th>Кол-во</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in inventory_rows %}
-          <tr>
-            <td>{{ row['warehouse'] }}</td>
-            <td>{{ row['sku'] }}</td>
-            <td>{{ row['product'] }}</td>
-            <td>{{ row['unit'] }}</td>
-            <td>{{ row['quantity'] }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p class="muted">Нет остатков.</p>
-  {% endif %}
+class WarehouseApp(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("3PL Warehouse Management System")
+        self.geometry("1200x720")
+        self.conn = connect(get_db_path())
+        init_db(self.conn)
 
-  <h2>Последние движения</h2>
-  {% if movement_rows %}
-    <table>
-      <thead>
-        <tr>
-          <th>Дата</th>
-          <th>Склад</th>
-          <th>SKU</th>
-          <th>Товар</th>
-          <th>Изменение</th>
-          <th>Причина</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in movement_rows %}
-          <tr>
-            <td>{{ row['created_at'] }}</td>
-            <td>{{ row['warehouse'] }}</td>
-            <td>{{ row['sku'] }}</td>
-            <td>{{ row['product'] }}</td>
-            <td>{{ row['quantity_change'] }}</td>
-            <td>{{ row['reason'] }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p class="muted">Нет движений.</p>
-  {% endif %}
-{% endblock %}
-""",
-    "clients": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Клиенты</h2>
-  <form method="post" class="inline">
-    <div>
-      <label>Название</label><br />
-      <input type="text" name="name" required />
-    </div>
-    <button type="submit">Добавить</button>
-  </form>
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
 
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Название</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for client in clients %}
-        <tr>
-          <td>{{ client.id }}</td>
-          <td>{{ client.name }}</td>
-        </tr>
-      {% else %}
-        <tr>
-          <td colspan="2" class="muted">Нет записей</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-{% endblock %}
-""",
-    "warehouses": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Склады</h2>
-  <form method="post" class="inline">
-    <div>
-      <label>Название</label><br />
-      <input type="text" name="name" required />
-    </div>
-    <div>
-      <label>Локация</label><br />
-      <input type="text" name="location" required />
-    </div>
-    <button type="submit">Добавить</button>
-  </form>
+        self._build_dashboard()
+        self._build_clients_tab()
+        self._build_warehouses_tab()
+        self._build_products_tab()
+        self._build_inbound_tab()
+        self._build_outbound_tab()
+        self._build_inventory_tab()
+        self._build_movements_tab()
+        self._build_settings_tab()
 
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Название</th>
-        <th>Локация</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for warehouse in warehouses %}
-        <tr>
-          <td>{{ warehouse.id }}</td>
-          <td>{{ warehouse.name }}</td>
-          <td>{{ warehouse.location }}</td>
-        </tr>
-      {% else %}
-        <tr>
-          <td colspan="3" class="muted">Нет записей</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-{% endblock %}
-""",
-    "products": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Товары</h2>
-  <form method="post" class="inline">
-    <div>
-      <label>SKU</label><br />
-      <input type="text" name="sku" required />
-    </div>
-    <div>
-      <label>Название</label><br />
-      <input type="text" name="name" required />
-    </div>
-    <div>
-      <label>Ед.</label><br />
-      <input type="text" name="unit" placeholder="pcs" required />
-    </div>
-    <button type="submit">Добавить</button>
-  </form>
+    def _build_dashboard(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Обзор")
 
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>SKU</th>
-        <th>Название</th>
-        <th>Ед.</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for product in products %}
-        <tr>
-          <td>{{ product.id }}</td>
-          <td>{{ product.sku }}</td>
-          <td>{{ product.name }}</td>
-          <td>{{ product.unit }}</td>
-        </tr>
-      {% else %}
-        <tr>
-          <td colspan="4" class="muted">Нет записей</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-{% endblock %}
-""",
-    "inbound_new": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Новый приход</h2>
-  <form method="post" class="inline">
-    <div>
-      <label>Клиент</label><br />
-      <select name="client_id" required>
-        {% for client in clients %}
-          <option value="{{ client.id }}">{{ client.name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div>
-      <label>Склад</label><br />
-      <select name="warehouse_id" required>
-        {% for warehouse in warehouses %}
-          <option value="{{ warehouse.id }}">{{ warehouse.name }} ({{ warehouse.location }})</option>
-        {% endfor %}
-      </select>
-    </div>
-    <button type="submit">Создать приход</button>
-  </form>
-{% endblock %}
-""",
-    "inbound_detail": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Приход №{{ order.id }}</h2>
-  <p class="muted">Клиент: {{ order.client }} · Склад: {{ order.warehouse }} · Статус: {{ order.status }}</p>
+        self.dashboard_stats = ttk.Label(frame, text="", font=("Segoe UI", 12))
+        self.dashboard_stats.pack(anchor="w", padx=16, pady=16)
 
-  <form method="post" class="inline">
-    <input type="hidden" name="action" value="add-item" />
-    <div>
-      <label>Товар</label><br />
-      <select name="product_id" required>
-        {% for product in products %}
-          <option value="{{ product.id }}">{{ product.sku }} — {{ product.name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div>
-      <label>Количество</label><br />
-      <input type="number" name="quantity" step="0.01" required />
-    </div>
-    <button type="submit">Добавить позицию</button>
-  </form>
+        self.dashboard_inventory = self._make_tree(
+            frame,
+            ["Склад", "SKU", "Товар", "Ед.", "Кол-во"],
+        )
+        self.dashboard_inventory.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
 
-  <h3>Позиции</h3>
-  <table>
-    <thead>
-      <tr>
-        <th>SKU</th>
-        <th>Товар</th>
-        <th>Ед.</th>
-        <th>Кол-во</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in items %}
-        <tr>
-          <td>{{ item.sku }}</td>
-          <td>{{ item.name }}</td>
-          <td>{{ item.unit }}</td>
-          <td>{{ item.quantity }}</td>
-        </tr>
-      {% else %}
-        <tr>
-          <td colspan="4" class="muted">Нет позиций</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+        self.dashboard_movements = self._make_tree(
+            frame,
+            ["Дата", "Склад", "SKU", "Товар", "Изменение", "Причина"],
+        )
+        self.dashboard_movements.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
 
-  <form method="post" style="margin-top: 16px;">
-    <input type="hidden" name="action" value="receive" />
-    <button type="submit">Принять приход</button>
-  </form>
-{% endblock %}
-""",
-    "outbound_new": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Новая отгрузка</h2>
-  <form method="post" class="inline">
-    <div>
-      <label>Клиент</label><br />
-      <select name="client_id" required>
-        {% for client in clients %}
-          <option value="{{ client.id }}">{{ client.name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div>
-      <label>Склад</label><br />
-      <select name="warehouse_id" required>
-        {% for warehouse in warehouses %}
-          <option value="{{ warehouse.id }}">{{ warehouse.name }} ({{ warehouse.location }})</option>
-        {% endfor %}
-      </select>
-    </div>
-    <button type="submit">Создать отгрузку</button>
-  </form>
-{% endblock %}
-""",
-    "outbound_detail": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Отгрузка №{{ order.id }}</h2>
-  <p class="muted">Клиент: {{ order.client }} · Склад: {{ order.warehouse }} · Статус: {{ order.status }}</p>
+        self._refresh_dashboard()
 
-  <form method="post" class="inline">
-    <input type="hidden" name="action" value="add-item" />
-    <div>
-      <label>Товар</label><br />
-      <select name="product_id" required>
-        {% for product in products %}
-          <option value="{{ product.id }}">{{ product.sku }} — {{ product.name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div>
-      <label>Количество</label><br />
-      <input type="number" name="quantity" step="0.01" required />
-    </div>
-    <button type="submit">Добавить позицию</button>
-  </form>
+    def _build_clients_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Клиенты")
 
-  <h3>Позиции</h3>
-  <table>
-    <thead>
-      <tr>
-        <th>SKU</th>
-        <th>Товар</th>
-        <th>Ед.</th>
-        <th>Кол-во</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in items %}
-        <tr>
-          <td>{{ item.sku }}</td>
-          <td>{{ item.name }}</td>
-          <td>{{ item.unit }}</td>
-          <td>{{ item.quantity }}</td>
-        </tr>
-      {% else %}
-        <tr>
-          <td colspan="4" class="muted">Нет позиций</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+        form = ttk.Frame(frame)
+        form.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(form, text="Название").grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        self.client_name = ttk.Entry(form, width=40)
+        self.client_name.grid(row=0, column=1, padx=4, pady=4)
+        ttk.Button(form, text="Добавить", command=self._add_client).grid(row=0, column=2, padx=4, pady=4)
+        ttk.Button(form, text="Обновить", command=self._refresh_clients).grid(row=0, column=3, padx=4, pady=4)
 
-  <form method="post" style="margin-top: 16px;">
-    <input type="hidden" name="action" value="ship" />
-    <button type="submit">Отгрузить</button>
-  </form>
-{% endblock %}
-""",
-    "inventory": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Остатки</h2>
-  <form method="get" class="inline">
-    <div>
-      <label>Склад</label><br />
-      <select name="warehouse_id">
-        <option value="">Все</option>
-        {% for warehouse in warehouses %}
-          <option value="{{ warehouse.id }}" {% if selected_warehouse == warehouse.id %}selected{% endif %}>
-            {{ warehouse.name }} ({{ warehouse.location }})
-          </option>
-        {% endfor %}
-      </select>
-    </div>
-    <button type="submit">Показать</button>
-  </form>
+        self.clients_tree = self._make_tree(frame, ["ID", "Название"])
+        self.clients_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
 
-  <table>
-    <thead>
-      <tr>
-        <th>Склад</th>
-        <th>SKU</th>
-        <th>Товар</th>
-        <th>Ед.</th>
-        <th>Кол-во</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-        <tr>
-          <td>{{ row['warehouse'] }}</td>
-          <td>{{ row['sku'] }}</td>
-          <td>{{ row['product'] }}</td>
-          <td>{{ row['unit'] }}</td>
-          <td>{{ row['quantity'] }}</td>
-        </tr>
-      {% else %}
-        <tr>
-          <td colspan="5" class="muted">Нет остатков</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-{% endblock %}
-""",
-    "movements": """\
-{% extends "base" %}
-{% block content %}
-  <h2>Движения</h2>
-  <form method="get" class="inline">
-    <div>
-      <label>Лимит</label><br />
-      <input type="number" name="limit" value="{{ limit }}" min="1" max="500" />
-    </div>
-    <button type="submit">Показать</button>
-  </form>
+        actions = ttk.Frame(frame)
+        actions.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Button(actions, text="Редактировать", command=self._edit_client).pack(side=tk.LEFT, padx=4)
+        ttk.Button(actions, text="Удалить", command=self._delete_client).pack(side=tk.LEFT, padx=4)
 
-  <table>
-    <thead>
-      <tr>
-        <th>Дата</th>
-        <th>Склад</th>
-        <th>SKU</th>
-        <th>Товар</th>
-        <th>Изменение</th>
-        <th>Причина</th>
-        <th>Тип</th>
-        <th>ID</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-        <tr>
-          <td>{{ row['created_at'] }}</td>
-          <td>{{ row['warehouse'] }}</td>
-          <td>{{ row['sku'] }}</td>
-          <td>{{ row['product'] }}</td>
-          <td>{{ row['quantity_change'] }}</td>
-          <td>{{ row['reason'] }}</td>
-          <td>{{ row['ref_type'] }}</td>
-          <td>{{ row['ref_id'] }}</td>
-        </tr>
-      {% else %}
-        <tr>
-          <td colspan="8" class="muted">Нет движений</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-{% endblock %}
-""",
-}
+        self._refresh_clients()
 
+    def _build_warehouses_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Склады")
 
-def render_template(name: str, **context: object) -> str:
-    return render_template_string(TEMPLATES[name], **context)
+        form = ttk.Frame(frame)
+        form.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(form, text="Название").grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        self.warehouse_name = ttk.Entry(form, width=30)
+        self.warehouse_name.grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(form, text="Локация").grid(row=0, column=2, padx=4, pady=4, sticky="w")
+        self.warehouse_location = ttk.Entry(form, width=30)
+        self.warehouse_location.grid(row=0, column=3, padx=4, pady=4)
+        ttk.Button(form, text="Добавить", command=self._add_warehouse).grid(row=0, column=4, padx=4, pady=4)
+        ttk.Button(form, text="Обновить", command=self._refresh_warehouses).grid(row=0, column=5, padx=4, pady=4)
 
+        self.warehouses_tree = self._make_tree(frame, ["ID", "Название", "Локация"])
+        self.warehouses_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
 
-def create_app(db_path: Optional[str] = None) -> Flask:
-    app = Flask(__name__)
-    app.config["DB_PATH"] = db_path or os.environ.get("WAREHOUSE_DB", DB_PATH_DEFAULT)
+        actions = ttk.Frame(frame)
+        actions.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Button(actions, text="Редактировать", command=self._edit_warehouse).pack(side=tk.LEFT, padx=4)
+        ttk.Button(actions, text="Удалить", command=self._delete_warehouse).pack(side=tk.LEFT, padx=4)
 
-    def get_conn() -> sqlite3.Connection:
-        conn = connect(app.config["DB_PATH"])
-        init_db(conn)
-        return conn
+        self._refresh_warehouses()
 
-    @app.route("/")
-    def index():
-        conn = get_conn()
-        return render_template(
-            "index",
-            clients=list_clients(conn),
-            warehouses=list_warehouses(conn),
-            products=list_products(conn),
-            inventory_rows=inventory_report(conn),
-            movement_rows=movement_report(conn, limit=10),
+    def _build_products_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Товары")
+
+        form = ttk.Frame(frame)
+        form.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(form, text="SKU").grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        self.product_sku = ttk.Entry(form, width=20)
+        self.product_sku.grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(form, text="Название").grid(row=0, column=2, padx=4, pady=4, sticky="w")
+        self.product_name = ttk.Entry(form, width=30)
+        self.product_name.grid(row=0, column=3, padx=4, pady=4)
+        ttk.Label(form, text="Ед.").grid(row=0, column=4, padx=4, pady=4, sticky="w")
+        self.product_unit = ttk.Entry(form, width=10)
+        self.product_unit.grid(row=0, column=5, padx=4, pady=4)
+        ttk.Button(form, text="Добавить", command=self._add_product).grid(row=0, column=6, padx=4, pady=4)
+        ttk.Button(form, text="Обновить", command=self._refresh_products).grid(row=0, column=7, padx=4, pady=4)
+
+        self.products_tree = self._make_tree(frame, ["ID", "SKU", "Название", "Ед."])
+        self.products_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+
+        actions = ttk.Frame(frame)
+        actions.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Button(actions, text="Редактировать", command=self._edit_product).pack(side=tk.LEFT, padx=4)
+        ttk.Button(actions, text="Удалить", command=self._delete_product).pack(side=tk.LEFT, padx=4)
+
+        self._refresh_products()
+
+    def _build_inbound_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Приход")
+
+        form = ttk.Frame(frame)
+        form.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(form, text="Клиент").grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        self.inbound_client = ttk.Combobox(form, values=self._client_names(), width=30, state="readonly")
+        self.inbound_client.grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(form, text="Склад").grid(row=0, column=2, padx=4, pady=4, sticky="w")
+        self.inbound_warehouse = ttk.Combobox(form, values=self._warehouse_names(), width=30, state="readonly")
+        self.inbound_warehouse.grid(row=0, column=3, padx=4, pady=4)
+        ttk.Button(form, text="Создать приход", command=self._create_inbound).grid(row=0, column=4, padx=4, pady=4)
+
+        self.inbound_orders_tree = self._make_tree(frame, ["ID", "Клиент", "Склад", "Статус", "Создан"])
+        self.inbound_orders_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+
+        item_form = ttk.Frame(frame)
+        item_form.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(item_form, text="Заказ ID").grid(row=0, column=0, padx=4, pady=4)
+        self.inbound_order_id = ttk.Entry(item_form, width=10)
+        self.inbound_order_id.grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(item_form, text="Товар").grid(row=0, column=2, padx=4, pady=4)
+        self.inbound_product = ttk.Combobox(item_form, values=self._product_names(), width=30, state="readonly")
+        self.inbound_product.grid(row=0, column=3, padx=4, pady=4)
+        ttk.Label(item_form, text="Количество").grid(row=0, column=4, padx=4, pady=4)
+        self.inbound_quantity = ttk.Entry(item_form, width=10)
+        self.inbound_quantity.grid(row=0, column=5, padx=4, pady=4)
+        ttk.Button(item_form, text="Добавить позицию", command=self._add_inbound_item).grid(row=0, column=6, padx=4, pady=4)
+        ttk.Button(item_form, text="Принять", command=self._receive_inbound).grid(row=0, column=7, padx=4, pady=4)
+
+        self._refresh_inbound_orders()
+
+    def _build_outbound_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Отгрузка")
+
+        form = ttk.Frame(frame)
+        form.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(form, text="Клиент").grid(row=0, column=0, padx=4, pady=4)
+        self.outbound_client = ttk.Combobox(form, values=self._client_names(), width=30, state="readonly")
+        self.outbound_client.grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(form, text="Склад").grid(row=0, column=2, padx=4, pady=4)
+        self.outbound_warehouse = ttk.Combobox(form, values=self._warehouse_names(), width=30, state="readonly")
+        self.outbound_warehouse.grid(row=0, column=3, padx=4, pady=4)
+        ttk.Button(form, text="Создать отгрузку", command=self._create_outbound).grid(row=0, column=4, padx=4, pady=4)
+
+        self.outbound_orders_tree = self._make_tree(frame, ["ID", "Клиент", "Склад", "Статус", "Создан"])
+        self.outbound_orders_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+
+        item_form = ttk.Frame(frame)
+        item_form.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(item_form, text="Заказ ID").grid(row=0, column=0, padx=4, pady=4)
+        self.outbound_order_id = ttk.Entry(item_form, width=10)
+        self.outbound_order_id.grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(item_form, text="Товар").grid(row=0, column=2, padx=4, pady=4)
+        self.outbound_product = ttk.Combobox(item_form, values=self._product_names(), width=30, state="readonly")
+        self.outbound_product.grid(row=0, column=3, padx=4, pady=4)
+        ttk.Label(item_form, text="Количество").grid(row=0, column=4, padx=4, pady=4)
+        self.outbound_quantity = ttk.Entry(item_form, width=10)
+        self.outbound_quantity.grid(row=0, column=5, padx=4, pady=4)
+        ttk.Button(item_form, text="Добавить позицию", command=self._add_outbound_item).grid(row=0, column=6, padx=4, pady=4)
+        ttk.Button(item_form, text="Отгрузить", command=self._ship_outbound).grid(row=0, column=7, padx=4, pady=4)
+
+        self._refresh_outbound_orders()
+
+    def _build_inventory_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Остатки")
+
+        filter_frame = ttk.Frame(frame)
+        filter_frame.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(filter_frame, text="Склад").grid(row=0, column=0, padx=4, pady=4)
+        self.inventory_warehouse = ttk.Combobox(
+            filter_frame, values=["Все"] + self._warehouse_names(), width=30, state="readonly"
+        )
+        self.inventory_warehouse.grid(row=0, column=1, padx=4, pady=4)
+        self.inventory_warehouse.set("Все")
+        ttk.Button(filter_frame, text="Показать", command=self._refresh_inventory).grid(
+            row=0, column=2, padx=4, pady=4
         )
 
-    @app.route("/clients", methods=["GET", "POST"])
-    def clients_page():
-        conn = get_conn()
-        if request.method == "POST":
-            name = request.form.get("name", "").strip()
-            if name:
-                add_client(conn, name)
-            return redirect(url_for("clients_page"))
-        return render_template("clients", clients=list_clients(conn))
+        self.inventory_tree = self._make_tree(frame, ["Склад", "SKU", "Товар", "Ед.", "Кол-во"])
+        self.inventory_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+        self._refresh_inventory()
 
-    @app.route("/warehouses", methods=["GET", "POST"])
-    def warehouses_page():
-        conn = get_conn()
-        if request.method == "POST":
-            name = request.form.get("name", "").strip()
-            location = request.form.get("location", "").strip()
-            if name and location:
-                add_warehouse(conn, name, location)
-            return redirect(url_for("warehouses_page"))
-        return render_template("warehouses", warehouses=list_warehouses(conn))
+    def _build_movements_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Движения")
 
-    @app.route("/products", methods=["GET", "POST"])
-    def products_page():
-        conn = get_conn()
-        if request.method == "POST":
-            sku = request.form.get("sku", "").strip()
-            name = request.form.get("name", "").strip()
-            unit = request.form.get("unit", "").strip()
-            if sku and name and unit:
-                add_product(conn, sku, name, unit)
-            return redirect(url_for("products_page"))
-        return render_template("products", products=list_products(conn))
+        filter_frame = ttk.Frame(frame)
+        filter_frame.pack(fill=tk.X, padx=16, pady=8)
+        ttk.Label(filter_frame, text="Лимит").grid(row=0, column=0, padx=4, pady=4)
+        self.movements_limit = ttk.Entry(filter_frame, width=10)
+        self.movements_limit.insert(0, "50")
+        self.movements_limit.grid(row=0, column=1, padx=4, pady=4)
+        ttk.Button(filter_frame, text="Показать", command=self._refresh_movements).grid(
+            row=0, column=2, padx=4, pady=4
+        )
 
-    @app.route("/inbound/new", methods=["GET", "POST"])
-    def inbound_new():
-        conn = get_conn()
-        clients = list_clients(conn)
-        warehouses = list_warehouses(conn)
-        if request.method == "POST":
-            client_id = int(request.form["client_id"])
-            warehouse_id = int(request.form["warehouse_id"])
-            order_id = create_inbound_order(conn, client_id, warehouse_id)
-            return redirect(url_for("inbound_detail", order_id=order_id))
-        return render_template("inbound_new", clients=clients, warehouses=warehouses)
+        self.movements_tree = self._make_tree(
+            frame, ["Дата", "Склад", "SKU", "Товар", "Изменение", "Причина", "Тип", "ID"]
+        )
+        self.movements_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+        self._refresh_movements()
 
-    @app.route("/inbound/<int:order_id>", methods=["GET", "POST"])
-    def inbound_detail(order_id: int):
-        conn = get_conn()
-        products = list_products(conn)
-        if request.method == "POST":
-            action = request.form.get("action")
-            if action == "add-item":
-                product_id = int(request.form["product_id"])
-                quantity = float(request.form["quantity"])
-                add_inbound_item(conn, order_id, product_id, quantity)
-            elif action == "receive":
-                receive_inbound_order(conn, order_id)
-            return redirect(url_for("inbound_detail", order_id=order_id))
+    def _build_settings_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Администрирование")
+        ttk.Label(
+            frame,
+            text=(
+                "Админ-панель позволяет управлять справочниками и документами.\n"
+                "Используйте вкладки выше для редактирования, удаления, настройки и контроля."
+            ),
+            justify=tk.LEFT,
+        ).pack(anchor="w", padx=16, pady=16)
 
-        order = conn.execute(
-            "SELECT o.id, o.status, o.created_at, c.name AS client, w.name AS warehouse "
+    def _make_tree(self, parent: tk.Widget, columns: list[str]) -> ttk.Treeview:
+        tree = ttk.Treeview(parent, columns=columns, show="headings")
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=140, anchor="w")
+        return tree
+
+    def _clear_tree(self, tree: ttk.Treeview) -> None:
+        for item in tree.get_children():
+            tree.delete(item)
+
+    def _client_names(self) -> list[str]:
+        return [f"{client.id} - {client.name}" for client in list_clients(self.conn)]
+
+    def _warehouse_names(self) -> list[str]:
+        return [f"{warehouse.id} - {warehouse.name}" for warehouse in list_warehouses(self.conn)]
+
+    def _product_names(self) -> list[str]:
+        return [f"{product.id} - {product.sku} ({product.name})" for product in list_products(self.conn)]
+
+    def _refresh_dashboard(self) -> None:
+        clients = list_clients(self.conn)
+        warehouses = list_warehouses(self.conn)
+        products = list_products(self.conn)
+        self.dashboard_stats.config(
+            text=f"Клиенты: {len(clients)} | Склады: {len(warehouses)} | Товары: {len(products)}"
+        )
+
+        self._clear_tree(self.dashboard_inventory)
+        for row in inventory_report(self.conn):
+            self.dashboard_inventory.insert(
+                "", tk.END, values=(row["warehouse"], row["sku"], row["product"], row["unit"], row["quantity"])
+            )
+
+        self._clear_tree(self.dashboard_movements)
+        for row in movement_report(self.conn, limit=10):
+            self.dashboard_movements.insert(
+                "",
+                tk.END,
+                values=(
+                    row["created_at"],
+                    row["warehouse"],
+                    row["sku"],
+                    row["product"],
+                    row["quantity_change"],
+                    row["reason"],
+                ),
+            )
+
+    def _refresh_clients(self) -> None:
+        self._clear_tree(self.clients_tree)
+        for client in list_clients(self.conn):
+            self.clients_tree.insert("", tk.END, values=(client.id, client.name))
+        self._refresh_dashboard()
+
+    def _add_client(self) -> None:
+        name = self.client_name.get().strip()
+        if not name:
+            messagebox.showwarning("Ошибка", "Введите название клиента.")
+            return
+        try:
+            add_client(self.conn, name)
+            self.client_name.delete(0, tk.END)
+            self._refresh_clients()
+            self._refresh_comboboxes()
+        except sqlite3.IntegrityError as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _edit_client(self) -> None:
+        selected = self.clients_tree.selection()
+        if not selected:
+            messagebox.showwarning("Ошибка", "Выберите клиента для редактирования.")
+            return
+        item = self.clients_tree.item(selected[0])
+        client_id, name = item["values"]
+        new_name = self._prompt("Изменить клиента", "Новое название:", name)
+        if new_name:
+            self.conn.execute("UPDATE clients SET name = ? WHERE id = ?", (new_name, client_id))
+            self.conn.commit()
+            self._refresh_clients()
+            self._refresh_comboboxes()
+
+    def _delete_client(self) -> None:
+        selected = self.clients_tree.selection()
+        if not selected:
+            messagebox.showwarning("Ошибка", "Выберите клиента для удаления.")
+            return
+        item = self.clients_tree.item(selected[0])
+        client_id = item["values"][0]
+        if messagebox.askyesno("Подтверждение", "Удалить клиента?"):
+            self.conn.execute("DELETE FROM clients WHERE id = ?", (client_id,))
+            self.conn.commit()
+            self._refresh_clients()
+            self._refresh_comboboxes()
+
+    def _refresh_warehouses(self) -> None:
+        self._clear_tree(self.warehouses_tree)
+        for warehouse in list_warehouses(self.conn):
+            self.warehouses_tree.insert("", tk.END, values=(warehouse.id, warehouse.name, warehouse.location))
+        self._refresh_dashboard()
+
+    def _add_warehouse(self) -> None:
+        name = self.warehouse_name.get().strip()
+        location = self.warehouse_location.get().strip()
+        if not name or not location:
+            messagebox.showwarning("Ошибка", "Введите название и локацию склада.")
+            return
+        try:
+            add_warehouse(self.conn, name, location)
+            self.warehouse_name.delete(0, tk.END)
+            self.warehouse_location.delete(0, tk.END)
+            self._refresh_warehouses()
+            self._refresh_comboboxes()
+        except sqlite3.IntegrityError as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _edit_warehouse(self) -> None:
+        selected = self.warehouses_tree.selection()
+        if not selected:
+            messagebox.showwarning("Ошибка", "Выберите склад для редактирования.")
+            return
+        item = self.warehouses_tree.item(selected[0])
+        warehouse_id, name, location = item["values"]
+        new_name = self._prompt("Склад", "Новое название:", name)
+        if new_name is None:
+            return
+        new_location = self._prompt("Склад", "Новая локация:", location)
+        if new_location is None:
+            return
+        self.conn.execute(
+            "UPDATE warehouses SET name = ?, location = ? WHERE id = ?",
+            (new_name, new_location, warehouse_id),
+        )
+        self.conn.commit()
+        self._refresh_warehouses()
+        self._refresh_comboboxes()
+
+    def _delete_warehouse(self) -> None:
+        selected = self.warehouses_tree.selection()
+        if not selected:
+            messagebox.showwarning("Ошибка", "Выберите склад для удаления.")
+            return
+        warehouse_id = self.warehouses_tree.item(selected[0])["values"][0]
+        if messagebox.askyesno("Подтверждение", "Удалить склад?"):
+            self.conn.execute("DELETE FROM warehouses WHERE id = ?", (warehouse_id,))
+            self.conn.commit()
+            self._refresh_warehouses()
+            self._refresh_comboboxes()
+
+    def _refresh_products(self) -> None:
+        self._clear_tree(self.products_tree)
+        for product in list_products(self.conn):
+            self.products_tree.insert("", tk.END, values=(product.id, product.sku, product.name, product.unit))
+        self._refresh_dashboard()
+
+    def _add_product(self) -> None:
+        sku = self.product_sku.get().strip()
+        name = self.product_name.get().strip()
+        unit = self.product_unit.get().strip()
+        if not sku or not name or not unit:
+            messagebox.showwarning("Ошибка", "Заполните все поля товара.")
+            return
+        try:
+            add_product(self.conn, sku, name, unit)
+            self.product_sku.delete(0, tk.END)
+            self.product_name.delete(0, tk.END)
+            self.product_unit.delete(0, tk.END)
+            self._refresh_products()
+            self._refresh_comboboxes()
+        except sqlite3.IntegrityError as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _edit_product(self) -> None:
+        selected = self.products_tree.selection()
+        if not selected:
+            messagebox.showwarning("Ошибка", "Выберите товар для редактирования.")
+            return
+        item = self.products_tree.item(selected[0])
+        product_id, sku, name, unit = item["values"]
+        new_sku = self._prompt("Товар", "SKU:", sku)
+        if new_sku is None:
+            return
+        new_name = self._prompt("Товар", "Название:", name)
+        if new_name is None:
+            return
+        new_unit = self._prompt("Товар", "Ед.:", unit)
+        if new_unit is None:
+            return
+        self.conn.execute(
+            "UPDATE products SET sku = ?, name = ?, unit = ? WHERE id = ?",
+            (new_sku, new_name, new_unit, product_id),
+        )
+        self.conn.commit()
+        self._refresh_products()
+        self._refresh_comboboxes()
+
+    def _delete_product(self) -> None:
+        selected = self.products_tree.selection()
+        if not selected:
+            messagebox.showwarning("Ошибка", "Выберите товар для удаления.")
+            return
+        product_id = self.products_tree.item(selected[0])["values"][0]
+        if messagebox.askyesno("Подтверждение", "Удалить товар?"):
+            self.conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+            self.conn.commit()
+            self._refresh_products()
+            self._refresh_comboboxes()
+
+    def _refresh_inbound_orders(self) -> None:
+        self._clear_tree(self.inbound_orders_tree)
+        rows = fetch_all(
+            self.conn,
+            "SELECT o.id, c.name AS client, w.name AS warehouse, o.status, o.created_at "
             "FROM inbound_orders o "
             "JOIN clients c ON c.id = o.client_id "
             "JOIN warehouses w ON w.id = o.warehouse_id "
-            "WHERE o.id = ?",
-            (order_id,),
-        ).fetchone()
-        items = conn.execute(
-            "SELECT i.id, p.sku, p.name, p.unit, i.quantity "
-            "FROM inbound_items i "
-            "JOIN products p ON p.id = i.product_id "
-            "WHERE i.inbound_order_id = ?",
-            (order_id,),
-        ).fetchall()
-        return render_template("inbound_detail", order=order, items=items, products=products)
+            "ORDER BY o.created_at DESC",
+        )
+        for row in rows:
+            self.inbound_orders_tree.insert(
+                "", tk.END, values=(row["id"], row["client"], row["warehouse"], row["status"], row["created_at"])
+            )
+        self._refresh_dashboard()
 
-    @app.route("/outbound/new", methods=["GET", "POST"])
-    def outbound_new():
-        conn = get_conn()
-        clients = list_clients(conn)
-        warehouses = list_warehouses(conn)
-        if request.method == "POST":
-            client_id = int(request.form["client_id"])
-            warehouse_id = int(request.form["warehouse_id"])
-            order_id = create_outbound_order(conn, client_id, warehouse_id)
-            return redirect(url_for("outbound_detail", order_id=order_id))
-        return render_template("outbound_new", clients=clients, warehouses=warehouses)
+    def _create_inbound(self) -> None:
+        client = self.inbound_client.get()
+        warehouse = self.inbound_warehouse.get()
+        if not client or not warehouse:
+            messagebox.showwarning("Ошибка", "Выберите клиента и склад.")
+            return
+        client_id = int(client.split(" - ")[0])
+        warehouse_id = int(warehouse.split(" - ")[0])
+        create_inbound_order(self.conn, client_id, warehouse_id)
+        self._refresh_inbound_orders()
 
-    @app.route("/outbound/<int:order_id>", methods=["GET", "POST"])
-    def outbound_detail(order_id: int):
-        conn = get_conn()
-        products = list_products(conn)
-        if request.method == "POST":
-            action = request.form.get("action")
-            if action == "add-item":
-                product_id = int(request.form["product_id"])
-                quantity = float(request.form["quantity"])
-                add_outbound_item(conn, order_id, product_id, quantity)
-            elif action == "ship":
-                ship_outbound_order(conn, order_id)
-            return redirect(url_for("outbound_detail", order_id=order_id))
+    def _add_inbound_item(self) -> None:
+        order_id = self.inbound_order_id.get().strip()
+        product = self.inbound_product.get()
+        quantity = self.inbound_quantity.get().strip()
+        if not order_id or not product or not quantity:
+            messagebox.showwarning("Ошибка", "Заполните все поля позиции.")
+            return
+        product_id = int(product.split(" - ")[0])
+        add_inbound_item(self.conn, int(order_id), product_id, float(quantity))
+        self._refresh_inbound_orders()
 
-        order = conn.execute(
-            "SELECT o.id, o.status, o.created_at, c.name AS client, w.name AS warehouse "
+    def _receive_inbound(self) -> None:
+        order_id = self.inbound_order_id.get().strip()
+        if not order_id:
+            messagebox.showwarning("Ошибка", "Укажите ID прихода.")
+            return
+        receive_inbound_order(self.conn, int(order_id))
+        self._refresh_inbound_orders()
+        self._refresh_inventory()
+        self._refresh_movements()
+
+    def _refresh_outbound_orders(self) -> None:
+        self._clear_tree(self.outbound_orders_tree)
+        rows = fetch_all(
+            self.conn,
+            "SELECT o.id, c.name AS client, w.name AS warehouse, o.status, o.created_at "
             "FROM outbound_orders o "
             "JOIN clients c ON c.id = o.client_id "
             "JOIN warehouses w ON w.id = o.warehouse_id "
-            "WHERE o.id = ?",
-            (order_id,),
-        ).fetchone()
-        items = conn.execute(
-            "SELECT i.id, p.sku, p.name, p.unit, i.quantity "
-            "FROM outbound_items i "
-            "JOIN products p ON p.id = i.product_id "
-            "WHERE i.outbound_order_id = ?",
-            (order_id,),
-        ).fetchall()
-        return render_template("outbound_detail", order=order, items=items, products=products)
-
-    @app.route("/inventory")
-    def inventory_page():
-        conn = get_conn()
-        warehouse_id = request.args.get("warehouse_id", type=int)
-        return render_template(
-            "inventory",
-            rows=inventory_report(conn, warehouse_id),
-            warehouses=list_warehouses(conn),
-            selected_warehouse=warehouse_id,
+            "ORDER BY o.created_at DESC",
         )
+        for row in rows:
+            self.outbound_orders_tree.insert(
+                "", tk.END, values=(row["id"], row["client"], row["warehouse"], row["status"], row["created_at"])
+            )
+        self._refresh_dashboard()
 
-    @app.route("/movements")
-    def movements_page():
-        conn = get_conn()
-        limit = request.args.get("limit", default=50, type=int)
-        return render_template("movements", rows=movement_report(conn, limit), limit=limit)
+    def _create_outbound(self) -> None:
+        client = self.outbound_client.get()
+        warehouse = self.outbound_warehouse.get()
+        if not client or not warehouse:
+            messagebox.showwarning("Ошибка", "Выберите клиента и склад.")
+            return
+        client_id = int(client.split(" - ")[0])
+        warehouse_id = int(warehouse.split(" - ")[0])
+        create_outbound_order(self.conn, client_id, warehouse_id)
+        self._refresh_outbound_orders()
 
-    return app
+    def _add_outbound_item(self) -> None:
+        order_id = self.outbound_order_id.get().strip()
+        product = self.outbound_product.get()
+        quantity = self.outbound_quantity.get().strip()
+        if not order_id or not product or not quantity:
+            messagebox.showwarning("Ошибка", "Заполните все поля позиции.")
+            return
+        product_id = int(product.split(" - ")[0])
+        add_outbound_item(self.conn, int(order_id), product_id, float(quantity))
+        self._refresh_outbound_orders()
+
+    def _ship_outbound(self) -> None:
+        order_id = self.outbound_order_id.get().strip()
+        if not order_id:
+            messagebox.showwarning("Ошибка", "Укажите ID отгрузки.")
+            return
+        ship_outbound_order(self.conn, int(order_id))
+        self._refresh_outbound_orders()
+        self._refresh_inventory()
+        self._refresh_movements()
+
+    def _refresh_inventory(self) -> None:
+        self._clear_tree(self.inventory_tree)
+        selected = self.inventory_warehouse.get()
+        warehouse_id = None
+        if selected and selected != "Все":
+            warehouse_id = int(selected.split(" - ")[0])
+        for row in inventory_report(self.conn, warehouse_id):
+            self.inventory_tree.insert(
+                "", tk.END, values=(row["warehouse"], row["sku"], row["product"], row["unit"], row["quantity"])
+            )
+
+    def _refresh_movements(self) -> None:
+        self._clear_tree(self.movements_tree)
+        limit = int(self.movements_limit.get() or 50)
+        for row in movement_report(self.conn, limit):
+            self.movements_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    row["created_at"],
+                    row["warehouse"],
+                    row["sku"],
+                    row["product"],
+                    row["quantity_change"],
+                    row["reason"],
+                    row["ref_type"],
+                    row["ref_id"],
+                ),
+            )
+
+    def _refresh_comboboxes(self) -> None:
+        self.inbound_client["values"] = self._client_names()
+        self.outbound_client["values"] = self._client_names()
+        self.inbound_warehouse["values"] = self._warehouse_names()
+        self.outbound_warehouse["values"] = self._warehouse_names()
+        self.inbound_product["values"] = self._product_names()
+        self.outbound_product["values"] = self._product_names()
+        self.inventory_warehouse["values"] = ["Все"] + self._warehouse_names()
+
+    def _prompt(self, title: str, label: str, initial: str) -> Optional[str]:
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.grab_set()
+        ttk.Label(dialog, text=label).pack(padx=12, pady=8)
+        entry = ttk.Entry(dialog, width=40)
+        entry.insert(0, initial)
+        entry.pack(padx=12, pady=8)
+        result: list[Optional[str]] = [None]
+
+        def submit() -> None:
+            result[0] = entry.get().strip()
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Сохранить", command=submit).pack(pady=8)
+        dialog.wait_window()
+        return result[0]
+
+
+def main() -> None:
+    app = WarehouseApp()
+    app.mainloop()
 
 
 if __name__ == "__main__":
-    create_app().run(host="0.0.0.0", port=8000, debug=True)
+    main()
