@@ -1,28 +1,23 @@
-name: Build WMS EXE
+name: Build WMS
 
 on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: windows-latest
-    
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - run: pip install pyinstaller
 
-      - name: Build EXE
-        run: |
-          pyinstaller --onefile --windowed --name "WMS" scan.py
+      - run: pyinstaller --onefile --windowed scan.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WMS-Windows
-          path: dist/scan.exe
+          name: WMS
+          path: dist/*.exe
