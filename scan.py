@@ -3984,8 +3984,8 @@ class ItemEditDialog(tk.Toplevel):
         # Одиниця виміру
         if item['uom_name']:
             self.uom_var.set(item['uom_name'])
-                    self.description_text.delete('1.0', tk.END)
-        self.description_text.insert('1.0', item['description'] or '')
+            self.description_text.delete('1.0', tk.END)
+            self.description_text.insert('1.0', item['description'] or '')
         
         self.is_active_var.set(bool(item['is_active']))
         self.weight_var.set(str(item['weight'] or 0))
@@ -7386,9 +7386,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-
-            
         
-
-
