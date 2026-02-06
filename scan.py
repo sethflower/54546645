@@ -76,8 +76,16 @@ class Database:
         if column not in existing:
             self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
+    def _add_unique_index_if_missing(self, table: str, column: str):
+        index_name = f"idx_{table}_{column}_unique"
+        indexes = self.query(f"PRAGMA index_list({table})")
+        if not any(row[1] == index_name for row in indexes):
+            self.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
+
     def _migrate_products_table(self):
-        self._add_column_if_missing("products", "article", "TEXT UNIQUE")
+        # SQLite does not allow adding a UNIQUE column via ALTER TABLE.
+        # Add plain TEXT first, then create a unique index.
+        self._add_column_if_missing("products", "article", "TEXT")
         self._add_column_if_missing("products", "brand", "TEXT")
         self._add_column_if_missing("products", "supplier_id", "INTEGER REFERENCES suppliers(id) ON DELETE SET NULL")
         self._add_column_if_missing("products", "volume", "REAL")
@@ -90,6 +98,7 @@ class Database:
 
         # backfill article from sku for old records
         self.execute("UPDATE products SET article = sku WHERE article IS NULL AND sku IS NOT NULL")
+        self._add_unique_index_if_missing("products", "article")
 
     def _seed_reference_data(self):
         if not self.query("SELECT id FROM suppliers LIMIT 1"):
