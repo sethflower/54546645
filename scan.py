@@ -603,15 +603,17 @@ class WMSApp(tk.Tk):
             tree.delete(row)
 
     def _next_article(self):
-        row = self.db.query("SELECT article FROM products WHERE article LIKE 'ART%' ORDER BY id DESC LIMIT 1")
-        if not row or not row[0][0]:
-            return "ART00001"
-        value = row[0][0]
-        try:
-            num = int(value.replace("ART", "")) + 1
-        except ValueError:
-            num = self.db.query("SELECT COUNT(*) FROM products")[0][0] + 1
-        return f"ART{num:05d}"
+        row = self.db.query(
+            """
+            SELECT COALESCE(MAX(CAST(article AS INTEGER)), 0)
+            FROM products
+            WHERE article GLOB '[0-9][0-9][0-9][0-9][0-9]'
+            """
+        )
+        next_num = int(row[0][0]) + 1
+        if next_num > 99999:
+            raise ValueError("Достигнут лимит автоартикулов (99999)")
+        return f"{next_num:05d}"
 
     def _load_reference_dict(self, table_name):
         rows = self.db.query(f"SELECT id, name FROM {table_name} ORDER BY name")
@@ -775,8 +777,14 @@ class WMSApp(tk.Tk):
                 messagebox.showwarning("Валидация", "Объём и вес должны быть числами", parent=dialog)
                 return
 
+            try:
+                article_value = self._next_article() if mode == "create" else article_var.get().strip()
+            except ValueError as exc:
+                messagebox.showerror("Ошибка", str(exc), parent=dialog)
+                return
+            article_var.set(article_value)
             payload = (
-                article_var.get().strip(),
+                article_value,
                 brand,
                 supplier_id,
                 client_id,
@@ -800,7 +808,7 @@ class WMSApp(tk.Tk):
                             product_owner, created_at
                         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        payload + (article_var.get().strip(), brand, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                        payload + (article_value, brand, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                     )
                 else:
                     self.db.execute(
@@ -811,7 +819,7 @@ class WMSApp(tk.Tk):
                             product_owner=?
                         WHERE id=?
                         """,
-                        payload + (article_var.get().strip(), brand, product_id),
+                        payload + (article_value, brand, product_id),
                     )
             except sqlite3.IntegrityError:
                 messagebox.showerror("Ошибка", "Артикул должен быть уникальным", parent=dialog)
