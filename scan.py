@@ -14,6 +14,7 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self._create_schema()
         self._migrate_products_table()
+        self._migrate_suppliers_table()
         self._seed_reference_data()
 
     def _create_schema(self):
@@ -100,9 +101,24 @@ class Database:
         self.execute("UPDATE products SET article = sku WHERE article IS NULL AND sku IS NOT NULL")
         self._add_unique_index_if_missing("products", "article")
 
+    def _migrate_suppliers_table(self):
+        self._add_column_if_missing("suppliers", "phone", "TEXT")
+        self._add_column_if_missing("suppliers", "created_at", "TEXT")
+        self.execute(
+            """
+            UPDATE suppliers
+            SET created_at = ?
+            WHERE created_at IS NULL OR TRIM(created_at) = ''
+            """,
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),),
+        )
+
     def _seed_reference_data(self):
         if not self.query("SELECT id FROM suppliers LIMIT 1"):
-            self.execute("INSERT INTO suppliers(name) VALUES(?)", ("Default Supplier",))
+            self.execute(
+                "INSERT INTO suppliers(name, phone, created_at) VALUES(?, ?, ?)",
+                ("Default Supplier", "", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
 
     def execute(self, query, params=()):
         with closing(self.conn.cursor()) as cur:
@@ -135,6 +151,8 @@ class WMSApp(tk.Tk):
         self.selected_copy_value = ""
         self.nomenclature_brand_filter = tk.StringVar()
         self.nomenclature_brand_filter.trace_add("write", lambda *_: self.refresh_nomenclature())
+        self.suppliers_search_var = tk.StringVar()
+        self.suppliers_search_var.trace_add("write", lambda *_: self.refresh_suppliers())
 
         self._build_layout()
         self.refresh_all()
@@ -174,7 +192,7 @@ class WMSApp(tk.Tk):
         header.pack(fill="x")
 
         ttk.Label(header, text="Warehouse Management System (3PL)", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(header, text="Складская операционная система: клиенты, номенклатура, движения и остатки", style="Subtitle.TLabel").pack(anchor="w", pady=(2, 14))
+        ttk.Label(header, text="Складская операционная система: поставщики, номенклатура, движения и остатки", style="Subtitle.TLabel").pack(anchor="w", pady=(2, 14))
 
         self.metrics_var = tk.StringVar(value="")
         metrics_card = ttk.Frame(root, style="Panel.TFrame", padding=14)
@@ -184,43 +202,148 @@ class WMSApp(tk.Tk):
         notebook = ttk.Notebook(root)
         notebook.pack(fill="both", expand=True)
 
-        self.clients_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
+        self.suppliers_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.nomenclature_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.movements_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.stock_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
 
-        notebook.add(self.clients_tab, text="Клиенты")
+        notebook.add(self.suppliers_tab, text="Поставщики")
         notebook.add(self.nomenclature_tab, text="Номенклатура")
         notebook.add(self.movements_tab, text="Движения")
         notebook.add(self.stock_tab, text="Остатки")
 
-        self._build_clients_tab()
+        self._build_suppliers_tab()
         self._build_nomenclature_tab()
         self._build_movements_tab()
         self._build_stock_tab()
 
-    def _build_clients_tab(self):
-        form = ttk.Frame(self.clients_tab, style="Panel.TFrame")
-        form.pack(fill="x", pady=(0, 12))
+    def _build_suppliers_tab(self):
+        controls = ttk.Frame(self.suppliers_tab, style="Panel.TFrame")
+        controls.pack(fill="x", pady=(0, 10))
 
-        ttk.Label(form, text="Код клиента").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Label(form, text="Название").grid(row=0, column=2, sticky="w", padx=(0, 8), pady=4)
-        ttk.Label(form, text="Контакт").grid(row=0, column=4, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(controls, text="Поиск по поставщику").pack(side="left")
+        ttk.Entry(controls, textvariable=self.suppliers_search_var, width=28).pack(side="left", padx=(8, 14))
+        ttk.Button(controls, text="Создать нового поставщика", command=self.open_create_supplier_dialog).pack(side="left")
+        ttk.Button(controls, text="Редактировать карточку", command=self.open_edit_supplier_dialog).pack(side="left", padx=(10, 0))
+        ttk.Button(controls, text="Удалить карточку", command=self.delete_selected_supplier).pack(side="left", padx=(10, 0))
 
-        self.client_code = tk.StringVar()
-        self.client_name = tk.StringVar()
-        self.client_contact = tk.StringVar()
+        self.suppliers_tree = ttk.Treeview(self.suppliers_tab, columns=("id", "name", "phone", "created"), show="headings")
+        self.suppliers_tree.pack(fill="both", expand=True)
 
-        ttk.Entry(form, textvariable=self.client_code, width=18).grid(row=0, column=1, padx=(0, 16), pady=4)
-        ttk.Entry(form, textvariable=self.client_name, width=34).grid(row=0, column=3, padx=(0, 16), pady=4)
-        ttk.Entry(form, textvariable=self.client_contact, width=30).grid(row=0, column=5, padx=(0, 16), pady=4)
-        ttk.Button(form, text="Добавить клиента", command=self.add_client).grid(row=0, column=6)
+        for col, title, width in [
+            ("id", "ID", 70),
+            ("name", "Поставщик", 360),
+            ("phone", "Телефон", 220),
+            ("created", "Создан", 200),
+        ]:
+            self.suppliers_tree.heading(col, text=title)
+            self.suppliers_tree.column(col, width=width, anchor="w")
 
-        self.clients_tree = ttk.Treeview(self.clients_tab, columns=("id", "code", "name", "contact", "created"), show="headings")
-        self.clients_tree.pack(fill="both", expand=True)
-        for col, title, width in [("id", "ID", 60), ("code", "Код", 140), ("name", "Клиент", 300), ("contact", "Контакт", 240), ("created", "Создан", 180)]:
-            self.clients_tree.heading(col, text=title)
-            self.clients_tree.column(col, width=width, anchor="w")
+        self.suppliers_copy_menu = tk.Menu(self, tearoff=0)
+        self.suppliers_copy_menu.add_command(label="Скопировать", command=self.copy_selected_value)
+        self.suppliers_tree.bind("<Button-3>", self.show_suppliers_copy_menu)
+
+    def _next_supplier_id(self):
+        row = self.db.query("SELECT COALESCE(MAX(id), 0) + 1 FROM suppliers")
+        return str(row[0][0])
+
+    def open_create_supplier_dialog(self):
+        self._open_supplier_dialog(mode="create")
+
+    def open_edit_supplier_dialog(self):
+        selected = self.suppliers_tree.selection()
+        if not selected:
+            messagebox.showwarning("Валидация", "Выберите карточку поставщика для редактирования")
+            return
+        supplier_id = int(self.suppliers_tree.item(selected[0], "values")[0])
+        self._open_supplier_dialog(mode="edit", supplier_id=supplier_id)
+
+    def _open_supplier_dialog(self, mode: str, supplier_id: int | None = None):
+        dialog = tk.Toplevel(self)
+        dialog.title("Карточка поставщика")
+        dialog.geometry("520x280")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        frm = ttk.Frame(dialog, style="Panel.TFrame", padding=14)
+        frm.pack(fill="both", expand=True)
+
+        supplier_name_var = tk.StringVar()
+        supplier_id_var = tk.StringVar(value=self._next_supplier_id())
+        supplier_contact_var = tk.StringVar()
+        created_at_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        if mode == "edit" and supplier_id is not None:
+            row = self.db.query("SELECT id, name, phone, created_at FROM suppliers WHERE id = ?", (supplier_id,))
+            if not row:
+                messagebox.showerror("Ошибка", "Поставщик не найден", parent=dialog)
+                dialog.destroy()
+                return
+            sid, name, phone, created = row[0]
+            supplier_id_var.set(str(sid))
+            supplier_name_var.set(name or "")
+            supplier_contact_var.set(phone or "")
+            created_at_var.set(created or "")
+
+        fields = [
+            ("Название поставщика", supplier_name_var, False),
+            ("ID поставщика", supplier_id_var, True),
+            ("Контакт", supplier_contact_var, False),
+            ("Дата создания", created_at_var, True),
+        ]
+
+        for i, (label, var, readonly) in enumerate(fields):
+            ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=6)
+            state = "readonly" if readonly else "normal"
+            ttk.Entry(frm, textvariable=var, width=38, state=state).grid(row=i, column=1, sticky="w", pady=6)
+
+        def on_save():
+            name = supplier_name_var.get().strip()
+            if not name:
+                messagebox.showwarning("Валидация", "Название поставщика обязательно", parent=dialog)
+                return
+
+            if mode == "create":
+                try:
+                    self.db.execute(
+                        "INSERT INTO suppliers(name, phone, created_at) VALUES(?, ?, ?)",
+                        (name, supplier_contact_var.get().strip(), created_at_var.get().strip()),
+                    )
+                except sqlite3.IntegrityError:
+                    messagebox.showerror("Ошибка", "Поставщик с таким названием уже существует", parent=dialog)
+                    return
+            else:
+                self.db.execute(
+                    "UPDATE suppliers SET name = ?, phone = ? WHERE id = ?",
+                    (name, supplier_contact_var.get().strip(), supplier_id),
+                )
+
+            self.refresh_all()
+            dialog.destroy()
+
+        ttk.Button(frm, text="Сохранить", command=on_save).grid(row=len(fields), column=1, sticky="e", pady=(12, 0))
+
+    def delete_selected_supplier(self):
+        selected = self.suppliers_tree.selection()
+        if not selected:
+            messagebox.showwarning("Валидация", "Выберите карточку поставщика для удаления")
+            return
+        supplier_id, supplier_name = self.suppliers_tree.item(selected[0], "values")[:2]
+        if not messagebox.askyesno("Подтверждение", f"Удалить поставщика {supplier_name}?"):
+            return
+        self.db.execute("DELETE FROM suppliers WHERE id = ?", (int(supplier_id),))
+        self.refresh_all()
+
+    def show_suppliers_copy_menu(self, event):
+        row = self.suppliers_tree.identify_row(event.y)
+        col = self.suppliers_tree.identify_column(event.x)
+        if not row:
+            return
+        self.suppliers_tree.selection_set(row)
+        values = self.suppliers_tree.item(row, "values")
+        col_index = int(col.replace("#", "")) - 1 if col else 0
+        self.selected_copy_value = values[col_index] if 0 <= col_index < len(values) else ""
+        self.suppliers_copy_menu.tk_popup(event.x_root, event.y_root)
 
     def _build_nomenclature_tab(self):
         controls = ttk.Frame(self.nomenclature_tab, style="Panel.TFrame")
@@ -319,22 +442,6 @@ class WMSApp(tk.Tk):
     def _clear_tree(self, tree):
         for row in tree.get_children():
             tree.delete(row)
-
-    def add_client(self):
-        code = self.client_code.get().strip().upper()
-        name = self.client_name.get().strip()
-        contact = self.client_contact.get().strip()
-        if not code or not name:
-            messagebox.showwarning("Валидация", "Введите код и название клиента")
-            return
-        try:
-            self.db.execute("INSERT INTO clients(code, name, contact, created_at) VALUES(?, ?, ?, ?)", (code, name, contact, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            self.client_code.set("")
-            self.client_name.set("")
-            self.client_contact.set("")
-            self.refresh_all()
-        except sqlite3.IntegrityError:
-            messagebox.showerror("Ошибка", "Клиент с таким кодом уже существует")
 
     def _next_article(self):
         row = self.db.query("SELECT article FROM products WHERE article LIKE 'ART%' ORDER BY id DESC LIMIT 1")
@@ -633,17 +740,21 @@ class WMSApp(tk.Tk):
         self.refresh_all()
 
     def refresh_all(self):
-        self.refresh_clients()
+        self.refresh_suppliers()
         self.refresh_nomenclature()
         self.refresh_movements()
         self.refresh_stock()
         self.refresh_metrics()
 
-    def refresh_clients(self):
-        self._clear_tree(self.clients_tree)
-        rows = self.db.query("SELECT id, code, name, contact, created_at FROM clients ORDER BY id DESC")
+    def refresh_suppliers(self):
+        self._clear_tree(self.suppliers_tree)
+        query = "SELECT id, name, COALESCE(phone, ''), COALESCE(created_at, '') FROM suppliers ORDER BY id DESC"
+        rows = self.db.query(query)
+        term = self.suppliers_search_var.get().strip().lower()
         for row in rows:
-            self.clients_tree.insert("", "end", values=row)
+            if term and term not in (row[1] or '').lower():
+                continue
+            self.suppliers_tree.insert("", "end", values=row)
 
     def refresh_nomenclature(self):
         self._clear_tree(self.nomenclature_tree)
@@ -703,10 +814,10 @@ class WMSApp(tk.Tk):
             self.stock_tree.insert("", "end", values=row)
 
     def refresh_metrics(self):
-        clients = self.db.query("SELECT COUNT(*) FROM clients")[0][0]
+        suppliers = self.db.query("SELECT COUNT(*) FROM suppliers")[0][0]
         products = self.db.query("SELECT COUNT(*) FROM products")[0][0]
         movements = self.db.query("SELECT COUNT(*) FROM movements")[0][0]
-        self.metrics_var.set(f"Клиенты: {clients}   •   Номенклатура: {products}   •   Проводок: {movements}")
+        self.metrics_var.set(f"Поставщики: {suppliers}   •   Номенклатура: {products}   •   Проводок: {movements}")
 
     def on_close(self):
         self.db.close()
