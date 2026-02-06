@@ -777,40 +777,71 @@ class WMSApp(tk.Tk):
                 messagebox.showwarning("Валидация", "Объём и вес должны быть числами", parent=dialog)
                 return
 
-            try:
-                article_value = self._next_article() if mode == "create" else article_var.get().strip()
-            except ValueError as exc:
-                messagebox.showerror("Ошибка", str(exc), parent=dialog)
-                return
-            article_var.set(article_value)
-            payload = (
-                article_value,
-                brand,
-                supplier_id,
-                client_id,
-                unit_var.get().strip(),
-                volume,
-                weight,
-                barcode_var.get().strip(),
-                serial_var.get().strip(),
-                category_id,
-                subcategory_id,
-                product_owner_var.get().strip(),
-            )
+            if mode == "create":
+                # Generate article right before insert and retry if concurrent insert took the same number.
+                for _ in range(5):
+                    try:
+                        article_value = self._next_article()
+                    except ValueError as exc:
+                        messagebox.showerror("Ошибка", str(exc), parent=dialog)
+                        return
 
-            try:
-                if mode == "create":
-                    self.db.execute(
-                        """
-                        INSERT INTO products(
-                            article, sku, name, brand, supplier_id, client_id, unit,
-                            volume, weight, barcode, serial_tracking, category_id, subcategory_id,
-                            product_owner, created_at
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        payload + (article_value, brand, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    article_var.set(article_value)
+                    payload = (
+                        article_value,
+                        brand,
+                        supplier_id,
+                        client_id,
+                        unit_var.get().strip(),
+                        volume,
+                        weight,
+                        barcode_var.get().strip(),
+                        serial_var.get().strip(),
+                        category_id,
+                        subcategory_id,
+                        product_owner_var.get().strip(),
                     )
+
+                    try:
+                        self.db.execute(
+                            """
+                            INSERT INTO products(
+                                article, sku, name, brand, supplier_id, client_id, unit,
+                                volume, weight, barcode, serial_tracking, category_id, subcategory_id,
+                                product_owner, created_at
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            payload + (article_value, brand, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                        )
+                        break
+                    except sqlite3.IntegrityError as exc:
+                        # Retry only for article/sku uniqueness conflicts.
+                        msg = str(exc)
+                        if "products.article" in msg or "products.sku" in msg:
+                            continue
+                        messagebox.showerror("Ошибка", f"Не удалось сохранить карточку: {msg}", parent=dialog)
+                        return
                 else:
+                    messagebox.showerror("Ошибка", "Не удалось подобрать уникальный артикул. Повторите попытку.", parent=dialog)
+                    return
+            else:
+                article_value = article_var.get().strip()
+                payload = (
+                    article_value,
+                    brand,
+                    supplier_id,
+                    client_id,
+                    unit_var.get().strip(),
+                    volume,
+                    weight,
+                    barcode_var.get().strip(),
+                    serial_var.get().strip(),
+                    category_id,
+                    subcategory_id,
+                    product_owner_var.get().strip(),
+                )
+
+                try:
                     self.db.execute(
                         """
                         UPDATE products
@@ -821,9 +852,9 @@ class WMSApp(tk.Tk):
                         """,
                         payload + (article_value, brand, product_id),
                     )
-            except sqlite3.IntegrityError:
-                messagebox.showerror("Ошибка", "Артикул должен быть уникальным", parent=dialog)
-                return
+                except sqlite3.IntegrityError as exc:
+                    messagebox.showerror("Ошибка", f"Не удалось сохранить карточку: {exc}", parent=dialog)
+                    return
 
             self.refresh_all()
             dialog.destroy()
