@@ -7379,7 +7379,12 @@ def main():
         
     except Exception as e:
         logger.error(f"Application error: {e}", exc_info=True)
-        messagebox.showerror("Критична помилка", f"Помилка запуску програми:\n{e}")
+        error_text = f"Помилка запуску програми:\n{e}"
+        try:
+            messagebox.showerror("Критична помилка", error_text)
+        except tk.TclError:
+            # Підтримка headless-середовища (без GUI/Display)
+            print(error_text, file=sys.stderr)
         sys.exit(1)
 
 
