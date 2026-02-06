@@ -85,9 +85,6 @@ class Database:
             self.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
 
     def _migrate_products_table(self):
-        # SQLite does not allow adding a UNIQUE column via ALTER TABLE.
-        # Add plain TEXT first, then create a unique index.
-        self._add_column_if_missing("products", "article", "TEXT")
         self._add_column_if_missing("products", "brand", "TEXT")
         self._add_column_if_missing("products", "supplier_id", "INTEGER REFERENCES suppliers(id) ON DELETE SET NULL")
         self._add_column_if_missing("products", "volume", "REAL")
@@ -98,9 +95,6 @@ class Database:
         self._add_column_if_missing("products", "subcategory_id", "INTEGER REFERENCES subcategories(id) ON DELETE SET NULL")
         self._add_column_if_missing("products", "product_owner", "TEXT")
 
-        # backfill article from sku for old records
-        self.execute("UPDATE products SET article = sku WHERE article IS NULL AND sku IS NOT NULL")
-        self._add_unique_index_if_missing("products", "article")
 
     def _migrate_suppliers_table(self):
         self._add_column_if_missing("suppliers", "phone", "TEXT")
@@ -517,7 +511,6 @@ class WMSApp(tk.Tk):
 
         columns = (
             "id",
-            "article",
             "brand",
             "supplier",
             "client",
@@ -535,8 +528,7 @@ class WMSApp(tk.Tk):
 
         headings = [
             ("id", "ID", 60),
-            ("article", "Артикул", 110),
-            ("brand", "Марка", 140),
+            ("brand", "Марка", 180),
             ("supplier", "Поставщик", 150),
             ("client", "3PL клиент", 150),
             ("unit", "Ед. изм.", 100),
@@ -560,7 +552,7 @@ class WMSApp(tk.Tk):
         form = ttk.Frame(self.movements_tab, style="Panel.TFrame")
         form.pack(fill="x", pady=(0, 12))
 
-        ttk.Label(form, text="Артикул").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        ttk.Label(form, text="Товар").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
         ttk.Label(form, text="Тип").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=4)
         ttk.Label(form, text="Кол-во").grid(row=0, column=4, sticky="w", padx=(0, 6), pady=4)
         ttk.Label(form, text="Документ").grid(row=0, column=6, sticky="w", padx=(0, 6), pady=4)
@@ -580,9 +572,9 @@ class WMSApp(tk.Tk):
         ttk.Entry(form, textvariable=self.movement_note, width=26).grid(row=0, column=9, padx=(0, 12), pady=4)
         ttk.Button(form, text="Провести", command=self.add_movement).grid(row=0, column=10)
 
-        self.movements_tree = ttk.Treeview(self.movements_tab, columns=("id", "article", "brand", "type", "qty", "reference", "date", "note"), show="headings")
+        self.movements_tree = ttk.Treeview(self.movements_tab, columns=("id", "brand", "type", "qty", "reference", "date", "note"), show="headings")
         self.movements_tree.pack(fill="both", expand=True)
-        for col, title, width in [("id", "ID", 60), ("article", "Артикул", 110), ("brand", "Марка", 170), ("type", "Тип", 80), ("qty", "Кол-во", 90), ("reference", "Документ", 140), ("date", "Дата", 180), ("note", "Комментарий", 230)]:
+        for col, title, width in [("id", "ID", 60), ("brand", "Марка", 220), ("type", "Тип", 80), ("qty", "Кол-во", 90), ("reference", "Документ", 140), ("date", "Дата", 180), ("note", "Комментарий", 260)]:
             self.movements_tree.heading(col, text=title)
             self.movements_tree.column(col, width=width, anchor="w")
 
@@ -592,28 +584,15 @@ class WMSApp(tk.Tk):
         ttk.Label(top, text="Онлайн остатки по номенклатуре", style="Section.TLabel").pack(side="left")
         ttk.Button(top, text="Обновить", command=self.refresh_stock).pack(side="right")
 
-        self.stock_tree = ttk.Treeview(self.stock_tab, columns=("article", "brand", "client", "unit", "stock"), show="headings")
+        self.stock_tree = ttk.Treeview(self.stock_tab, columns=("brand", "client", "unit", "stock"), show="headings")
         self.stock_tree.pack(fill="both", expand=True)
-        for col, title, width in [("article", "Артикул", 120), ("brand", "Марка", 240), ("client", "3PL клиент", 220), ("unit", "Ед.", 80), ("stock", "Остаток", 100)]:
+        for col, title, width in [("brand", "Марка", 280), ("client", "3PL клиент", 220), ("unit", "Ед.", 80), ("stock", "Остаток", 120)]:
             self.stock_tree.heading(col, text=title)
             self.stock_tree.column(col, width=width, anchor="w")
 
     def _clear_tree(self, tree):
         for row in tree.get_children():
             tree.delete(row)
-
-    def _next_article(self):
-        row = self.db.query(
-            """
-            SELECT COALESCE(MAX(CAST(article AS INTEGER)), 0)
-            FROM products
-            WHERE article GLOB '[0-9][0-9][0-9][0-9][0-9]'
-            """
-        )
-        next_num = int(row[0][0]) + 1
-        if next_num > 99999:
-            raise ValueError("Достигнут лимит автоартикулов (99999)")
-        return f"{next_num:05d}"
 
     def _load_reference_dict(self, table_name):
         rows = self.db.query(f"SELECT id, name FROM {table_name} ORDER BY name")
@@ -652,7 +631,6 @@ class WMSApp(tk.Tk):
         frm = ttk.Frame(dialog, style="Panel.TFrame", padding=14)
         frm.pack(fill="both", expand=True)
 
-        article_var = tk.StringVar(value=self._next_article())
         brand_var = tk.StringVar()
         supplier_var = tk.StringVar()
         client_var = tk.StringVar()
@@ -686,7 +664,6 @@ class WMSApp(tk.Tk):
 
         fields = [
             ("Марка", ttk.Entry(frm, textvariable=brand_var, width=36)),
-            ("Артикул", ttk.Entry(frm, textvariable=article_var, width=36, state="readonly")),
             ("Поставщик", ttk.Combobox(frm, textvariable=supplier_var, values=list(suppliers.keys()), state="readonly", width=33)),
             ("3PL клиент", ttk.Combobox(frm, textvariable=client_var, values=list(clients.keys()), state="readonly", width=33)),
             ("Единица измерения", ttk.Combobox(frm, textvariable=unit_var, values=["Шт", "Палета"], state="readonly", width=33)),
@@ -724,25 +701,24 @@ class WMSApp(tk.Tk):
         if mode == "edit" and product_id is not None:
             product = self.db.query(
                 """
-                SELECT article, brand, supplier_id, client_id, unit, volume, weight, barcode, serial_tracking,
+                SELECT brand, supplier_id, client_id, unit, volume, weight, barcode, serial_tracking,
                        category_id, subcategory_id, product_owner
                 FROM products WHERE id = ?
                 """,
                 (product_id,),
             )[0]
-            article_var.set(product[0] or "")
-            brand_var.set(product[1] or "")
-            supplier_var.set(next((k for k, v in suppliers.items() if v == product[2]), ""))
-            client_var.set(next((k for k, v in clients.items() if v == product[3]), ""))
-            unit_var.set(product[4] or "Шт")
-            volume_var.set("" if product[5] is None else str(product[5]))
-            weight_var.set("" if product[6] is None else str(product[6]))
-            barcode_var.set(product[7] or "")
-            serial_var.set(product[8] or "Нет")
-            category_var.set(next((k for k, v in categories.items() if v == product[9]), ""))
+            brand_var.set(product[0] or "")
+            supplier_var.set(next((k for k, v in suppliers.items() if v == product[1]), ""))
+            client_var.set(next((k for k, v in clients.items() if v == product[2]), ""))
+            unit_var.set(product[3] or "Шт")
+            volume_var.set("" if product[4] is None else str(product[4]))
+            weight_var.set("" if product[5] is None else str(product[5]))
+            barcode_var.set(product[6] or "")
+            serial_var.set(product[7] or "Нет")
+            category_var.set(next((k for k, v in categories.items() if v == product[8]), ""))
             refill_subcategories()
-            subcategory_var.set(next((k for k, v in subcategories.items() if v == product[10]), ""))
-            product_owner_var.set(product[11] or self.current_user)
+            subcategory_var.set(next((k for k, v in subcategories.items() if v == product[9]), ""))
+            product_owner_var.set(product[10] or self.current_user)
 
         category_var.trace_add("write", refill_subcategories)
 
@@ -777,84 +753,46 @@ class WMSApp(tk.Tk):
                 messagebox.showwarning("Валидация", "Объём и вес должны быть числами", parent=dialog)
                 return
 
-            if mode == "create":
-                # Generate article right before insert and retry if concurrent insert took the same number.
-                for _ in range(5):
-                    try:
-                        article_value = self._next_article()
-                    except ValueError as exc:
-                        messagebox.showerror("Ошибка", str(exc), parent=dialog)
-                        return
+            payload = (
+                brand,
+                supplier_id,
+                client_id,
+                unit_var.get().strip(),
+                volume,
+                weight,
+                barcode_var.get().strip(),
+                serial_var.get().strip(),
+                category_id,
+                subcategory_id,
+                product_owner_var.get().strip(),
+            )
 
-                    article_var.set(article_value)
-                    payload = (
-                        article_value,
-                        brand,
-                        supplier_id,
-                        client_id,
-                        unit_var.get().strip(),
-                        volume,
-                        weight,
-                        barcode_var.get().strip(),
-                        serial_var.get().strip(),
-                        category_id,
-                        subcategory_id,
-                        product_owner_var.get().strip(),
+            try:
+                if mode == "create":
+                    self.db.execute(
+                        """
+                        INSERT INTO products(
+                            name, brand, supplier_id, client_id, unit,
+                            volume, weight, barcode, serial_tracking, category_id, subcategory_id,
+                            product_owner, created_at
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (brand,) + payload + (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),),
                     )
-
-                    try:
-                        self.db.execute(
-                            """
-                            INSERT INTO products(
-                                article, sku, name, brand, supplier_id, client_id, unit,
-                                volume, weight, barcode, serial_tracking, category_id, subcategory_id,
-                                product_owner, created_at
-                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            payload + (article_value, brand, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                        )
-                        break
-                    except sqlite3.IntegrityError as exc:
-                        # Retry only for article/sku uniqueness conflicts.
-                        msg = str(exc)
-                        if "products.article" in msg or "products.sku" in msg:
-                            continue
-                        messagebox.showerror("Ошибка", f"Не удалось сохранить карточку: {msg}", parent=dialog)
-                        return
                 else:
-                    messagebox.showerror("Ошибка", "Не удалось подобрать уникальный артикул. Повторите попытку.", parent=dialog)
-                    return
-            else:
-                article_value = article_var.get().strip()
-                payload = (
-                    article_value,
-                    brand,
-                    supplier_id,
-                    client_id,
-                    unit_var.get().strip(),
-                    volume,
-                    weight,
-                    barcode_var.get().strip(),
-                    serial_var.get().strip(),
-                    category_id,
-                    subcategory_id,
-                    product_owner_var.get().strip(),
-                )
-
-                try:
                     self.db.execute(
                         """
                         UPDATE products
-                        SET article=?, sku=?, name=?, brand=?, supplier_id=?, client_id=?, unit=?,
+                        SET name=?, brand=?, supplier_id=?, client_id=?, unit=?,
                             volume=?, weight=?, barcode=?, serial_tracking=?, category_id=?, subcategory_id=?,
                             product_owner=?
                         WHERE id=?
                         """,
-                        payload + (article_value, brand, product_id),
+                        (brand,) + payload + (product_id,),
                     )
-                except sqlite3.IntegrityError as exc:
-                    messagebox.showerror("Ошибка", f"Не удалось сохранить карточку: {exc}", parent=dialog)
-                    return
+            except sqlite3.IntegrityError as exc:
+                messagebox.showerror("Ошибка", f"Не удалось сохранить карточку: {exc}", parent=dialog)
+                return
 
             self.refresh_all()
             dialog.destroy()
@@ -867,8 +805,8 @@ class WMSApp(tk.Tk):
             messagebox.showwarning("Валидация", "Выберите карточку для удаления")
             return
         item = self.nomenclature_tree.item(selected[0], "values")
-        product_id, article = int(item[0]), item[1]
-        if not messagebox.askyesno("Подтверждение", f"Удалить карточку товара {article}?"):
+        product_id, brand = int(item[0]), item[1]
+        if not messagebox.askyesno("Подтверждение", f"Удалить карточку товара {brand}?"):
             return
         self.db.execute("DELETE FROM products WHERE id=?", (product_id,))
         self.refresh_all()
@@ -902,7 +840,7 @@ class WMSApp(tk.Tk):
     def add_movement(self):
         token = self.movement_product.get().strip()
         if not token:
-            messagebox.showwarning("Валидация", "Выберите артикул")
+            messagebox.showwarning("Валидация", "Выберите товар")
             return
         product_id = int(token.split(" | ")[0])
         movement_type = self.movement_type.get().strip()
@@ -969,7 +907,7 @@ class WMSApp(tk.Tk):
         search_brand = self.nomenclature_brand_filter.get().strip().lower()
         rows = self.db.query(
             """
-            SELECT p.id, p.article, p.brand, s.name, c.name, p.unit, p.volume, p.weight, p.barcode,
+            SELECT p.id, p.brand, s.name, c.name, p.unit, p.volume, p.weight, p.barcode,
                    p.serial_tracking, cat.name, sub.name, p.product_owner
             FROM products p
             LEFT JOIN suppliers s ON s.id = p.supplier_id
@@ -980,13 +918,13 @@ class WMSApp(tk.Tk):
             """
         )
         for row in rows:
-            brand = (row[2] or "").lower()
+            brand = (row[1] or "").lower()
             if search_brand and search_brand not in brand:
                 continue
             self.nomenclature_tree.insert("", "end", values=row)
 
         product_values = [
-            f"{r[0]} | {r[1] or ''} | {r[2] or ''}" for r in self.db.query("SELECT id, article, brand FROM products ORDER BY id DESC")
+            f"{r[0]} | {r[1] or ''}" for r in self.db.query("SELECT id, brand FROM products ORDER BY id DESC")
         ]
         self.movement_product_box["values"] = product_values
         if product_values and not self.movement_product.get():
@@ -996,7 +934,7 @@ class WMSApp(tk.Tk):
         self._clear_tree(self.movements_tree)
         rows = self.db.query(
             """
-            SELECT m.id, p.article, p.brand, m.movement_type, m.quantity, m.reference, m.moved_at, m.note
+            SELECT m.id, p.brand, m.movement_type, m.quantity, m.reference, m.moved_at, m.note
             FROM movements m
             JOIN products p ON p.id = m.product_id
             ORDER BY m.id DESC
@@ -1009,12 +947,12 @@ class WMSApp(tk.Tk):
         self._clear_tree(self.stock_tree)
         rows = self.db.query(
             """
-            SELECT p.article, p.brand, c.name, p.unit,
+            SELECT p.brand, c.name, p.unit,
                    COALESCE(SUM(CASE WHEN m.movement_type = 'IN' THEN m.quantity ELSE -m.quantity END), 0)
             FROM products p
             LEFT JOIN clients c ON c.id = p.client_id
             LEFT JOIN movements m ON m.product_id = p.id
-            GROUP BY p.id, p.article, p.brand, c.name, p.unit
+            GROUP BY p.id, p.brand, c.name, p.unit
             ORDER BY p.id DESC
             """
         )
