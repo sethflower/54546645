@@ -35,6 +35,11 @@ class Database:
                     name TEXT NOT NULL UNIQUE
                 );
 
+                CREATE TABLE IF NOT EXISTS warehouses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE
+                );
+
                 CREATE TABLE IF NOT EXISTS categories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE
@@ -68,6 +73,37 @@ class Database:
                     moved_at TEXT NOT NULL,
                     note TEXT,
                     FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS inbound_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_number TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    received_at TEXT,
+                    created_by TEXT NOT NULL,
+                    supplier_id INTEGER NOT NULL,
+                    client_id INTEGER NOT NULL,
+                    warehouse_id INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('Новый', 'Принят')),
+                    FOREIGN KEY(supplier_id) REFERENCES suppliers(id) ON DELETE RESTRICT,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE RESTRICT,
+                    FOREIGN KEY(warehouse_id) REFERENCES warehouses(id) ON DELETE RESTRICT
+                );
+
+                CREATE TABLE IF NOT EXISTS inbound_order_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    category_id INTEGER,
+                    subcategory_id INTEGER,
+                    product_id INTEGER NOT NULL,
+                    planned_qty REAL NOT NULL CHECK(planned_qty > 0),
+                    actual_qty REAL NOT NULL DEFAULT 0,
+                    planned_weight REAL,
+                    planned_volume REAL,
+                    FOREIGN KEY(order_id) REFERENCES inbound_orders(id) ON DELETE CASCADE,
+                    FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE SET NULL,
+                    FOREIGN KEY(subcategory_id) REFERENCES subcategories(id) ON DELETE SET NULL,
+                    FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE RESTRICT
                 );
                 """
             )
@@ -128,6 +164,8 @@ class Database:
                 "INSERT INTO suppliers(name, phone, created_at) VALUES(?, ?, ?)",
                 ("Default Supplier", "", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
+        if not self.query("SELECT id FROM warehouses LIMIT 1"):
+            self.execute("INSERT INTO warehouses(name) VALUES(?)", ("Основной склад",))
 
     def execute(self, query, params=()):
         with closing(self.conn.cursor()) as cur:
@@ -164,6 +202,10 @@ class WMSApp(tk.Tk):
         self.suppliers_search_var.trace_add("write", lambda *_: self.refresh_suppliers())
         self.clients_search_var = tk.StringVar()
         self.clients_search_var.trace_add("write", lambda *_: self.refresh_3pl_clients())
+        self.inbound_order_search_var = tk.StringVar()
+        self.inbound_order_search_var.trace_add("write", lambda *_: self.refresh_inbound_orders())
+        self.inbound_status_var = tk.StringVar(value="Все")
+        self.inbound_date_filter_var = tk.StringVar()
 
         self._build_layout()
         self.refresh_all()
@@ -203,7 +245,7 @@ class WMSApp(tk.Tk):
         header.pack(fill="x")
 
         ttk.Label(header, text="Warehouse Management System (3PL)", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(header, text="Складская операционная система: поставщики, 3PL клиенты, номенклатура, движения и остатки", style="Subtitle.TLabel").pack(anchor="w", pady=(2, 14))
+        ttk.Label(header, text="Складская операционная система: поставщики, 3PL клиенты, номенклатура, приходы товара, движения и остатки", style="Subtitle.TLabel").pack(anchor="w", pady=(2, 14))
 
         self.metrics_var = tk.StringVar(value="")
         metrics_card = ttk.Frame(root, style="Panel.TFrame", padding=14)
@@ -216,18 +258,21 @@ class WMSApp(tk.Tk):
         self.suppliers_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.clients_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.nomenclature_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
+        self.inbound_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.movements_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.stock_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
 
         notebook.add(self.suppliers_tab, text="Поставщики")
         notebook.add(self.clients_tab, text="3PL клиенты")
         notebook.add(self.nomenclature_tab, text="Номенклатура")
+        notebook.add(self.inbound_tab, text="Приходы товара")
         notebook.add(self.movements_tab, text="Движения")
         notebook.add(self.stock_tab, text="Остатки")
 
         self._build_suppliers_tab()
         self._build_clients_tab()
         self._build_nomenclature_tab()
+        self._build_inbound_tab()
         self._build_movements_tab()
         self._build_stock_tab()
 
@@ -547,6 +592,349 @@ class WMSApp(tk.Tk):
         self.copy_menu = tk.Menu(self, tearoff=0)
         self.copy_menu.add_command(label="Скопировать", command=self.copy_selected_value)
         self.nomenclature_tree.bind("<Button-3>", self.show_copy_menu)
+
+    def _build_inbound_tab(self):
+        controls = ttk.Frame(self.inbound_tab, style="Panel.TFrame")
+        controls.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(controls, text="Поиск по номеру заказа").pack(side="left")
+        ttk.Entry(controls, textvariable=self.inbound_order_search_var, width=20).pack(side="left", padx=(8, 10))
+
+        ttk.Label(controls, text="Фильтр по статусу").pack(side="left")
+        status_box = ttk.Combobox(
+            controls,
+            textvariable=self.inbound_status_var,
+            values=["Все", "Новый", "Принят"],
+            state="readonly",
+            width=12,
+        )
+        status_box.pack(side="left", padx=(8, 10))
+        status_box.bind("<<ComboboxSelected>>", lambda *_: self.refresh_inbound_orders())
+
+        ttk.Label(controls, text="Фильтр по дате создания").pack(side="left")
+        ttk.Entry(controls, textvariable=self.inbound_date_filter_var, width=14).pack(side="left", padx=(8, 10))
+        ttk.Button(controls, text="Применить", command=self.refresh_inbound_orders).pack(side="left")
+        ttk.Button(controls, text="Создать Новый заказ", command=self.open_create_inbound_order_dialog).pack(side="right")
+
+        columns = (
+            "order_number",
+            "created_at",
+            "received_at",
+            "created_by",
+            "supplier",
+            "client",
+            "warehouse",
+            "status",
+            "planned_qty",
+            "actual_qty",
+        )
+        self.inbound_tree = ttk.Treeview(self.inbound_tab, columns=columns, show="headings")
+        self.inbound_tree.pack(fill="both", expand=True)
+
+        headings = [
+            ("order_number", "Номер заказа", 130),
+            ("created_at", "Дата создания", 150),
+            ("received_at", "Дата приёма", 140),
+            ("created_by", "Создал", 110),
+            ("supplier", "Поставщик", 150),
+            ("client", "3PL клиент", 140),
+            ("warehouse", "Склад", 140),
+            ("status", "Статус", 90),
+            ("planned_qty", "Плановое количество", 150),
+            ("actual_qty", "Фактическое количество", 170),
+        ]
+        for col, title, width in headings:
+            self.inbound_tree.heading(col, text=title)
+            self.inbound_tree.column(col, width=width, anchor="w")
+
+    def _next_inbound_order_number(self):
+        row = self.db.query("SELECT order_number FROM inbound_orders ORDER BY id DESC LIMIT 1")
+        if not row or not row[0][0]:
+            return "IN-00001"
+        val = row[0][0]
+        try:
+            nxt = int(val.split("-")[-1]) + 1
+        except ValueError:
+            nxt = self.db.query("SELECT COUNT(*) FROM inbound_orders")[0][0] + 1
+        return f"IN-{nxt:05d}"
+
+    def open_create_inbound_order_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Создание заказа на приход")
+        dialog.geometry("1180x720")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, style="Panel.TFrame", padding=14)
+        frame.pack(fill="both", expand=True)
+
+        order_number_var = tk.StringVar(value=self._next_inbound_order_number())
+        created_at_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        status_var = tk.StringVar(value="Новый")
+        created_by_var = tk.StringVar(value=self.current_user)
+        supplier_var = tk.StringVar()
+        client_var = tk.StringVar()
+        warehouse_var = tk.StringVar()
+
+        suppliers = self._load_reference_dict("suppliers")
+        clients = self._load_reference_dict("clients")
+        warehouses = self._load_reference_dict("warehouses")
+
+        header_fields = [
+            ("Номер заказа", order_number_var, True),
+            ("Дата создания заказа", created_at_var, True),
+            ("Статус", status_var, True),
+            ("Создал", created_by_var, True),
+        ]
+        for i, (label, var, readonly) in enumerate(header_fields):
+            r = i // 2
+            c = (i % 2) * 2
+            ttk.Label(frame, text=label).grid(row=r, column=c, sticky="w", pady=4, padx=(0, 6))
+            ttk.Entry(frame, textvariable=var, state="readonly" if readonly else "normal", width=30).grid(row=r, column=c + 1, sticky="w", pady=4)
+
+        ttk.Label(frame, text="Поставщик").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Combobox(frame, textvariable=supplier_var, values=list(suppliers.keys()), state="readonly", width=33).grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="3PL клиент").grid(row=2, column=2, sticky="w", pady=4)
+        ttk.Combobox(frame, textvariable=client_var, values=list(clients.keys()), state="readonly", width=33).grid(row=2, column=3, sticky="w", pady=4)
+
+        ttk.Label(frame, text="Склад").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Combobox(frame, textvariable=warehouse_var, values=list(warehouses.keys()), state="readonly", width=33).grid(row=3, column=1, sticky="w", pady=4)
+
+        ttk.Separator(frame, orient="horizontal").grid(row=4, column=0, columnspan=4, sticky="ew", pady=10)
+        ttk.Label(frame, text="Структура заказа", style="Section.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        line_category_var = tk.StringVar()
+        line_subcategory_var = tk.StringVar()
+        line_product_var = tk.StringVar()
+        line_qty_var = tk.StringVar(value="1")
+        line_weight_var = tk.StringVar(value="0")
+        line_volume_var = tk.StringVar(value="0")
+        line_unit_var = tk.StringVar(value="")
+
+        categories = self._load_reference_dict("categories")
+
+        ttk.Label(frame, text="Категория").grid(row=6, column=0, sticky="w", pady=4)
+        line_category_box = ttk.Combobox(frame, textvariable=line_category_var, values=list(categories.keys()), state="readonly", width=33)
+        line_category_box.grid(row=6, column=1, sticky="w", pady=4)
+
+        ttk.Label(frame, text="Подкатегория").grid(row=6, column=2, sticky="w", pady=4)
+        line_subcategory_box = ttk.Combobox(frame, textvariable=line_subcategory_var, state="readonly", width=33)
+        line_subcategory_box.grid(row=6, column=3, sticky="w", pady=4)
+
+        ttk.Label(frame, text="Товар").grid(row=7, column=0, sticky="w", pady=4)
+        line_product_box = ttk.Combobox(frame, textvariable=line_product_var, state="readonly", width=33)
+        line_product_box.grid(row=7, column=1, sticky="w", pady=4)
+
+        ttk.Label(frame, text="Плановое кол-во").grid(row=7, column=2, sticky="w", pady=4)
+        qty_row = ttk.Frame(frame, style="Panel.TFrame")
+        qty_row.grid(row=7, column=3, sticky="w", pady=4)
+        ttk.Entry(qty_row, textvariable=line_qty_var, width=12).pack(side="left")
+        ttk.Label(qty_row, textvariable=line_unit_var).pack(side="left", padx=(8, 0))
+
+        ttk.Label(frame, text="Вес").grid(row=8, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=line_weight_var, state="readonly", width=35).grid(row=8, column=1, sticky="w", pady=4)
+
+        ttk.Label(frame, text="Объём").grid(row=8, column=2, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=line_volume_var, state="readonly", width=35).grid(row=8, column=3, sticky="w", pady=4)
+
+        order_items = []
+        product_catalog = {}
+
+        lines_tree = ttk.Treeview(
+            frame,
+            columns=("category", "subcategory", "product", "unit", "planned_qty", "weight", "volume"),
+            show="headings",
+            height=8,
+        )
+        lines_tree.grid(row=10, column=0, columnspan=4, sticky="nsew", pady=(8, 6))
+        frame.grid_rowconfigure(10, weight=1)
+        for col, title, width in [
+            ("category", "Категория", 150),
+            ("subcategory", "Подкатегория", 170),
+            ("product", "Товар", 220),
+            ("unit", "Ед.", 80),
+            ("planned_qty", "Плановое кол-во", 140),
+            ("weight", "Вес", 100),
+            ("volume", "Объём", 100),
+        ]:
+            lines_tree.heading(col, text=title)
+            lines_tree.column(col, width=width, anchor="w")
+
+        def refresh_products_for_subcategory(*_):
+            sub_token = line_subcategory_var.get().strip()
+            if not sub_token or "|" not in sub_token:
+                line_product_box["values"] = []
+                return
+            sub_id = int(sub_token.split(" | ")[0])
+            rows = self.db.query(
+                """
+                SELECT id, brand, unit, COALESCE(weight, 0), COALESCE(volume, 0)
+                FROM products
+                WHERE subcategory_id = ?
+                ORDER BY brand
+                """,
+                (sub_id,),
+            )
+            product_catalog.clear()
+            values = []
+            for pid, brand, unit, weight, volume in rows:
+                token = f"{pid} | {brand or ''}"
+                values.append(token)
+                product_catalog[token] = {"id": pid, "brand": brand or "", "unit": unit or "Шт", "weight": float(weight or 0), "volume": float(volume or 0)}
+            line_product_box["values"] = values
+            if values:
+                line_product_var.set(values[0])
+                update_calculated_fields()
+
+        def refresh_subcategories_for_category(*_):
+            cat_token = line_category_var.get().strip()
+            if not cat_token or "|" not in cat_token:
+                line_subcategory_box["values"] = []
+                line_subcategory_var.set("")
+                line_product_box["values"] = []
+                line_product_var.set("")
+                return
+            cat_id = int(cat_token.split(" | ")[0])
+            rows = self.db.query("SELECT id, name FROM subcategories WHERE category_id = ? ORDER BY name", (cat_id,))
+            values = [f"{sid} | {name}" for sid, name in rows]
+            line_subcategory_box["values"] = values
+            line_subcategory_var.set(values[0] if values else "")
+            refresh_products_for_subcategory()
+
+        def update_calculated_fields(*_):
+            token = line_product_var.get().strip()
+            info = product_catalog.get(token)
+            if not info:
+                line_unit_var.set("")
+                line_weight_var.set("0")
+                line_volume_var.set("0")
+                return
+            line_unit_var.set(info["unit"])
+            try:
+                qty = float(line_qty_var.get())
+            except ValueError:
+                qty = 0
+            line_weight_var.set(f"{qty * info['weight']:.3f}")
+            line_volume_var.set(f"{qty * info['volume']:.3f}")
+
+        line_category_var.trace_add("write", refresh_subcategories_for_category)
+        line_subcategory_var.trace_add("write", refresh_products_for_subcategory)
+        line_product_var.trace_add("write", update_calculated_fields)
+        line_qty_var.trace_add("write", update_calculated_fields)
+
+        def add_line():
+            cat = line_category_var.get().strip()
+            sub = line_subcategory_var.get().strip()
+            prod = line_product_var.get().strip()
+            if not cat or not sub or not prod:
+                messagebox.showwarning("Валидация", "Выберите категорию, подкатегорию и товар", parent=dialog)
+                return
+            try:
+                qty = float(line_qty_var.get())
+                if qty <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showwarning("Валидация", "Плановое количество должно быть положительным числом", parent=dialog)
+                return
+
+            info = product_catalog.get(prod)
+            if not info:
+                messagebox.showwarning("Валидация", "Выберите корректный товар", parent=dialog)
+                return
+
+            cat_id = int(cat.split(" | ")[0])
+            sub_id = int(sub.split(" | ")[0])
+            planned_weight = qty * info["weight"]
+            planned_volume = qty * info["volume"]
+            item = {
+                "category_id": cat_id,
+                "subcategory_id": sub_id,
+                "product_id": info["id"],
+                "category_name": cat.split(" | ", 1)[1],
+                "subcategory_name": sub.split(" | ", 1)[1],
+                "brand": info["brand"],
+                "unit": info["unit"],
+                "planned_qty": qty,
+                "planned_weight": planned_weight,
+                "planned_volume": planned_volume,
+            }
+            order_items.append(item)
+            lines_tree.insert(
+                "",
+                "end",
+                values=(
+                    item["category_name"],
+                    item["subcategory_name"],
+                    item["brand"],
+                    item["unit"],
+                    f"{qty:.3f}",
+                    f"{planned_weight:.3f}",
+                    f"{planned_volume:.3f}",
+                ),
+            )
+
+        ttk.Button(frame, text="Добавить позицию", command=add_line).grid(row=9, column=3, sticky="e", pady=(6, 0))
+
+        def read_id(token):
+            if token and "|" in token:
+                return int(token.split(" | ")[0])
+            return None
+
+        def save_order():
+            supplier_id = read_id(supplier_var.get())
+            client_id = read_id(client_var.get())
+            warehouse_id = read_id(warehouse_var.get())
+            if not supplier_id or not client_id or not warehouse_id:
+                messagebox.showwarning("Валидация", "Укажите поставщика, 3PL клиента и склад", parent=dialog)
+                return
+            if not order_items:
+                messagebox.showwarning("Валидация", "Добавьте хотя бы одну позицию в заказ", parent=dialog)
+                return
+
+            try:
+                order_id = self.db.execute(
+                    """
+                    INSERT INTO inbound_orders(order_number, created_at, received_at, created_by, supplier_id, client_id, warehouse_id, status)
+                    VALUES(?, ?, NULL, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        order_number_var.get().strip(),
+                        created_at_var.get().strip(),
+                        created_by_var.get().strip(),
+                        supplier_id,
+                        client_id,
+                        warehouse_id,
+                        "Новый",
+                    ),
+                )
+                for item in order_items:
+                    self.db.execute(
+                        """
+                        INSERT INTO inbound_order_items(
+                            order_id, category_id, subcategory_id, product_id,
+                            planned_qty, actual_qty, planned_weight, planned_volume
+                        ) VALUES(?, ?, ?, ?, ?, 0, ?, ?)
+                        """,
+                        (
+                            order_id,
+                            item["category_id"],
+                            item["subcategory_id"],
+                            item["product_id"],
+                            item["planned_qty"],
+                            item["planned_weight"],
+                            item["planned_volume"],
+                        ),
+                    )
+            except sqlite3.IntegrityError as exc:
+                messagebox.showerror("Ошибка", f"Не удалось сохранить заказ: {exc}", parent=dialog)
+                return
+
+            self.refresh_all()
+            dialog.destroy()
+
+        buttons = ttk.Frame(frame, style="Panel.TFrame")
+        buttons.grid(row=11, column=0, columnspan=4, sticky="e", pady=(8, 0))
+        ttk.Button(buttons, text="Сохранить заказ", command=save_order).pack(side="right")
 
     def _build_movements_tab(self):
         form = ttk.Frame(self.movements_tab, style="Panel.TFrame")
@@ -879,6 +1267,7 @@ class WMSApp(tk.Tk):
         self.refresh_suppliers()
         self.refresh_3pl_clients()
         self.refresh_nomenclature()
+        self.refresh_inbound_orders()
         self.refresh_movements()
         self.refresh_stock()
         self.refresh_metrics()
@@ -930,6 +1319,47 @@ class WMSApp(tk.Tk):
         if product_values and not self.movement_product.get():
             self.movement_product.set(product_values[0])
 
+    def refresh_inbound_orders(self):
+        self._clear_tree(self.inbound_tree)
+        rows = self.db.query(
+            """
+            SELECT o.order_number,
+                   o.created_at,
+                   COALESCE(o.received_at, ''),
+                   o.created_by,
+                   s.name,
+                   c.name,
+                   w.name,
+                   o.status,
+                   COALESCE(SUM(i.planned_qty), 0),
+                   COALESCE(SUM(i.actual_qty), 0)
+            FROM inbound_orders o
+            JOIN suppliers s ON s.id = o.supplier_id
+            JOIN clients c ON c.id = o.client_id
+            JOIN warehouses w ON w.id = o.warehouse_id
+            LEFT JOIN inbound_order_items i ON i.order_id = o.id
+            GROUP BY o.id, o.order_number, o.created_at, o.received_at, o.created_by,
+                     s.name, c.name, w.name, o.status
+            ORDER BY o.id DESC
+            """
+        )
+
+        search = self.inbound_order_search_var.get().strip().lower()
+        status = self.inbound_status_var.get().strip()
+        date_filter = self.inbound_date_filter_var.get().strip()
+
+        for row in rows:
+            order_number = (row[0] or "").lower()
+            created_at = row[1] or ""
+            row_status = row[7] or ""
+            if search and search not in order_number:
+                continue
+            if status and status != "Все" and row_status != status:
+                continue
+            if date_filter and not created_at.startswith(date_filter):
+                continue
+            self.inbound_tree.insert("", "end", values=row)
+
     def refresh_movements(self):
         self._clear_tree(self.movements_tree)
         rows = self.db.query(
@@ -963,8 +1393,11 @@ class WMSApp(tk.Tk):
         suppliers = self.db.query("SELECT COUNT(*) FROM suppliers")[0][0]
         products = self.db.query("SELECT COUNT(*) FROM products")[0][0]
         movements = self.db.query("SELECT COUNT(*) FROM movements")[0][0]
+        inbound_orders = self.db.query("SELECT COUNT(*) FROM inbound_orders")[0][0]
         clients = self.db.query("SELECT COUNT(*) FROM clients")[0][0]
-        self.metrics_var.set(f"Поставщики: {suppliers}   •   3PL клиенты: {clients}   •   Номенклатура: {products}   •   Проводок: {movements}")
+        self.metrics_var.set(
+            f"Поставщики: {suppliers}   •   3PL клиенты: {clients}   •   Номенклатура: {products}   •   Приходы: {inbound_orders}   •   Проводок: {movements}"
+        )
 
     def on_close(self):
         self.db.close()
