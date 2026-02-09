@@ -785,6 +785,9 @@ class WMSApp(tk.Tk):
             entry.insert(0, v)
             entry.configure(state="readonly")
 
+        toolbar = ttk.Frame(frame, style="Panel.TFrame")
+        toolbar.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(6, 6))
+
         columns = (
             "line_id",
             "product_name",
@@ -800,8 +803,8 @@ class WMSApp(tk.Tk):
             "serial_tracking",
         )
         lines_tree = ttk.Treeview(frame, columns=columns, show="headings", height=16)
-        lines_tree.grid(row=2, column=0, columnspan=8, sticky="nsew", pady=(10, 8))
-        frame.grid_rowconfigure(2, weight=1)
+        lines_tree.grid(row=3, column=0, columnspan=8, sticky="nsew", pady=(0, 8))
+        frame.grid_rowconfigure(3, weight=1)
         for col, title, width in [
             ("line_id", "ID", 50),
             ("product_name", "Название товара", 180),
@@ -819,9 +822,19 @@ class WMSApp(tk.Tk):
             lines_tree.heading(col, text=title)
             lines_tree.column(col, width=width, anchor="w")
 
+        lines_tree.tag_configure("qty_less", background="#FFF4D6")
+        lines_tree.tag_configure("qty_more", background="#FDE2E1")
+
         def serial_count_text(serials: str):
             serial_list = [x.strip() for x in (serials or "").split(",") if x.strip()]
             return str(len(serial_list))
+
+        def qty_tag(planned: float, actual: float):
+            if actual < planned:
+                return "qty_less"
+            if actual > planned:
+                return "qty_more"
+            return ""
 
         def load_lines():
             for item in lines_tree.get_children():
@@ -850,10 +863,21 @@ class WMSApp(tk.Tk):
                 (order_id,),
             )
             for rid, pname, cat, sub, unit, planned, actual, w, v, barcode, serials, serial_tracking in rows:
+                tag = qty_tag(float(planned), float(actual))
                 lines_tree.insert(
                     "",
                     "end",
                     values=(rid, pname, cat, sub, unit, planned, actual, w, v, barcode, serial_count_text(serials), serial_tracking),
+                    tags=(tag,) if tag else (),
+                )
+
+        def set_actual_qty(line_id: int, qty: float, serial_numbers: str | None = None):
+            if serial_numbers is None:
+                self.db.execute("UPDATE inbound_order_items SET actual_qty = ?, actual_filled = 1 WHERE id = ?", (qty, line_id))
+            else:
+                self.db.execute(
+                    "UPDATE inbound_order_items SET actual_qty = ?, actual_filled = 1, serial_numbers = ? WHERE id = ?",
+                    (qty, serial_numbers, line_id),
                 )
 
         def edit_serial_line(line_id: int, product_name: str, current_serial: str):
@@ -905,10 +929,7 @@ class WMSApp(tk.Tk):
 
             def finish_scan():
                 out = [listbox.get(i) for i in range(listbox.size())]
-                self.db.execute(
-                    "UPDATE inbound_order_items SET actual_qty = ?, actual_filled = 1, serial_numbers = ? WHERE id = ?",
-                    (len(out), ", ".join(out), line_id),
-                )
+                set_actual_qty(line_id, float(len(out)), ", ".join(out))
                 serial_dialog.destroy()
                 load_lines()
                 self.refresh_inbound_orders()
@@ -929,18 +950,17 @@ class WMSApp(tk.Tk):
             values = lines_tree.item(sel[0], "values")
             line_id = int(values[0])
             product_name = values[1]
-            serial_tracking = values[11]
 
             row = self.db.query(
                 """
-                SELECT planned_qty, actual_qty, COALESCE(serial_numbers, ''), COALESCE(p.serial_tracking, 'Нет')
+                SELECT i.actual_qty, COALESCE(i.serial_numbers, ''), COALESCE(p.serial_tracking, 'Нет')
                 FROM inbound_order_items i
                 JOIN products p ON p.id = i.product_id
                 WHERE i.id = ?
                 """,
                 (line_id,),
             )[0]
-            planned_qty, current_actual, current_serial, serial_tracking_db = float(row[0]), float(row[1]), row[2], row[3]
+            current_actual, current_serial, serial_tracking_db = float(row[0]), row[1], row[2]
 
             if serial_tracking_db == "Да":
                 edit_serial_line(line_id, product_name, current_serial)
@@ -962,11 +982,64 @@ class WMSApp(tk.Tk):
                 messagebox.showwarning("Валидация", "Количество должно быть положительным числом", parent=dialog)
                 return
 
-            new_actual = current_actual + delta_qty
-            self.db.execute(
-                "UPDATE inbound_order_items SET actual_qty = ?, actual_filled = 1 WHERE id = ?",
-                (new_actual, line_id),
+            set_actual_qty(line_id, current_actual + delta_qty)
+            load_lines()
+            self.refresh_inbound_orders()
+
+        def edit_selected_qty():
+            sel = lines_tree.selection()
+            if not sel:
+                messagebox.showwarning("Валидация", "Выберите позицию", parent=dialog)
+                return
+            values = lines_tree.item(sel[0], "values")
+            line_id = int(values[0])
+            product_name = values[1]
+
+            row = self.db.query(
+                """
+                SELECT i.actual_qty, COALESCE(i.serial_numbers, ''), COALESCE(p.serial_tracking, 'Нет')
+                FROM inbound_order_items i
+                JOIN products p ON p.id = i.product_id
+                WHERE i.id = ?
+                """,
+                (line_id,),
+            )[0]
+            current_actual, current_serial, serial_tracking_db = float(row[0]), row[1], row[2]
+
+            qty_text = simpledialog.askstring(
+                "Редактировать количество",
+                f"Введите новое фактическое количество для товара: {product_name}",
+                initialvalue=str(current_actual),
+                parent=dialog,
             )
+            if qty_text is None:
+                return
+            try:
+                new_qty = float(qty_text)
+                if new_qty < 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showwarning("Валидация", "Количество должно быть числом >= 0", parent=dialog)
+                return
+
+            if serial_tracking_db == "Да":
+                if abs(new_qty - int(new_qty)) > 1e-9:
+                    messagebox.showwarning("Валидация", "Для серийного товара количество должно быть целым", parent=dialog)
+                    return
+                serial_list = [x.strip() for x in (current_serial or "").split(",") if x.strip()]
+                need = int(new_qty)
+                if need < len(serial_list):
+                    if not messagebox.askyesno(
+                        "Подтверждение",
+                        "Новое количество меньше числа отсканированных серий. Обрезать список серий?",
+                        parent=dialog,
+                    ):
+                        return
+                    serial_list = serial_list[:need]
+                set_actual_qty(line_id, float(need), ", ".join(serial_list))
+            else:
+                set_actual_qty(line_id, new_qty)
+
             load_lines()
             self.refresh_inbound_orders()
 
@@ -1044,10 +1117,31 @@ class WMSApp(tk.Tk):
             self.refresh_all()
             dialog.destroy()
 
-        btns = ttk.Frame(frame, style="Panel.TFrame")
-        btns.grid(row=3, column=0, columnspan=8, sticky="e")
-        ttk.Button(btns, text="Ввести фактическое", command=edit_selected_line).pack(side="left", padx=(0, 8))
-        ttk.Button(btns, text="Принять заказ", command=accept_order).pack(side="left")
+        fullscreen_state = {"on": False}
+
+        def toggle_fullscreen():
+            try:
+                if not fullscreen_state["on"]:
+                    dialog.state("zoomed")
+                    fullscreen_state["on"] = True
+                    fullscreen_btn.configure(text="Обычный размер")
+                else:
+                    dialog.state("normal")
+                    fullscreen_state["on"] = False
+                    fullscreen_btn.configure(text="Во весь экран")
+            except tk.TclError:
+                current = bool(dialog.attributes("-fullscreen"))
+                dialog.attributes("-fullscreen", not current)
+                fullscreen_state["on"] = not current
+                fullscreen_btn.configure(text="Обычный размер" if fullscreen_state["on"] else "Во весь экран")
+
+        dialog.bind("<Escape>", lambda _e: dialog.attributes("-fullscreen", False))
+
+        ttk.Button(toolbar, text="Ввести фактическое", command=edit_selected_line).pack(side="left")
+        ttk.Button(toolbar, text="Редактировать кол-во", command=edit_selected_qty).pack(side="left", padx=(8, 0))
+        ttk.Button(toolbar, text="Принять заказ", command=accept_order).pack(side="left", padx=(8, 0))
+        fullscreen_btn = ttk.Button(toolbar, text="Во весь экран", command=toggle_fullscreen)
+        fullscreen_btn.pack(side="right")
 
         load_lines()
 
