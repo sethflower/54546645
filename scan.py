@@ -3,7 +3,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 DB_FILE = "wms_3pl.db"
 
@@ -16,6 +16,7 @@ class Database:
         self._migrate_products_table()
         self._migrate_suppliers_table()
         self._migrate_clients_table()
+        self._migrate_inbound_tables()
         self._seed_reference_data()
 
     def _create_schema(self):
@@ -98,8 +99,10 @@ class Database:
                     product_id INTEGER NOT NULL,
                     planned_qty REAL NOT NULL CHECK(planned_qty > 0),
                     actual_qty REAL NOT NULL DEFAULT 0,
+                    actual_filled INTEGER NOT NULL DEFAULT 0,
                     planned_weight REAL,
                     planned_volume REAL,
+                    serial_numbers TEXT,
                     FOREIGN KEY(order_id) REFERENCES inbound_orders(id) ON DELETE CASCADE,
                     FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE SET NULL,
                     FOREIGN KEY(subcategory_id) REFERENCES subcategories(id) ON DELETE SET NULL,
@@ -157,6 +160,10 @@ class Database:
             """,
             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),),
         )
+
+    def _migrate_inbound_tables(self):
+        self._add_column_if_missing("inbound_order_items", "actual_filled", "INTEGER NOT NULL DEFAULT 0")
+        self._add_column_if_missing("inbound_order_items", "serial_numbers", "TEXT")
 
     def _seed_reference_data(self):
         if not self.query("SELECT id FROM suppliers LIMIT 1"):
@@ -630,6 +637,7 @@ class WMSApp(tk.Tk):
         )
         self.inbound_tree = ttk.Treeview(self.inbound_tab, columns=columns, show="headings")
         self.inbound_tree.pack(fill="both", expand=True)
+        self.inbound_tree.bind("<Double-1>", self.open_selected_inbound_order)
 
         headings = [
             ("order_number", "Номер заказа", 130),
@@ -646,6 +654,244 @@ class WMSApp(tk.Tk):
         for col, title, width in headings:
             self.inbound_tree.heading(col, text=title)
             self.inbound_tree.column(col, width=width, anchor="w")
+
+    def open_selected_inbound_order(self, _event=None):
+        selected = self.inbound_tree.selection()
+        if not selected:
+            return
+        order_number = self.inbound_tree.item(selected[0], "values")[0]
+        self.open_inbound_order_dialog(order_number)
+
+    def open_inbound_order_dialog(self, order_number: str):
+        order_rows = self.db.query(
+            """
+            SELECT o.id, o.order_number, o.created_at, COALESCE(o.received_at, ''),
+                   s.name, c.name, w.name, o.status, o.created_by
+            FROM inbound_orders o
+            JOIN suppliers s ON s.id = o.supplier_id
+            JOIN clients c ON c.id = o.client_id
+            JOIN warehouses w ON w.id = o.warehouse_id
+            WHERE o.order_number = ?
+            """,
+            (order_number,),
+        )
+        if not order_rows:
+            messagebox.showerror("Ошибка", "Заказ не найден")
+            return
+
+        order_id, order_no, created_at, received_at, supplier_name, client_name, warehouse_name, status, created_by = order_rows[0]
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Приёмка заказа {order_no}")
+        dialog.geometry("1280x760")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, style="Panel.TFrame", padding=14)
+        frame.pack(fill="both", expand=True)
+
+        header = [
+            ("Номер заказа", order_no),
+            ("Дата создания", created_at),
+            ("Поставщик", supplier_name),
+            ("3PL клиент", client_name),
+            ("Склад", warehouse_name),
+            ("Статус", status),
+            ("Создал", created_by),
+            ("Дата приёма", received_at),
+        ]
+        for i, (k, v) in enumerate(header):
+            r = i // 4
+            c = (i % 4) * 2
+            ttk.Label(frame, text=k).grid(row=r, column=c, sticky="w", padx=(0, 6), pady=4)
+            ttk.Entry(frame, width=28, state="readonly", justify="left", foreground="#122033").grid(row=r, column=c + 1, sticky="w", pady=4)
+            entry_widget = frame.grid_slaves(row=r, column=c + 1)[0]
+            entry_widget.configure(state="normal")
+            entry_widget.insert(0, v)
+            entry_widget.configure(state="readonly")
+
+        columns = (
+            "line_id",
+            "product_name",
+            "category",
+            "subcategory",
+            "unit",
+            "planned_qty",
+            "actual_qty",
+            "weight",
+            "volume",
+            "barcode",
+            "serial",
+            "serial_tracking",
+        )
+        lines_tree = ttk.Treeview(frame, columns=columns, show="headings", height=16)
+        lines_tree.grid(row=2, column=0, columnspan=8, sticky="nsew", pady=(10, 8))
+        frame.grid_rowconfigure(2, weight=1)
+        for col, title, width in [
+            ("line_id", "ID", 50),
+            ("product_name", "Название товара", 180),
+            ("category", "Категория", 130),
+            ("subcategory", "Подкатегория", 140),
+            ("unit", "Ед.", 70),
+            ("planned_qty", "Плановое кол-во", 130),
+            ("actual_qty", "Фактическое кол-во", 140),
+            ("weight", "Вес", 100),
+            ("volume", "Объём", 100),
+            ("barcode", "Штрихкод", 140),
+            ("serial", "Серийный номер", 170),
+            ("serial_tracking", "Серийный учёт", 120),
+        ]:
+            lines_tree.heading(col, text=title)
+            lines_tree.column(col, width=width, anchor="w")
+
+        def load_lines():
+            for item in lines_tree.get_children():
+                lines_tree.delete(item)
+            rows = self.db.query(
+                """
+                SELECT i.id,
+                       COALESCE(p.name, p.brand, ''),
+                       COALESCE(cat.name, ''),
+                       COALESCE(sub.name, ''),
+                       COALESCE(p.unit, ''),
+                       i.planned_qty,
+                       i.actual_qty,
+                       COALESCE(p.weight, 0) * i.actual_qty,
+                       COALESCE(p.volume, 0) * i.actual_qty,
+                       COALESCE(p.barcode, ''),
+                       COALESCE(i.serial_numbers, ''),
+                       COALESCE(p.serial_tracking, 'Нет')
+                FROM inbound_order_items i
+                JOIN products p ON p.id = i.product_id
+                LEFT JOIN categories cat ON cat.id = i.category_id
+                LEFT JOIN subcategories sub ON sub.id = i.subcategory_id
+                WHERE i.order_id = ?
+                ORDER BY i.id
+                """,
+                (order_id,),
+            )
+            for row in rows:
+                lines_tree.insert("", "end", values=row)
+
+        def edit_selected_line():
+            sel = lines_tree.selection()
+            if not sel:
+                messagebox.showwarning("Валидация", "Выберите позицию", parent=dialog)
+                return
+            values = lines_tree.item(sel[0], "values")
+            line_id = int(values[0])
+            product_name = values[1]
+            planned_qty = float(values[5])
+            current_actual = float(values[6])
+            serial_tracking = values[11]
+            current_serial = values[10] or ""
+
+            qty_text = simpledialog.askstring(
+                "Фактическое количество",
+                f"Введите фактическое количество для товара: {product_name}",
+                initialvalue=str(current_actual if current_actual > 0 else planned_qty),
+                parent=dialog,
+            )
+            if qty_text is None:
+                return
+            try:
+                actual_qty = float(qty_text)
+                if actual_qty < 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showwarning("Валидация", "Фактическое количество должно быть числом >= 0", parent=dialog)
+                return
+
+            if actual_qty > planned_qty:
+                if not messagebox.askyesno("Подтверждение", "Зафиксировать излишек?", parent=dialog):
+                    return
+            elif actual_qty < planned_qty:
+                if not messagebox.askyesno("Подтверждение", "Зафиксировать недостачу?", parent=dialog):
+                    return
+
+            serial_numbers = ""
+            if serial_tracking == "Да":
+                if abs(actual_qty - int(actual_qty)) > 1e-9:
+                    messagebox.showwarning("Валидация", "Для серийного товара количество должно быть целым", parent=dialog)
+                    return
+                serial_text = simpledialog.askstring(
+                    "Серийные номера",
+                    "Введите серийные номера (через запятую или с новой строки)",
+                    initialvalue=current_serial,
+                    parent=dialog,
+                )
+                if serial_text is None:
+                    return
+                serial_list = [x.strip() for x in serial_text.replace("\n", ",").split(",") if x.strip()]
+                if int(actual_qty) != len(serial_list):
+                    messagebox.showwarning(
+                        "Валидация",
+                        f"Количество серийных номеров ({len(serial_list)}) должно равняться фактическому количеству ({int(actual_qty)})",
+                        parent=dialog,
+                    )
+                    return
+                serial_numbers = ", ".join(serial_list)
+
+            self.db.execute(
+                "UPDATE inbound_order_items SET actual_qty = ?, actual_filled = 1, serial_numbers = ? WHERE id = ?",
+                (actual_qty, serial_numbers, line_id),
+            )
+            load_lines()
+            self.refresh_inbound_orders()
+
+        def accept_order():
+            state = self.db.query("SELECT status FROM inbound_orders WHERE id = ?", (order_id,))[0][0]
+            if state == "Принят":
+                messagebox.showinfo("Информация", "Заказ уже принят", parent=dialog)
+                return
+
+            check_rows = self.db.query(
+                "SELECT id, planned_qty, actual_qty, actual_filled, product_id FROM inbound_order_items WHERE order_id = ?",
+                (order_id,),
+            )
+            if not check_rows:
+                messagebox.showwarning("Валидация", "В заказе нет позиций", parent=dialog)
+                return
+            not_filled = [r for r in check_rows if int(r[3]) != 1]
+            if not_filled:
+                messagebox.showwarning("Валидация", "Заполните фактическое количество для всех позиций", parent=dialog)
+                return
+
+            for _, _, actual_qty, _, product_id in check_rows:
+                qty = float(actual_qty)
+                if qty > 0:
+                    if abs(qty - int(qty)) > 1e-9:
+                        messagebox.showwarning(
+                            "Валидация",
+                            "Для проведения в остаток фактическое количество должно быть целым числом.",
+                            parent=dialog,
+                        )
+                        return
+                    self.db.execute(
+                        "INSERT INTO movements(product_id, movement_type, quantity, reference, moved_at, note) VALUES(?, 'IN', ?, ?, ?, ?)",
+                        (
+                            product_id,
+                            int(qty),
+                            order_no,
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "Приём товара по заказу",
+                        ),
+                    )
+
+            self.db.execute(
+                "UPDATE inbound_orders SET status = 'Принят', received_at = ? WHERE id = ?",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_id),
+            )
+            messagebox.showinfo("Готово", "Заказ принят", parent=dialog)
+            self.refresh_all()
+            dialog.destroy()
+
+        btns = ttk.Frame(frame, style="Panel.TFrame")
+        btns.grid(row=3, column=0, columnspan=8, sticky="e")
+        ttk.Button(btns, text="Ввести фактическое", command=edit_selected_line).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Принять заказ", command=accept_order).pack(side="left")
+
+        load_lines()
 
     def _next_inbound_order_number(self):
         row = self.db.query("SELECT order_number FROM inbound_orders ORDER BY id DESC LIMIT 1")
@@ -912,8 +1158,8 @@ class WMSApp(tk.Tk):
                         """
                         INSERT INTO inbound_order_items(
                             order_id, category_id, subcategory_id, product_id,
-                            planned_qty, actual_qty, planned_weight, planned_volume
-                        ) VALUES(?, ?, ?, ?, ?, 0, ?, ?)
+                            planned_qty, actual_qty, actual_filled, planned_weight, planned_volume, serial_numbers
+                        ) VALUES(?, ?, ?, ?, ?, 0, 0, ?, ?, '')
                         """,
                         (
                             order_id,
