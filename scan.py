@@ -2,6 +2,7 @@ import getpass
 import sqlite3
 from contextlib import closing
 from datetime import datetime
+import calendar
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
@@ -204,7 +205,12 @@ class WMSApp(tk.Tk):
 
         self.selected_copy_value = ""
         self.nomenclature_brand_filter = tk.StringVar()
-        self.nomenclature_brand_filter.trace_add("write", lambda *_: self.refresh_nomenclature())
+        self.nomenclature_article_filter = tk.StringVar()
+        self.nomenclature_supplier_filter = tk.StringVar()
+        self.nomenclature_client_filter = tk.StringVar()
+        self.nomenclature_category_filter = tk.StringVar()
+        self.nomenclature_subcategory_filter = tk.StringVar()
+        self.nomenclature_has_searched = False
         self.suppliers_search_var = tk.StringVar()
         self.suppliers_search_var.trace_add("write", lambda *_: self.refresh_suppliers())
         self.clients_search_var = tk.StringVar()
@@ -212,13 +218,93 @@ class WMSApp(tk.Tk):
         self.categories_filter_var = tk.StringVar()
         self.categories_filter_var.trace_add("write", lambda *_: self.refresh_categories_tab())
         self.inbound_order_search_var = tk.StringVar()
-        self.inbound_order_search_var.trace_add("write", lambda *_: self.refresh_inbound_orders())
-        self.inbound_status_var = tk.StringVar(value="Все")
-        self.inbound_date_filter_var = tk.StringVar()
+        self.inbound_status_var = tk.StringVar(value="Новый")
+        self.inbound_from_date_var = tk.StringVar()
+        self.inbound_to_date_var = tk.StringVar()
+        self.inbound_created_by_filter_var = tk.StringVar()
+        self.inbound_accepted_by_filter_var = tk.StringVar()
+        self.inbound_supplier_filter_var = tk.StringVar()
+        self.inbound_client_filter_var = tk.StringVar()
 
         self._build_layout()
         self.refresh_all()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._maximize_window(self)
+
+    def _maximize_window(self, win):
+        try:
+            win.state("zoomed")
+        except tk.TclError:
+            win.attributes("-fullscreen", True)
+
+    def _toggle_fullscreen(self, win, btn):
+        try:
+            is_zoomed = str(win.state()) == "zoomed"
+            if is_zoomed:
+                win.state("normal")
+                btn.configure(text="Во весь экран")
+            else:
+                win.state("zoomed")
+                btn.configure(text="Обычный размер")
+        except tk.TclError:
+            current = bool(win.attributes("-fullscreen"))
+            win.attributes("-fullscreen", not current)
+            btn.configure(text="Обычный размер" if not current else "Во весь экран")
+
+    def _open_date_picker(self, target_var):
+        picker = tk.Toplevel(self)
+        picker.title("Выбор даты")
+        picker.transient(self)
+        picker.grab_set()
+
+        today = datetime.now()
+        year_var = tk.IntVar(value=today.year)
+        month_var = tk.IntVar(value=today.month)
+
+        top = ttk.Frame(picker, padding=10)
+        top.pack(fill="both", expand=True)
+
+        def build_days():
+            for child in days_frame.winfo_children():
+                child.destroy()
+            y, m = year_var.get(), month_var.get()
+            ttk.Label(month_label, text=f"{calendar.month_name[m]} {y}").pack()
+            for r, week in enumerate(calendar.monthcalendar(y, m)):
+                for c, day in enumerate(week):
+                    txt = "" if day == 0 else str(day)
+                    b = ttk.Button(days_frame, text=txt, width=4)
+                    b.grid(row=r, column=c, padx=1, pady=1)
+                    if day != 0:
+                        b.configure(command=lambda d=day: select_day(d))
+                    else:
+                        b.state(["disabled"])
+
+        def select_day(day):
+            target_var.set(f"{year_var.get():04d}-{month_var.get():02d}-{day:02d}")
+            picker.destroy()
+
+        ctr = ttk.Frame(top)
+        ctr.pack(fill="x")
+        ttk.Button(ctr, text="<", command=lambda: shift_month(-1)).pack(side="left")
+        month_label = ttk.Frame(ctr)
+        month_label.pack(side="left", expand=True)
+        ttk.Button(ctr, text=">", command=lambda: shift_month(1)).pack(side="right")
+
+        days_frame = ttk.Frame(top)
+        days_frame.pack(fill="both", expand=True, pady=(8, 0))
+
+        def shift_month(delta):
+            m = month_var.get() + delta
+            y = year_var.get()
+            if m < 1:
+                m, y = 12, y - 1
+            elif m > 12:
+                m, y = 1, y + 1
+            month_var.set(m)
+            year_var.set(y)
+            build_days()
+
+        build_days()
 
     def _configure_style(self):
         self.configure(bg="#0B172A")
