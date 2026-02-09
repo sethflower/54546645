@@ -219,6 +219,9 @@ class WMSApp(tk.Tk):
         self.categories_filter_var.trace_add("write", lambda *_: self.refresh_categories_tab())
         self.inbound_order_search_var = tk.StringVar()
         self.inbound_status_var = tk.StringVar(value="Новый")
+        # Backward-compatible single-date filter used by the current inbound tab UI.
+        # Keep this until the from/to range controls are fully wired.
+        self.inbound_date_filter_var = tk.StringVar()
         self.inbound_from_date_var = tk.StringVar()
         self.inbound_to_date_var = tk.StringVar()
         self.inbound_created_by_filter_var = tk.StringVar()
