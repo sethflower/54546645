@@ -209,6 +209,8 @@ class WMSApp(tk.Tk):
         self.suppliers_search_var.trace_add("write", lambda *_: self.refresh_suppliers())
         self.clients_search_var = tk.StringVar()
         self.clients_search_var.trace_add("write", lambda *_: self.refresh_3pl_clients())
+        self.categories_filter_var = tk.StringVar()
+        self.categories_filter_var.trace_add("write", lambda *_: self.refresh_categories_tab())
         self.inbound_order_search_var = tk.StringVar()
         self.inbound_order_search_var.trace_add("write", lambda *_: self.refresh_inbound_orders())
         self.inbound_status_var = tk.StringVar(value="Все")
@@ -252,7 +254,7 @@ class WMSApp(tk.Tk):
         header.pack(fill="x")
 
         ttk.Label(header, text="Warehouse Management System (3PL)", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(header, text="Складская операционная система: поставщики, 3PL клиенты, номенклатура, приходы товара, движения и остатки", style="Subtitle.TLabel").pack(anchor="w", pady=(2, 14))
+        ttk.Label(header, text="Складская операционная система: поставщики, 3PL клиенты, категории, номенклатура, приходы товара, движения и остатки", style="Subtitle.TLabel").pack(anchor="w", pady=(2, 14))
 
         self.metrics_var = tk.StringVar(value="")
         metrics_card = ttk.Frame(root, style="Panel.TFrame", padding=14)
@@ -264,6 +266,7 @@ class WMSApp(tk.Tk):
 
         self.suppliers_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.clients_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
+        self.categories_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.nomenclature_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.inbound_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
         self.movements_tab = ttk.Frame(notebook, style="Panel.TFrame", padding=14)
@@ -271,6 +274,7 @@ class WMSApp(tk.Tk):
 
         notebook.add(self.suppliers_tab, text="Поставщики")
         notebook.add(self.clients_tab, text="3PL клиенты")
+        notebook.add(self.categories_tab, text="Категории товаров")
         notebook.add(self.nomenclature_tab, text="Номенклатура")
         notebook.add(self.inbound_tab, text="Приходы товара")
         notebook.add(self.movements_tab, text="Движения")
@@ -278,6 +282,7 @@ class WMSApp(tk.Tk):
 
         self._build_suppliers_tab()
         self._build_clients_tab()
+        self._build_categories_tab()
         self._build_nomenclature_tab()
         self._build_inbound_tab()
         self._build_movements_tab()
@@ -550,6 +555,77 @@ class WMSApp(tk.Tk):
         self.selected_copy_value = values[col_index] if 0 <= col_index < len(values) else ""
         self.clients_copy_menu.tk_popup(event.x_root, event.y_root)
 
+    def _build_categories_tab(self):
+        top = ttk.Frame(self.categories_tab, style="Panel.TFrame")
+        top.pack(fill="x", pady=(0, 10))
+        ttk.Label(top, text="Поиск по категории/подкатегории").pack(side="left")
+        ttk.Entry(top, textvariable=self.categories_filter_var, width=30).pack(side="left", padx=(8, 12))
+
+        create_frame = ttk.Frame(self.categories_tab, style="Panel.TFrame")
+        create_frame.pack(fill="x", pady=(0, 10))
+
+        self.new_category_var = tk.StringVar()
+        self.new_subcategory_var = tk.StringVar()
+        self.subcategory_parent_var = tk.StringVar()
+
+        ttk.Label(create_frame, text="Новая категория").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(create_frame, textvariable=self.new_category_var, width=28).grid(row=0, column=1, sticky="w", pady=4, padx=(6, 12))
+        ttk.Button(create_frame, text="Создать категорию", command=self.create_category).grid(row=0, column=2, sticky="w")
+
+        ttk.Label(create_frame, text="Новая подкатегория").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(create_frame, textvariable=self.new_subcategory_var, width=28).grid(row=1, column=1, sticky="w", pady=4, padx=(6, 12))
+        ttk.Label(create_frame, text="Категория").grid(row=1, column=2, sticky="w", padx=(10, 6))
+        self.subcategory_parent_box = ttk.Combobox(create_frame, textvariable=self.subcategory_parent_var, state="readonly", width=28)
+        self.subcategory_parent_box.grid(row=1, column=3, sticky="w", pady=4)
+        ttk.Button(create_frame, text="Создать подкатегорию", command=self.create_subcategory).grid(row=1, column=4, sticky="w", padx=(10, 0))
+
+        trees = ttk.Frame(self.categories_tab, style="Panel.TFrame")
+        trees.pack(fill="both", expand=True)
+
+        self.categories_tree = ttk.Treeview(trees, columns=("id", "name"), show="headings", height=10)
+        self.categories_tree.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self.categories_tree.heading("id", text="ID")
+        self.categories_tree.heading("name", text="Категория")
+        self.categories_tree.column("id", width=70, anchor="w")
+        self.categories_tree.column("name", width=260, anchor="w")
+
+        self.subcategories_tree = ttk.Treeview(trees, columns=("id", "name", "category"), show="headings", height=10)
+        self.subcategories_tree.pack(side="left", fill="both", expand=True)
+        self.subcategories_tree.heading("id", text="ID")
+        self.subcategories_tree.heading("name", text="Подкатегория")
+        self.subcategories_tree.heading("category", text="Категория")
+        self.subcategories_tree.column("id", width=70, anchor="w")
+        self.subcategories_tree.column("name", width=220, anchor="w")
+        self.subcategories_tree.column("category", width=220, anchor="w")
+
+    def create_category(self):
+        name = self.new_category_var.get().strip()
+        if not name:
+            messagebox.showwarning("Валидация", "Введите название категории")
+            return
+        try:
+            self.db.execute("INSERT INTO categories(name) VALUES(?)", (name,))
+        except sqlite3.IntegrityError:
+            messagebox.showerror("Ошибка", "Категория уже существует")
+            return
+        self.new_category_var.set("")
+        self.refresh_all()
+
+    def create_subcategory(self):
+        name = self.new_subcategory_var.get().strip()
+        cat_token = self.subcategory_parent_var.get().strip()
+        if not name or not cat_token:
+            messagebox.showwarning("Валидация", "Укажите подкатегорию и категорию")
+            return
+        category_id = int(cat_token.split(" | ")[0])
+        try:
+            self.db.execute("INSERT INTO subcategories(category_id, name) VALUES(?, ?)", (category_id, name))
+        except sqlite3.IntegrityError:
+            messagebox.showerror("Ошибка", "Подкатегория уже существует в выбранной категории")
+            return
+        self.new_subcategory_var.set("")
+        self.refresh_all()
+
     def _build_nomenclature_tab(self):
         controls = ttk.Frame(self.nomenclature_tab, style="Panel.TFrame")
         controls.pack(fill="x", pady=(0, 10))
@@ -683,7 +759,7 @@ class WMSApp(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title(f"Приёмка заказа {order_no}")
-        dialog.geometry("1280x760")
+        dialog.geometry("1320x780")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -704,11 +780,10 @@ class WMSApp(tk.Tk):
             r = i // 4
             c = (i % 4) * 2
             ttk.Label(frame, text=k).grid(row=r, column=c, sticky="w", padx=(0, 6), pady=4)
-            ttk.Entry(frame, width=28, state="readonly", justify="left", foreground="#122033").grid(row=r, column=c + 1, sticky="w", pady=4)
-            entry_widget = frame.grid_slaves(row=r, column=c + 1)[0]
-            entry_widget.configure(state="normal")
-            entry_widget.insert(0, v)
-            entry_widget.configure(state="readonly")
+            entry = ttk.Entry(frame, width=30)
+            entry.grid(row=r, column=c + 1, sticky="w", pady=4)
+            entry.insert(0, v)
+            entry.configure(state="readonly")
 
         columns = (
             "line_id",
@@ -721,7 +796,7 @@ class WMSApp(tk.Tk):
             "weight",
             "volume",
             "barcode",
-            "serial",
+            "serial_count",
             "serial_tracking",
         )
         lines_tree = ttk.Treeview(frame, columns=columns, show="headings", height=16)
@@ -738,11 +813,15 @@ class WMSApp(tk.Tk):
             ("weight", "Вес", 100),
             ("volume", "Объём", 100),
             ("barcode", "Штрихкод", 140),
-            ("serial", "Серийный номер", 170),
+            ("serial_count", "Серийный номер", 150),
             ("serial_tracking", "Серийный учёт", 120),
         ]:
             lines_tree.heading(col, text=title)
             lines_tree.column(col, width=width, anchor="w")
+
+        def serial_count_text(serials: str):
+            serial_list = [x.strip() for x in (serials or "").split(",") if x.strip()]
+            return str(len(serial_list))
 
         def load_lines():
             for item in lines_tree.get_children():
@@ -770,8 +849,77 @@ class WMSApp(tk.Tk):
                 """,
                 (order_id,),
             )
-            for row in rows:
-                lines_tree.insert("", "end", values=row)
+            for rid, pname, cat, sub, unit, planned, actual, w, v, barcode, serials, serial_tracking in rows:
+                lines_tree.insert(
+                    "",
+                    "end",
+                    values=(rid, pname, cat, sub, unit, planned, actual, w, v, barcode, serial_count_text(serials), serial_tracking),
+                )
+
+        def edit_serial_line(line_id: int, product_name: str, current_serial: str):
+            serial_dialog = tk.Toplevel(dialog)
+            serial_dialog.title(f"Сканирование серий: {product_name}")
+            serial_dialog.geometry("620x520")
+            serial_dialog.transient(dialog)
+            serial_dialog.grab_set()
+
+            serial_frame = ttk.Frame(serial_dialog, style="Panel.TFrame", padding=12)
+            serial_frame.pack(fill="both", expand=True)
+
+            ttk.Label(serial_frame, text="Серия").pack(anchor="w")
+            serial_input = tk.StringVar()
+            serial_entry = ttk.Entry(serial_frame, textvariable=serial_input, width=40)
+            serial_entry.pack(anchor="w", pady=(2, 8))
+            serial_entry.focus_set()
+
+            serials = [x.strip() for x in (current_serial or "").split(",") if x.strip()]
+            listbox = tk.Listbox(serial_frame, height=16)
+            listbox.pack(fill="both", expand=True)
+            for ser in serials:
+                listbox.insert("end", ser)
+
+            count_var = tk.StringVar(value=f"Отсканировано: {len(serials)}")
+            ttk.Label(serial_frame, textvariable=count_var).pack(anchor="w", pady=(8, 0))
+
+            def refresh_count():
+                count_var.set(f"Отсканировано: {listbox.size()}")
+
+            def add_serial(_event=None):
+                val = serial_input.get().strip()
+                if not val:
+                    return
+                existing = [listbox.get(i) for i in range(listbox.size())]
+                if val in existing:
+                    messagebox.showwarning("Валидация", "Эта серия уже добавлена", parent=serial_dialog)
+                    return
+                listbox.insert("end", val)
+                serial_input.set("")
+                refresh_count()
+
+            def remove_selected():
+                sel = listbox.curselection()
+                if not sel:
+                    return
+                listbox.delete(sel[0])
+                refresh_count()
+
+            def finish_scan():
+                out = [listbox.get(i) for i in range(listbox.size())]
+                self.db.execute(
+                    "UPDATE inbound_order_items SET actual_qty = ?, actual_filled = 1, serial_numbers = ? WHERE id = ?",
+                    (len(out), ", ".join(out), line_id),
+                )
+                serial_dialog.destroy()
+                load_lines()
+                self.refresh_inbound_orders()
+
+            btns = ttk.Frame(serial_frame, style="Panel.TFrame")
+            btns.pack(fill="x", pady=(8, 0))
+            ttk.Button(btns, text="Добавить серию", command=add_serial).pack(side="left")
+            ttk.Button(btns, text="Удалить выбранную", command=remove_selected).pack(side="left", padx=(8, 0))
+            ttk.Button(btns, text="Завершить", command=finish_scan).pack(side="right")
+
+            serial_entry.bind("<Return>", add_serial)
 
         def edit_selected_line():
             sel = lines_tree.selection()
@@ -781,60 +929,43 @@ class WMSApp(tk.Tk):
             values = lines_tree.item(sel[0], "values")
             line_id = int(values[0])
             product_name = values[1]
-            planned_qty = float(values[5])
-            current_actual = float(values[6])
             serial_tracking = values[11]
-            current_serial = values[10] or ""
+
+            row = self.db.query(
+                """
+                SELECT planned_qty, actual_qty, COALESCE(serial_numbers, ''), COALESCE(p.serial_tracking, 'Нет')
+                FROM inbound_order_items i
+                JOIN products p ON p.id = i.product_id
+                WHERE i.id = ?
+                """,
+                (line_id,),
+            )[0]
+            planned_qty, current_actual, current_serial, serial_tracking_db = float(row[0]), float(row[1]), row[2], row[3]
+
+            if serial_tracking_db == "Да":
+                edit_serial_line(line_id, product_name, current_serial)
+                return
 
             qty_text = simpledialog.askstring(
                 "Фактическое количество",
-                f"Введите фактическое количество для товара: {product_name}",
-                initialvalue=str(current_actual if current_actual > 0 else planned_qty),
+                f"Введите количество, которое принимаете сейчас для товара: {product_name}",
+                initialvalue="1",
                 parent=dialog,
             )
             if qty_text is None:
                 return
             try:
-                actual_qty = float(qty_text)
-                if actual_qty < 0:
+                delta_qty = float(qty_text)
+                if delta_qty <= 0:
                     raise ValueError
             except ValueError:
-                messagebox.showwarning("Валидация", "Фактическое количество должно быть числом >= 0", parent=dialog)
+                messagebox.showwarning("Валидация", "Количество должно быть положительным числом", parent=dialog)
                 return
 
-            if actual_qty > planned_qty:
-                if not messagebox.askyesno("Подтверждение", "Зафиксировать излишек?", parent=dialog):
-                    return
-            elif actual_qty < planned_qty:
-                if not messagebox.askyesno("Подтверждение", "Зафиксировать недостачу?", parent=dialog):
-                    return
-
-            serial_numbers = ""
-            if serial_tracking == "Да":
-                if abs(actual_qty - int(actual_qty)) > 1e-9:
-                    messagebox.showwarning("Валидация", "Для серийного товара количество должно быть целым", parent=dialog)
-                    return
-                serial_text = simpledialog.askstring(
-                    "Серийные номера",
-                    "Введите серийные номера (через запятую или с новой строки)",
-                    initialvalue=current_serial,
-                    parent=dialog,
-                )
-                if serial_text is None:
-                    return
-                serial_list = [x.strip() for x in serial_text.replace("\n", ",").split(",") if x.strip()]
-                if int(actual_qty) != len(serial_list):
-                    messagebox.showwarning(
-                        "Валидация",
-                        f"Количество серийных номеров ({len(serial_list)}) должно равняться фактическому количеству ({int(actual_qty)})",
-                        parent=dialog,
-                    )
-                    return
-                serial_numbers = ", ".join(serial_list)
-
+            new_actual = current_actual + delta_qty
             self.db.execute(
-                "UPDATE inbound_order_items SET actual_qty = ?, actual_filled = 1, serial_numbers = ? WHERE id = ?",
-                (actual_qty, serial_numbers, line_id),
+                "UPDATE inbound_order_items SET actual_qty = ?, actual_filled = 1 WHERE id = ?",
+                (new_actual, line_id),
             )
             load_lines()
             self.refresh_inbound_orders()
@@ -846,18 +977,45 @@ class WMSApp(tk.Tk):
                 return
 
             check_rows = self.db.query(
-                "SELECT id, planned_qty, actual_qty, actual_filled, product_id FROM inbound_order_items WHERE order_id = ?",
+                """
+                SELECT i.id, i.planned_qty, i.actual_qty, i.actual_filled, i.product_id,
+                       COALESCE(i.serial_numbers, ''), COALESCE(p.serial_tracking, 'Нет')
+                FROM inbound_order_items i
+                JOIN products p ON p.id = i.product_id
+                WHERE i.order_id = ?
+                """,
                 (order_id,),
             )
             if not check_rows:
                 messagebox.showwarning("Валидация", "В заказе нет позиций", parent=dialog)
                 return
+
             not_filled = [r for r in check_rows if int(r[3]) != 1]
             if not_filled:
                 messagebox.showwarning("Валидация", "Заполните фактическое количество для всех позиций", parent=dialog)
                 return
 
-            for _, _, actual_qty, _, product_id in check_rows:
+            for _, planned_qty, actual_qty, _, _, serial_numbers, serial_tracking in check_rows:
+                planned = float(planned_qty)
+                actual = float(actual_qty)
+                if actual > planned:
+                    if not messagebox.askyesno("Подтверждение", "Зафиксировать излишек?", parent=dialog):
+                        return
+                elif actual < planned:
+                    if not messagebox.askyesno("Подтверждение", "Зафиксировать недостачу?", parent=dialog):
+                        return
+
+                if serial_tracking == "Да":
+                    serial_count = len([x for x in (serial_numbers or "").split(",") if x.strip()])
+                    if int(actual) != serial_count:
+                        messagebox.showwarning(
+                            "Валидация",
+                            "Количество серийных номеров должно быть равно фактическому количеству для серийного товара.",
+                            parent=dialog,
+                        )
+                        return
+
+            for _, _, actual_qty, _, product_id, _, _ in check_rows:
                 qty = float(actual_qty)
                 if qty > 0:
                     if abs(qty - int(qty)) > 1e-9:
@@ -1232,19 +1390,6 @@ class WMSApp(tk.Tk):
         rows = self.db.query(f"SELECT id, name FROM {table_name} ORDER BY name")
         return {f"{r[0]} | {r[1]}": r[0] for r in rows}
 
-    def _create_category_or_subcategory(self, table, name, category_id=None):
-        name = name.strip()
-        if not name:
-            return None
-        try:
-            if table == "categories":
-                return self.db.execute("INSERT INTO categories(name) VALUES(?)", (name,))
-            return self.db.execute("INSERT INTO subcategories(category_id, name) VALUES(?, ?)", (category_id, name))
-        except sqlite3.IntegrityError:
-            if table == "categories":
-                return self.db.query("SELECT id FROM categories WHERE name = ?", (name,))[0][0]
-            return self.db.query("SELECT id FROM subcategories WHERE name = ? AND category_id IS ?", (name, category_id))[0][0]
-
     def open_create_product_dialog(self):
         self._open_product_dialog(mode="create")
 
@@ -1274,9 +1419,7 @@ class WMSApp(tk.Tk):
         barcode_var = tk.StringVar()
         serial_var = tk.StringVar(value="Нет")
         category_var = tk.StringVar()
-        new_category_var = tk.StringVar()
         subcategory_var = tk.StringVar()
-        new_subcategory_var = tk.StringVar()
         product_owner_var = tk.StringVar(value=self.current_user)
 
         suppliers = self._load_reference_dict("suppliers")
@@ -1284,13 +1427,8 @@ class WMSApp(tk.Tk):
         categories = self._load_reference_dict("categories")
         subcategories = self._load_reference_dict("subcategories")
 
-        def refill_subcategories(*_):
-            selected = category_var.get().strip()
-            cat_id = int(selected.split(" | ")[0]) if selected and "|" in selected else None
-            rows = self.db.query(
-                "SELECT id, name FROM subcategories WHERE (? IS NULL OR category_id = ?) ORDER BY name",
-                (cat_id, cat_id),
-            )
+        def load_all_subcategories():
+            rows = self.db.query("SELECT id, name FROM subcategories ORDER BY name")
             options = [f"{r[0]} | {r[1]}" for r in rows]
             subcategory_box["values"] = options
             if options and not subcategory_var.get():
@@ -1305,8 +1443,7 @@ class WMSApp(tk.Tk):
             ("Вес", ttk.Entry(frm, textvariable=weight_var, width=36)),
             ("Штрихкод", ttk.Entry(frm, textvariable=barcode_var, width=36)),
             ("Серийный учёт", ttk.Combobox(frm, textvariable=serial_var, values=["Да", "Нет"], state="readonly", width=33)),
-            ("Категория (выбрать)", ttk.Combobox(frm, textvariable=category_var, values=list(categories.keys()), state="readonly", width=33)),
-            ("Категория (новая)", ttk.Entry(frm, textvariable=new_category_var, width=36)),
+            ("Категория", ttk.Combobox(frm, textvariable=category_var, values=list(categories.keys()), state="readonly", width=33)),
         ]
 
         row = 0
@@ -1315,13 +1452,9 @@ class WMSApp(tk.Tk):
             widget.grid(row=row, column=1, sticky="w", pady=4)
             row += 1
 
-        ttk.Label(frm, text="Подкатегория (выбрать)").grid(row=row, column=0, sticky="w", pady=4)
+        ttk.Label(frm, text="Подкатегория").grid(row=row, column=0, sticky="w", pady=4)
         subcategory_box = ttk.Combobox(frm, textvariable=subcategory_var, values=list(subcategories.keys()), state="readonly", width=33)
         subcategory_box.grid(row=row, column=1, sticky="w", pady=4)
-        row += 1
-
-        ttk.Label(frm, text="Подкатегория (новая)").grid(row=row, column=0, sticky="w", pady=4)
-        ttk.Entry(frm, textvariable=new_subcategory_var, width=36).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
 
         ttk.Label(frm, text="Продакт").grid(row=row, column=0, sticky="w", pady=4)
@@ -1350,11 +1483,11 @@ class WMSApp(tk.Tk):
             barcode_var.set(product[6] or "")
             serial_var.set(product[7] or "Нет")
             category_var.set(next((k for k, v in categories.items() if v == product[8]), ""))
-            refill_subcategories()
+            load_all_subcategories()
             subcategory_var.set(next((k for k, v in subcategories.items() if v == product[9]), ""))
             product_owner_var.set(product[10] or self.current_user)
 
-        category_var.trace_add("write", refill_subcategories)
+        load_all_subcategories()
 
         def on_save():
             brand = brand_var.get().strip()
@@ -1369,16 +1502,10 @@ class WMSApp(tk.Tk):
                 return
 
             category_id = read_id(category_var.get())
-            if new_category_var.get().strip():
-                category_id = self._create_category_or_subcategory("categories", new_category_var.get().strip())
-
             subcategory_id = read_id(subcategory_var.get())
-            if new_subcategory_var.get().strip():
-                subcategory_id = self._create_category_or_subcategory(
-                    "subcategories",
-                    new_subcategory_var.get().strip(),
-                    category_id,
-                )
+            if not category_id or not subcategory_id:
+                messagebox.showwarning("Валидация", "Выберите категорию и подкатегорию", parent=dialog)
+                return
 
             try:
                 volume = float(volume_var.get()) if volume_var.get().strip() else None
@@ -1512,6 +1639,7 @@ class WMSApp(tk.Tk):
     def refresh_all(self):
         self.refresh_suppliers()
         self.refresh_3pl_clients()
+        self.refresh_categories_tab()
         self.refresh_nomenclature()
         self.refresh_inbound_orders()
         self.refresh_movements()
@@ -1536,6 +1664,39 @@ class WMSApp(tk.Tk):
             if term and term not in (row[1] or '').lower():
                 continue
             self.clients_tree.insert("", "end", values=row)
+
+    def refresh_categories_tab(self):
+        if not hasattr(self, "categories_tree"):
+            return
+        self._clear_tree(self.categories_tree)
+        self._clear_tree(self.subcategories_tree)
+
+        term = self.categories_filter_var.get().strip().lower()
+        cat_rows = self.db.query("SELECT id, name FROM categories ORDER BY name")
+        sub_rows = self.db.query(
+            """
+            SELECT s.id, s.name, COALESCE(c.name, '')
+            FROM subcategories s
+            LEFT JOIN categories c ON c.id = s.category_id
+            ORDER BY c.name, s.name
+            """
+        )
+
+        for row in cat_rows:
+            if term and term not in (row[1] or '').lower():
+                continue
+            self.categories_tree.insert("", "end", values=row)
+
+        for row in sub_rows:
+            full = f"{row[1]} {row[2]}".lower()
+            if term and term not in full:
+                continue
+            self.subcategories_tree.insert("", "end", values=row)
+
+        parent_values = [f"{r[0]} | {r[1]}" for r in cat_rows]
+        self.subcategory_parent_box["values"] = parent_values
+        if parent_values and not self.subcategory_parent_var.get():
+            self.subcategory_parent_var.set(parent_values[0])
 
     def refresh_nomenclature(self):
         self._clear_tree(self.nomenclature_tree)
