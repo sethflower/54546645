@@ -23,6 +23,7 @@ class Database:
         self._migrate_clients_table()
         self._migrate_inbound_tables()
         self._migrate_inbound_orders_table()
+        self._migrate_outbound_tables()
         self._seed_reference_data()
 
     def _create_schema(self):
@@ -105,6 +106,44 @@ class Database:
                     FOREIGN KEY(subcategory_id) REFERENCES subcategories(id) ON DELETE SET NULL,
                     FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE RESTRICT
                 );
+                CREATE TABLE IF NOT EXISTS warehouse_cells (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS unplaced_stock (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id INTEGER NOT NULL UNIQUE,
+                    quantity REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS cell_stock (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id INTEGER NOT NULL,
+                    cell_id INTEGER NOT NULL,
+                    quantity REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(product_id, cell_id),
+                    FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE,
+                    FOREIGN KEY(cell_id) REFERENCES warehouse_cells(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS outbound_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_number TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    shipped_at TEXT,
+                    status TEXT NOT NULL CHECK(status IN ('Новый','Отгружен'))
+                );
+                CREATE TABLE IF NOT EXISTS outbound_order_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    planned_qty REAL NOT NULL CHECK(planned_qty > 0),
+                    actual_qty REAL NOT NULL DEFAULT 0,
+                    FOREIGN KEY(order_id) REFERENCES outbound_orders(id) ON DELETE CASCADE,
+                    FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE RESTRICT
+                );
             """)
             self.conn.commit()
 
@@ -161,6 +200,9 @@ class Database:
         self._add_column_if_missing("inbound_order_items", "actual_filled",
                                     "INTEGER NOT NULL DEFAULT 0")
         self._add_column_if_missing("inbound_order_items", "serial_numbers", "TEXT")
+
+    def _migrate_outbound_tables(self):
+        self._add_column_if_missing("outbound_orders", "shipped_at", "TEXT")
 
     def _seed_reference_data(self):
         if not self.query("SELECT id FROM suppliers LIMIT 1"):
@@ -387,6 +429,20 @@ class WMSApp(tk.Tk):
         self.mov_ref_var = tk.StringVar()
         self.mov_note_var = tk.StringVar()
 
+        self.place_qty_var = tk.StringVar(value="1")
+        self.place_cell_var = tk.StringVar()
+        self.placement_product_id = None
+
+        self.cell_name_var = tk.StringVar()
+
+        self.search_name_var = tk.StringVar()
+        self.search_article_var = tk.StringVar()
+        self.search_barcode_var = tk.StringVar()
+        self.search_category_var = tk.StringVar(value="Все")
+        self.search_subcategory_var = tk.StringVar(value="Все")
+        self.search_client_var = tk.StringVar(value="Все")
+        self.search_only_in_stock_var = tk.BooleanVar(value=False)
+
     # ─────────── Styles ───────────
 
     def _configure_styles(self):
@@ -476,6 +532,9 @@ class WMSApp(tk.Tk):
             ("inbound", "📥", "Приходы"),
             ("movements", "🔄", "Движения"),
             ("stock", "📊", "Остатки"),
+            ("placement", "🧭", "Размещение"),
+            ("cells_ref", "🗂️", "Справочник ячеек"),
+            ("product_search", "🔎", "Поиск товара"),
         ]
 
         for key, icon, label in nav_items:
@@ -535,7 +594,8 @@ class WMSApp(tk.Tk):
 
     def _build_all_pages(self):
         for key in ["suppliers", "clients", "categories", "nomenclature",
-                     "inbound", "movements", "stock"]:
+                     "inbound", "movements", "stock", "placement",
+                     "cells_ref", "product_search"]:
             page = tk.Frame(self.content_frame, bg=self.C["content_bg"])
             page.grid(row=0, column=0, sticky="nsew")
             page.grid_columnconfigure(0, weight=1)
@@ -549,6 +609,9 @@ class WMSApp(tk.Tk):
         self._build_inbound_page()
         self._build_movements_page()
         self._build_stock_page()
+        self._build_placement_page()
+        self._build_cells_ref_page()
+        self._build_product_search_page()
 
     # ─────────── Navigation ───────────
 
@@ -564,6 +627,9 @@ class WMSApp(tk.Tk):
             "inbound": "Приходные заказы",
             "movements": "Движения товаров",
             "stock": "Остатки на складе",
+            "placement": "Размещение товара",
+            "cells_ref": "Справочник ячеек",
+            "product_search": "Поиск товара",
         }
 
         self.current_page = page_key
@@ -2502,7 +2568,8 @@ class WMSApp(tk.Tk):
                                            parent=dialog):
                     return
 
-            # Create movements
+            # Create movements + add to unplaced area
+            now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for _, _, actual, _, product_id, _, _ in check_rows:
                 qty = float(actual)
                 if qty > 0:
@@ -2512,13 +2579,21 @@ class WMSApp(tk.Tk):
                             "Количество должно быть целым числом",
                             parent=dialog)
                         return
+                    int_qty = int(qty)
                     self.db.execute(
                         """INSERT INTO movements(product_id, movement_type,
                            quantity, reference, moved_at, note)
                            VALUES(?, 'IN', ?, ?, ?, ?)""",
-                        (product_id, int(qty), order_no,
-                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        (product_id, int_qty, order_no,
+                         now_ts,
                          "Приём по заказу"))
+                    self.db.execute(
+                        """INSERT INTO unplaced_stock(product_id, quantity, updated_at)
+                           VALUES(?,?,?)
+                           ON CONFLICT(product_id) DO UPDATE SET
+                           quantity=quantity+excluded.quantity,
+                           updated_at=excluded.updated_at""",
+                        (product_id, qty, now_ts))
 
             self.db.execute(
                 """UPDATE inbound_orders SET status='Принят',
@@ -2611,6 +2686,358 @@ class WMSApp(tk.Tk):
     #             ОБНОВЛЕНИЕ ДАННЫХ
     # ══════════════════════════════════════════════════
 
+    # ==================== РАЗМЕЩЕНИЕ ====================
+
+    def _build_placement_page(self):
+        page = self.pages["placement"]
+        page.grid_rowconfigure(0, weight=1)
+        page.grid_columnconfigure(0, weight=2)
+        page.grid_columnconfigure(1, weight=1)
+
+        left = self._make_card(page, padx=(20, 8), pady=16, expand=True)
+        tk.Label(left, text="Неразмещённый участок", font=self.F["heading"],
+                 bg=self.C["card_bg"], fg=self.C["text"]).pack(anchor="w", padx=16, pady=(12, 6))
+
+        cols = ("product_id", "name", "article", "unit", "qty")
+        wmap = {
+            "product_id": ("ID", 55), "name": ("Товар", 220),
+            "article": ("Артикул", 120), "unit": ("Ед.", 60),
+            "qty": ("Неразмещено", 110),
+        }
+        self.unplaced_tree, _ = self._make_tree(left, cols, wmap, height=18)
+        self.unplaced_tree.bind("<Double-1>", self._on_unplaced_double_click)
+
+        right = self._make_card(page, padx=(8, 20), pady=16, expand=True)
+        tk.Label(right, text="Размещение товара", font=self.F["heading"],
+                 bg=self.C["card_bg"], fg=self.C["text"]).pack(anchor="w", padx=16, pady=(12, 8))
+
+        self.place_selected_lbl = tk.Label(
+            right, text="Выберите товар двойным кликом слева",
+            font=self.F["body"], bg=self.C["card_bg"], fg=self.C["text_secondary"], wraplength=280, justify="left")
+        self.place_selected_lbl.pack(anchor="w", padx=16)
+
+        f1 = self._make_labeled_entry(right, "Количество (шт/палет)", self.place_qty_var, width=20)
+        f1.pack(fill="x", padx=16, pady=(12, 6))
+        f2 = self._make_labeled_combo(right, "Складская ячейка", self.place_cell_var, [], width=28)
+        f2.pack(fill="x", padx=16, pady=(0, 6))
+        self.place_cell_combo = f2._combo
+
+        btn = self._make_raised_btn(right, "Привязать", bg_color=self.C["success"],
+                                    command=self.bind_product_to_cell, icon="🔗")
+        btn.pack(anchor="w", padx=16, pady=(8, 6))
+
+    def _on_unplaced_double_click(self, event=None):
+        sel = self.unplaced_tree.selection()
+        if not sel:
+            return
+        vals = self.unplaced_tree.item(sel[0], "values")
+        self.placement_product_id = int(vals[0])
+        self.place_selected_lbl.configure(
+            text=f"Товар: {vals[1]} (Артикул: {vals[2] or '—'})\nДоступно на неразмещённом участке: {vals[4]}")
+
+    def bind_product_to_cell(self):
+        if not self.placement_product_id:
+            messagebox.showwarning("Внимание", "Сначала выберите товар двойным кликом")
+            return
+        cell_token = self.place_cell_var.get().strip()
+        cell_id = self._get_id(cell_token)
+        if not cell_id:
+            messagebox.showwarning("Внимание", "Выберите складскую ячейку")
+            return
+        try:
+            qty = float(self.place_qty_var.get())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Внимание", "Введите корректное количество")
+            return
+
+        row = self.db.query("SELECT quantity FROM unplaced_stock WHERE product_id=?", (self.placement_product_id,))
+        available = float(row[0][0]) if row else 0.0
+        if qty > available:
+            messagebox.showwarning("Внимание", f"Недостаточно товара на неразмещённом участке. Доступно: {available:g}")
+            return
+
+        now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.db.execute(
+            """UPDATE unplaced_stock SET quantity=quantity-?, updated_at=? WHERE product_id=?""",
+            (qty, now_ts, self.placement_product_id))
+        self.db.execute("DELETE FROM unplaced_stock WHERE product_id=? AND quantity<=0", (self.placement_product_id,))
+        self.db.execute(
+            """INSERT INTO cell_stock(product_id, cell_id, quantity, updated_at)
+               VALUES(?,?,?,?)
+               ON CONFLICT(product_id, cell_id) DO UPDATE SET
+               quantity=quantity+excluded.quantity,
+               updated_at=excluded.updated_at""",
+            (self.placement_product_id, cell_id, qty, now_ts))
+
+        p = self.db.query("SELECT COALESCE(name, brand, ''), COALESCE(article,'') FROM products WHERE id=?", (self.placement_product_id,))[0]
+        c = self.db.query("SELECT name FROM warehouse_cells WHERE id=?", (cell_id,))[0][0]
+        messagebox.showinfo("Успешно", f"Товар '{p[0] or p[1]}' привязан к ячейке '{c}' в количестве {qty:g}")
+        self.refresh_all()
+
+    # ==================== СПРАВОЧНИК ЯЧЕЕК ====================
+
+    def _build_cells_ref_page(self):
+        page = self.pages["cells_ref"]
+        card = self._make_card(page, padx=20, pady=16, expand=True)
+        tb = tk.Frame(card, bg=self.C["card_bg"])
+        tb.pack(fill="x", padx=16, pady=(12, 8))
+        create_btn = self._make_raised_btn(tb, "Создать ячейку", bg_color=self.C["success"],
+                                           command=self.create_cell_dialog, icon="➕")
+        create_btn.pack(side="left")
+
+        cols = ("id", "name", "created_at")
+        wmap = {
+            "id": ("ID", 60), "name": ("Название ячейки", 260), "created_at": ("Создана", 180)
+        }
+        self.cells_tree, _ = self._make_tree(card, cols, wmap, height=18)
+
+    def create_cell_dialog(self):
+        name = simpledialog.askstring("Создать ячейку", "Введите название ячейки:", parent=self)
+        if name is None:
+            return
+        name = name.strip()
+        if not name:
+            messagebox.showwarning("Внимание", "Название ячейки не может быть пустым")
+            return
+        try:
+            self.db.execute("INSERT INTO warehouse_cells(name, created_at) VALUES(?,?)",
+                            (name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        except sqlite3.IntegrityError:
+            messagebox.showwarning("Внимание", "Ячейка с таким названием уже существует")
+            return
+        self.refresh_cells_ref()
+        self._refresh_cells_combo()
+
+    # ==================== ПОИСК ТОВАРА ====================
+
+    def _build_product_search_page(self):
+        page = self.pages["product_search"]
+        card = self._make_card(page, padx=20, pady=16, expand=True)
+
+        filters = tk.Frame(card, bg=self.C["card_bg"])
+        filters.pack(fill="x", padx=16, pady=(12, 6))
+        self._make_labeled_entry(filters, "Название", self.search_name_var, width=20).pack(side="left", padx=(0, 8))
+        self._make_labeled_entry(filters, "Артикул", self.search_article_var, width=16).pack(side="left", padx=(0, 8))
+        self._make_labeled_entry(filters, "Штрихкод", self.search_barcode_var, width=16).pack(side="left", padx=(0, 8))
+
+        self.search_cat_combo_wrap = self._make_labeled_combo(filters, "Категория", self.search_category_var, ["Все"], width=16)
+        self.search_cat_combo_wrap.pack(side="left", padx=(0, 8))
+        self.search_cat_combo = self.search_cat_combo_wrap._combo
+        self.search_sub_combo_wrap = self._make_labeled_combo(filters, "Подкатегория", self.search_subcategory_var, ["Все"], width=16)
+        self.search_sub_combo_wrap.pack(side="left", padx=(0, 8))
+        self.search_sub_combo = self.search_sub_combo_wrap._combo
+        self.search_client_combo_wrap = self._make_labeled_combo(filters, "3PL клиент", self.search_client_var, ["Все"], width=16)
+        self.search_client_combo_wrap.pack(side="left", padx=(0, 8))
+        self.search_client_combo = self.search_client_combo_wrap._combo
+
+        row2 = tk.Frame(card, bg=self.C["card_bg"])
+        row2.pack(fill="x", padx=16, pady=(0, 8))
+        tk.Checkbutton(row2, text="Только в наличии", variable=self.search_only_in_stock_var,
+                       bg=self.C["card_bg"], fg=self.C["text"]).pack(side="left")
+        self._make_raised_btn(row2, "Поиск", command=self.search_products, icon="🔍").pack(side="left", padx=(10, 0))
+        tk.Label(row2, text="Кликните товар 2 раза ЛКМ для действий", bg=self.C["card_bg"],
+                 fg=self.C["text_hint"], font=self.F["small"]).pack(side="right")
+
+        cols = ("id", "name", "article", "category", "subcategory", "client", "unplaced", "placed", "total", "reserved", "waiting")
+        wmap = {
+            "id": ("ID", 50), "name": ("Название", 180), "article": ("Артикул", 100),
+            "category": ("Категория", 100), "subcategory": ("Подкатегория", 110), "client": ("3PL клиент", 120),
+            "unplaced": ("Неразмещ.", 90), "placed": ("Размещ.", 85), "total": ("Общий остаток", 95),
+            "reserved": ("В резерве", 80), "waiting": ("В ожидании", 80),
+        }
+        self.product_search_tree, _ = self._make_tree(card, cols, wmap, height=16)
+        self.product_search_tree.bind("<Double-1>", self._on_product_search_double_click)
+        self.search_category_var.trace_add("write", lambda *_: self._refresh_search_subcategories())
+
+    def _refresh_cells_combo(self):
+        rows = self.db.query("SELECT id, name FROM warehouse_cells ORDER BY name")
+        vals = [f"{r[0]} | {r[1]}" for r in rows]
+        if hasattr(self, "place_cell_combo"):
+            self.place_cell_combo["values"] = vals
+        if vals and not self.place_cell_var.get():
+            self.place_cell_var.set(vals[0])
+
+    def _refresh_search_filters(self):
+        cats = [f"{r[0]} | {r[1]}" for r in self.db.query("SELECT id,name FROM categories ORDER BY name")]
+        clients = [f"{r[0]} | {r[1]}" for r in self.db.query("SELECT id,name FROM clients ORDER BY name")]
+        if hasattr(self, "search_cat_combo"):
+            self.search_cat_combo["values"] = ["Все", *cats]
+            self.search_client_combo["values"] = ["Все", *clients]
+        self._refresh_search_subcategories()
+
+    def _refresh_search_subcategories(self):
+        if not hasattr(self, "search_sub_combo"):
+            return
+        token = self.search_category_var.get().strip()
+        if token == "Все" or not token:
+            self.search_sub_combo["values"] = ["Все"]
+            self.search_subcategory_var.set("Все")
+            return
+        cat_id = self._get_id(token)
+        rows = self.db.query("SELECT id,name FROM subcategories WHERE category_id=? ORDER BY name", (cat_id,))
+        vals = ["Все", *[f"{r[0]} | {r[1]}" for r in rows]]
+        self.search_sub_combo["values"] = vals
+        if self.search_subcategory_var.get() not in vals:
+            self.search_subcategory_var.set("Все")
+
+    def _on_product_search_double_click(self, event=None):
+        sel = self.product_search_tree.selection()
+        if not sel:
+            return
+        pid = int(self.product_search_tree.item(sel[0], "values")[0])
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Посмотреть движение товара", command=lambda p=pid: self.show_product_movements(p))
+        menu.add_command(label="Посмотреть остаток на ячейках", command=lambda p=pid: self.show_product_cells(p))
+        menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+
+    def show_product_movements(self, product_id):
+        rows = self.db.query(
+            """SELECT 'Приход', o.order_number, o.created_at, i.actual_qty
+               FROM inbound_order_items i
+               JOIN inbound_orders o ON o.id=i.order_id
+               WHERE i.product_id=? AND o.status='Принят'
+               UNION ALL
+               SELECT 'Отгрузка', o.order_number, COALESCE(o.shipped_at,o.created_at), i.actual_qty
+               FROM outbound_order_items i
+               JOIN outbound_orders o ON o.id=i.order_id
+               WHERE i.product_id=? AND o.status='Отгружен'
+               ORDER BY 3 DESC""", (product_id, product_id))
+        d = self._create_dialog("Движение товара", 760, 520)
+        box = tk.Frame(d, bg=self.C["card_bg"])
+        box.pack(fill="both", expand=True, padx=14, pady=14)
+        cols = ("type", "order", "date", "qty")
+        wmap = {"type": ("Тип", 110), "order": ("Заказ", 140), "date": ("Дата", 170), "qty": ("Факт", 80)}
+        tree, _ = self._make_tree(box, cols, wmap, height=14)
+        for r in rows:
+            tree.insert("", "end", values=r)
+
+        def open_order(_=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            typ, order_no, _, _ = tree.item(sel[0], "values")
+            if typ == "Приход":
+                d.destroy()
+                self._inbound_order_dialog(order_no)
+            else:
+                messagebox.showinfo("Информация", "Переход к отгрузке не реализован в текущем интерфейсе", parent=d)
+
+        tree.bind("<Double-1>", open_order)
+
+    def show_product_cells(self, product_id):
+        d = self._create_dialog("Остаток по ячейкам", 700, 520)
+        box = tk.Frame(d, bg=self.C["card_bg"])
+        box.pack(fill="both", expand=True, padx=14, pady=14)
+        cols = ("cell", "qty")
+        wmap = {"cell": ("Ячейка", 260), "qty": ("Количество", 120)}
+        tree, _ = self._make_tree(box, cols, wmap, height=14)
+        rows = self.db.query(
+            """SELECT c.name, s.quantity
+               FROM cell_stock s
+               JOIN warehouse_cells c ON c.id=s.cell_id
+               WHERE s.product_id=? AND s.quantity>0
+               ORDER BY c.name""", (product_id,))
+        for r in rows:
+            tree.insert("", "end", values=(r[0], f"{float(r[1]):g}"))
+        unplaced = self.db.query("SELECT COALESCE(quantity,0) FROM unplaced_stock WHERE product_id=?", (product_id,))
+        u = float(unplaced[0][0]) if unplaced else 0.0
+        tree.insert("", "end", values=("Неразмещённый участок", f"{u:g}"), tags=("warning",))
+
+    def search_products(self):
+        self.refresh_product_search()
+
+    def refresh_cells_ref(self):
+        if not hasattr(self, "cells_tree"):
+            return
+        for i in self.cells_tree.get_children():
+            self.cells_tree.delete(i)
+        rows = self.db.query("SELECT id, name, created_at FROM warehouse_cells ORDER BY id DESC")
+        for idx, r in enumerate(rows):
+            tag = "evenrow" if idx % 2 == 0 else "oddrow"
+            self.cells_tree.insert("", "end", values=r, tags=(tag,))
+
+    def refresh_placement(self):
+        if not hasattr(self, "unplaced_tree"):
+            return
+        for i in self.unplaced_tree.get_children():
+            self.unplaced_tree.delete(i)
+        rows = self.db.query(
+            """SELECT p.id, COALESCE(p.name, p.brand, ''), COALESCE(p.article,''),
+                      COALESCE(p.unit,'шт'), u.quantity
+               FROM unplaced_stock u
+               JOIN products p ON p.id=u.product_id
+               WHERE u.quantity>0
+               ORDER BY p.id DESC""")
+        for idx, r in enumerate(rows):
+            tag = "evenrow" if idx % 2 == 0 else "oddrow"
+            self.unplaced_tree.insert("", "end", values=(r[0], r[1], r[2], r[3], f"{float(r[4]):g}"), tags=(tag,))
+        self._refresh_cells_combo()
+
+    def refresh_product_search(self):
+        if not hasattr(self, "product_search_tree"):
+            return
+        for i in self.product_search_tree.get_children():
+            self.product_search_tree.delete(i)
+
+        f_name = self.search_name_var.get().strip().lower()
+        f_article = self.search_article_var.get().strip().lower()
+        f_barcode = self.search_barcode_var.get().strip().lower()
+        cat_token = self.search_category_var.get().strip()
+        sub_token = self.search_subcategory_var.get().strip()
+        client_token = self.search_client_var.get().strip()
+        only_stock = self.search_only_in_stock_var.get()
+
+        rows = self.db.query(
+            """SELECT p.id, COALESCE(p.name, p.brand, ''), COALESCE(p.article,''),
+                      COALESCE(p.barcode,''), COALESCE(cat.name,''), COALESCE(sub.name,''),
+                      COALESCE(cl.name,''),
+                      COALESCE((SELECT SUM(quantity) FROM unplaced_stock u WHERE u.product_id=p.id),0),
+                      COALESCE((SELECT SUM(quantity) FROM cell_stock cs WHERE cs.product_id=p.id),0),
+                      COALESCE((SELECT SUM(i.planned_qty)
+                                FROM outbound_order_items i
+                                JOIN outbound_orders o ON o.id=i.order_id
+                                WHERE i.product_id=p.id AND o.status='Новый'),0),
+                      COALESCE((SELECT SUM(i.planned_qty)
+                                FROM inbound_order_items i
+                                JOIN inbound_orders o ON o.id=i.order_id
+                                WHERE i.product_id=p.id AND o.status='Новый'),0)
+               FROM products p
+               LEFT JOIN categories cat ON cat.id=p.category_id
+               LEFT JOIN subcategories sub ON sub.id=p.subcategory_id
+               LEFT JOIN clients cl ON cl.id=p.client_id
+               ORDER BY p.id DESC""")
+
+        cat_id = self._get_id(cat_token) if cat_token and cat_token != "Все" else None
+        sub_id = self._get_id(sub_token) if sub_token and sub_token != "Все" else None
+        client_id = self._get_id(client_token) if client_token and client_token != "Все" else None
+
+        for idx, r in enumerate(rows):
+            pid, name, article, barcode, cat, sub, client, unplaced, placed, reserved, waiting = r
+            total = float(unplaced) + float(placed)
+            if f_name and f_name not in (name or "").lower():
+                continue
+            if f_article and f_article not in (article or "").lower():
+                continue
+            if f_barcode and f_barcode not in (barcode or "").lower():
+                continue
+            if cat_id and self.db.query("SELECT category_id FROM products WHERE id=?", (pid,))[0][0] != cat_id:
+                continue
+            if sub_id and self.db.query("SELECT subcategory_id FROM products WHERE id=?", (pid,))[0][0] != sub_id:
+                continue
+            if client_id and self.db.query("SELECT client_id FROM products WHERE id=?", (pid,))[0][0] != client_id:
+                continue
+            if only_stock and total <= 0:
+                continue
+
+            tag = "evenrow" if idx % 2 == 0 else "oddrow"
+            self.product_search_tree.insert("", "end", values=(
+                pid, name, article, cat, sub, client,
+                f"{float(unplaced):g}", f"{float(placed):g}", f"{total:g}",
+                f"{float(reserved):g}", f"{float(waiting):g}"), tags=(tag,))
+
+
     def refresh_all(self):
         self.refresh_suppliers()
         self.refresh_clients()
@@ -2619,6 +3046,10 @@ class WMSApp(tk.Tk):
         self.refresh_inbound()
         self.refresh_movements()
         self.refresh_stock()
+        self.refresh_placement()
+        self.refresh_cells_ref()
+        self._refresh_search_filters()
+        self.refresh_product_search()
         self.refresh_metrics()
 
     def refresh_suppliers(self):
