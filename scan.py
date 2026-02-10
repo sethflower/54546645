@@ -4,6 +4,8 @@ import os
 import random
 import re
 import sqlite3
+import urllib.parse
+import webbrowser
 from contextlib import closing
 from datetime import datetime
 import calendar
@@ -21,6 +23,7 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self._create_schema()
         self._migrate_products_table()
+        self._migrate_product_markings_table()
         self._migrate_subcategories_table()
         self._migrate_suppliers_table()
         self._migrate_clients_table()
@@ -67,6 +70,14 @@ class Database:
                     min_stock INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS product_markings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id INTEGER NOT NULL,
+                    code TEXT NOT NULL UNIQUE,
+                    code_type TEXT NOT NULL CHECK(code_type IN ('barcode','serial')),
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS movements (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,6 +224,12 @@ class Database:
                                     "INTEGER REFERENCES subcategories(id) ON DELETE RESTRICT")
         self._add_column_if_missing("products", "product_owner", "TEXT")
         self._add_unique_index_if_missing("products", "article")
+
+    def _migrate_product_markings_table(self):
+        self.execute("""INSERT OR IGNORE INTO product_markings(product_id, code, code_type, created_at)
+                        SELECT id, barcode, 'barcode', ? FROM products
+                        WHERE barcode IS NOT NULL AND TRIM(barcode)<>''""",
+                     (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
 
     def _migrate_subcategories_table(self):
         self.execute("DELETE FROM subcategories WHERE category_id IS NULL")
@@ -3262,78 +3279,90 @@ class WMSApp(tk.Tk):
         self.db.execute("UPDATE outbound_orders SET shipped_by=? WHERE id=?", (self.current_user, oid))
         self.refresh_shipments()
 
+    def _next_order_number(self):
+        existing = {r[0] for r in self.db.query("SELECT order_number FROM outbound_orders")}
+        while True:
+            num = f"{random.randint(0, 999999):06d}"
+            if num not in existing:
+                return num
+
+    def _next_rn_number(self):
+        last = self.db.query("SELECT waybill_number FROM outbound_waybills ORDER BY id DESC LIMIT 1")
+        if not last:
+            return "RN000001"
+        m = re.search(r"(\d+)$", last[0][0] or "")
+        if not m:
+            return "RN000001"
+        return f"RN{int(m.group(1)) + 1:06d}"
+
     def create_shipment_order(self):
-        d = self._create_dialog("Создание заказа на отгрузку", 760, 640)
+        d = self._create_dialog("Создание заказа на отгрузку", 800, 700)
         body = tk.Frame(d, bg=self.C["card_bg"])
         body.pack(fill="both", expand=True, padx=10, pady=10)
 
-        number = f"{random.randint(0, 999999):06d}"
-        order_var = tk.StringVar(value=number)
+        order_var = tk.StringVar(value=self._next_order_number())
         delivery_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
         receipt_var = tk.StringVar()
         city_var = tk.StringVar(); addr_var = tk.StringVar(); rec_var = tk.StringVar(); phone_var = tk.StringVar()
         payer_var = tk.StringVar(value="3PL клиент")
 
-        sc = {r[1]: r[0] for r in self.db.query("SELECT id,name FROM shipment_clients ORDER BY name")}
-        c3 = {r[1]: r[0] for r in self.db.query("SELECT id,name FROM clients ORDER BY name")}
+        client_rows = self.db.query("""SELECT sc.id, sc.name, COALESCE(c.id,0), COALESCE(c.name,'') FROM shipment_clients sc
+                                       LEFT JOIN clients c ON c.id=sc.client_3pl_id ORDER BY sc.name""")
+        client_map = {r[1]: (r[0], r[2] if r[2] else None, r[3]) for r in client_rows}
         wh = {r[1]: r[0] for r in self.db.query("SELECT id,name FROM warehouses ORDER BY name")}
         dc = {r[1]: r[0] for r in self.db.query("SELECT id,name FROM delivery_categories ORDER BY name")}
 
-        client_v = tk.StringVar(value=next(iter(sc), "")); c3_v = tk.StringVar(value=next(iter(c3), "")); wh_v = tk.StringVar(value=next(iter(wh), "")); dc_v = tk.StringVar(value=next(iter(dc), ""))
+        client_v = tk.StringVar(value=next(iter(client_map), ""))
+        c3_v = tk.StringVar(value=(client_map[client_v.get()][2] if client_v.get() else ""))
+        wh_v = tk.StringVar(value=next(iter(wh), ""))
+        dc_v = tk.StringVar(value=next(iter(dc), ""))
         rn_list = []
 
         grid = tk.Frame(body, bg=self.C["card_bg"]); grid.pack(fill="x")
-        fields = [("№ заказа", order_var, True), ("Дата доставки", delivery_var, False), ("Квитанция", receipt_var, False), ("Город", city_var, False), ("Адрес", addr_var, False), ("Получатель", rec_var, False), ("Телефон", phone_var, False)]
+        fields = [("№ заказа", order_var, True), ("Дата доставки", delivery_var, False), ("Квитанция", receipt_var, False),
+                  ("Город", city_var, False), ("Адрес", addr_var, False), ("Получатель", rec_var, False), ("Телефон", phone_var, False)]
         for i, (lbl, var, ro) in enumerate(fields):
             tk.Label(grid, text=lbl, bg=self.C["card_bg"], font=self.F["small"]).grid(row=i//2, column=(i%2)*2, sticky="w", padx=4, pady=3)
             tk.Entry(grid, textvariable=var, state=("readonly" if ro else "normal"), width=30).grid(row=i//2, column=(i%2)*2+1, sticky="w", padx=4, pady=3)
-        ttk.Combobox(grid, textvariable=client_v, values=list(sc.keys()), state="readonly", width=27).grid(row=4, column=1, sticky="w", padx=4, pady=3)
-        ttk.Combobox(grid, textvariable=c3_v, values=list(c3.keys()), state="readonly", width=27).grid(row=4, column=3, sticky="w", padx=4, pady=3)
+        client_combo = ttk.Combobox(grid, textvariable=client_v, values=list(client_map.keys()), state="readonly", width=27)
+        client_combo.grid(row=4, column=1, sticky="w", padx=4, pady=3)
+        tk.Entry(grid, textvariable=c3_v, state="readonly", width=30).grid(row=4, column=3, sticky="w", padx=4, pady=3)
         ttk.Combobox(grid, textvariable=wh_v, values=list(wh.keys()), state="readonly", width=27).grid(row=5, column=1, sticky="w", padx=4, pady=3)
         ttk.Combobox(grid, textvariable=dc_v, values=list(dc.keys()), state="readonly", width=27).grid(row=5, column=3, sticky="w", padx=4, pady=3)
         ttk.Combobox(grid, textvariable=payer_var, values=["3PL клиент", "Клиент", "Получатель"], state="readonly", width=27).grid(row=6, column=1, sticky="w", padx=4, pady=3)
         tk.Label(grid, text="Клиент", bg=self.C["card_bg"], font=self.F["small"]).grid(row=4, column=0, sticky="w", padx=4)
-        tk.Label(grid, text="3PL клиент", bg=self.C["card_bg"], font=self.F["small"]).grid(row=4, column=2, sticky="w", padx=4)
+        tk.Label(grid, text="3PL клиент (авто)", bg=self.C["card_bg"], font=self.F["small"]).grid(row=4, column=2, sticky="w", padx=4)
         tk.Label(grid, text="Склад", bg=self.C["card_bg"], font=self.F["small"]).grid(row=5, column=0, sticky="w", padx=4)
         tk.Label(grid, text="Категория доставки", bg=self.C["card_bg"], font=self.F["small"]).grid(row=5, column=2, sticky="w", padx=4)
         tk.Label(grid, text="Плательщик", bg=self.C["card_bg"], font=self.F["small"]).grid(row=6, column=0, sticky="w", padx=4)
 
+        def on_client_change(*_):
+            c3_v.set(client_map.get(client_v.get(), (None, None, ""))[2])
+        client_v.trace_add("write", on_client_change)
+
         rn_card = tk.Frame(body, bg=self.C["card_bg"]); rn_card.pack(fill="both", expand=True, pady=(10, 0))
         tk.Label(rn_card, text="Список РН", bg=self.C["card_bg"], font=self.F["heading"]).pack(anchor="w")
-        rn_tree = ttk.Treeview(rn_card, columns=("rn", "items"), show="headings", height=7)
-        rn_tree.heading("rn", text="№ РН"); rn_tree.heading("items", text="Позиций")
-        rn_tree.column("rn", width=160); rn_tree.column("items", width=90)
+        rn_tree = ttk.Treeview(rn_card, columns=("rn", "items", "supplier", "client3pl"), show="headings", height=7)
+        for col, txt, w in [("rn", "№ РН", 160), ("items", "Позиций", 90), ("supplier", "Поставщик", 160), ("client3pl", "3PL", 160)]:
+            rn_tree.heading(col, text=txt); rn_tree.column(col, width=w)
         rn_tree.pack(fill="both", expand=True, pady=4)
 
         def add_rn():
-            rn_num = simpledialog.askstring("РН", "Номер РН:", parent=d)
-            if not rn_num:
+            payload = self._create_rn_dialog(parent=d)
+            if not payload:
                 return
-            products = []
-            while True:
-                prod = simpledialog.askstring("Товар", "Артикул/название товара (Отмена - завершить):", parent=d)
-                if not prod:
-                    break
-                rows = self.db.query("SELECT id, COALESCE(article,brand,name,'') FROM products WHERE article=? OR brand LIKE ? OR name LIKE ? LIMIT 1", (prod, f"%{prod}%", f"%{prod}%"))
-                if not rows:
-                    messagebox.showerror("Ошибка", "Товар не найден", parent=d); continue
-                qty = simpledialog.askfloat("План", "Плановое количество:", minvalue=0.001, parent=d)
-                if not qty:
-                    continue
-                products.append((rows[0][0], qty))
-            if not products:
-                messagebox.showwarning("Внимание", "РН без товаров не добавлена", parent=d); return
-            rn_list.append({"rn": rn_num, "items": products})
-            rn_tree.insert("", "end", values=(rn_num, len(products)))
+            rn_list.append(payload)
+            rn_tree.insert("", "end", values=(payload["rn"], len(payload["items"]), payload["supplier"], payload["client3pl"]))
 
         self._make_flat_btn(rn_card, "Добавить РН", command=add_rn, icon="➕").pack(anchor="w")
 
         def save():
             if not client_v.get() or not wh_v.get() or not dc_v.get() or not rn_list:
                 messagebox.showerror("Ошибка", "Заполните обязательные поля и добавьте РН", parent=d); return
+            cl_id, c3_id, _ = client_map[client_v.get()]
             oid = self.db.execute("""INSERT INTO outbound_orders(order_number,created_at,status,delivery_date,receipt_number,client_id,client_3pl_id,warehouse_id,delivery_category_id,created_by,delivery_city,delivery_address,recipient,recipient_phone,payer)
                                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                  (order_var.get(), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Новый", delivery_var.get(), receipt_var.get().strip(), sc[client_v.get()], c3.get(c3_v.get()), wh[wh_v.get()], dc[dc_v.get()], self.current_user, city_var.get().strip(), addr_var.get().strip(), rec_var.get().strip(), phone_var.get().strip(), payer_var.get()))
+                                  (order_var.get(), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Новый", delivery_var.get(), receipt_var.get().strip(), cl_id, c3_id, wh[wh_v.get()], dc[dc_v.get()], self.current_user, city_var.get().strip(), addr_var.get().strip(), rec_var.get().strip(), phone_var.get().strip(), payer_var.get()))
             for rn in rn_list:
                 wid = self.db.execute("INSERT INTO outbound_waybills(order_id, waybill_number, status, created_at) VALUES(?,?,?,?)", (oid, rn["rn"], "Новый", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                 for pid, qty in rn["items"]:
@@ -3342,35 +3371,151 @@ class WMSApp(tk.Tk):
 
         self._make_raised_btn(body, "Сохранить", command=save, icon="💾").pack(anchor="e", pady=8)
 
+    def _create_rn_dialog(self, parent=None):
+        d = self._create_dialog("Создание РН", 900, 650)
+        rn_var = tk.StringVar(value=self._next_rn_number())
+        search_var = tk.StringVar()
+        qty_var = tk.StringVar(value="1")
+        selected_product_id = {"id": None}
+        items = []
+
+        top = tk.Frame(d, bg=self.C["card_bg"]); top.pack(fill="x", padx=10, pady=8)
+        tk.Label(top, text="Номер РН:", bg=self.C["card_bg"]).pack(side="left")
+        tk.Entry(top, textvariable=rn_var, state="readonly", width=14).pack(side="left", padx=(3, 8))
+        tk.Label(top, text="Поиск товара:", bg=self.C["card_bg"]).pack(side="left")
+        tk.Entry(top, textvariable=search_var, width=40).pack(side="left", padx=3)
+
+        products_tree = ttk.Treeview(d, columns=("pid", "name", "article", "supplier", "client"), show="headings", height=10)
+        for c,t,w in [("pid","ID",50),("name","Товар",260),("article","Артикул",120),("supplier","Поставщик",180),("client","3PL",180)]:
+            products_tree.heading(c,text=t); products_tree.column(c,width=w)
+        products_tree.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+
+        def refresh_products(*_):
+            for i in products_tree.get_children(): products_tree.delete(i)
+            term = search_var.get().strip().lower()
+            rows = self.db.query("""SELECT p.id, COALESCE(p.name,p.brand,''), COALESCE(p.article,''), COALESCE(s.name,''), COALESCE(c.name,'')
+                                    FROM products p LEFT JOIN suppliers s ON s.id=p.supplier_id LEFT JOIN clients c ON c.id=p.client_id ORDER BY p.id DESC""")
+            for r in rows:
+                blob = " ".join(str(x or "").lower() for x in r)
+                if term and term not in blob:
+                    continue
+                products_tree.insert("", "end", iid=str(r[0]), values=r)
+        search_var.trace_add("write", refresh_products)
+        refresh_products()
+
+        info = tk.Label(d, text="Поставщик: —    3PL: —", bg=self.C["card_bg"], font=self.F["small_bold"])
+        info.pack(anchor="w", padx=10)
+
+        chosen_tree = ttk.Treeview(d, columns=("pid", "name", "qty"), show="headings", height=6)
+        for c,t,w in [("pid","ID",60),("name","Товар",360),("qty","План",100)]:
+            chosen_tree.heading(c,text=t); chosen_tree.column(c,width=w)
+        chosen_tree.pack(fill="both", expand=True, padx=10, pady=8)
+
+        def select_product(event=None):
+            sel = products_tree.selection()
+            if not sel:
+                return
+            vals = products_tree.item(sel[0], "values")
+            selected_product_id["id"] = int(vals[0])
+            info.configure(text=f"Поставщик: {vals[3] or '—'}    3PL: {vals[4] or '—'}")
+        products_tree.bind("<<TreeviewSelect>>", select_product)
+
+        controls = tk.Frame(d, bg=self.C["card_bg"]); controls.pack(fill="x", padx=10)
+        tk.Label(controls, text="План:", bg=self.C["card_bg"]).pack(side="left")
+        tk.Entry(controls, textvariable=qty_var, width=8).pack(side="left", padx=(2, 8))
+
+        def redraw_chosen():
+            for i in chosen_tree.get_children(): chosen_tree.delete(i)
+            for pid, qty in items:
+                name = self.db.query("SELECT COALESCE(name,brand,article,'') FROM products WHERE id=?", (pid,))[0][0]
+                chosen_tree.insert("", "end", values=(pid, name, qty))
+
+        def add_item():
+            if not selected_product_id["id"]:
+                messagebox.showwarning("Внимание", "Выберите товар", parent=d); return
+            try:
+                qty = float(qty_var.get())
+            except ValueError:
+                messagebox.showerror("Ошибка", "Количество должно быть числом", parent=d); return
+            if qty <= 0:
+                return
+            pid = selected_product_id["id"]
+            for idx, (xpid, xqty) in enumerate(items):
+                if xpid == pid:
+                    items[idx] = (xpid, xqty + qty)
+                    break
+            else:
+                items.append((pid, qty))
+            redraw_chosen()
+
+        self._make_raised_btn(controls, "Добавить товар", command=add_item, icon="➕").pack(side="left")
+
+        result = {"ok": False}
+        def done():
+            if not items:
+                messagebox.showwarning("Внимание", "Добавьте товары", parent=d); return
+            placeholders = ','.join(['?'] * len(items))
+            groups = self.db.query(f"""SELECT COUNT(DISTINCT COALESCE(c.name,''))
+                                       FROM products p
+                                       LEFT JOIN clients c ON c.id=p.client_id
+                                       WHERE p.id IN ({placeholders})""", tuple(pid for pid, _ in items))[0]
+            if groups[0] > 1:
+                messagebox.showerror("Ошибка", "В одной РН товары должны быть одного 3PL клиента", parent=d)
+                return
+            supplier = self.db.query("SELECT COALESCE(s.name,'') FROM products p LEFT JOIN suppliers s ON s.id=p.supplier_id WHERE p.id=?", (items[0][0],))[0][0]
+            client = self.db.query("SELECT COALESCE(c.name,'') FROM products p LEFT JOIN clients c ON c.id=p.client_id WHERE p.id=?", (items[0][0],))[0][0]
+            result["ok"] = True
+            result["payload"] = {"rn": rn_var.get(), "items": items, "supplier": supplier, "client3pl": client}
+            d.destroy()
+
+        self._make_raised_btn(d, "Сохранить РН", bg_color=self.C["success"], command=done, icon="💾").pack(side="right", padx=10, pady=8)
+        d.wait_window()
+        return result.get("payload") if result["ok"] else None
+
+    def _validate_marking_for_item(self, item_row, code):
+        _item_id, product_id, _name, _plan, _fact, serial_flag, barcode, _scans = item_row
+        expected_type = "serial" if serial_flag == "Да" else "barcode"
+        if expected_type == "barcode" and code == (barcode or ""):
+            return True
+        exists = self.db.query("SELECT id FROM product_markings WHERE product_id=? AND code=? AND code_type=?", (product_id, code, expected_type))
+        return bool(exists)
+
     def _open_shipment_order(self, event=None):
         oid = self._selected_shipment_order_id()
         if not oid:
             return
         order = self.db.query("""SELECT o.order_number, COALESCE(dc.name,''), o.created_at, COALESCE(o.delivery_date,''), COALESCE(o.delivery_city,''),
                                         COALESCE(o.delivery_address,''), COALESCE(o.recipient,''), COALESCE(o.recipient_phone,''), COALESCE(o.payer,''), COALESCE(sc.name,''), COALESCE(c.name,'')
-                                 FROM outbound_orders o
-                                 LEFT JOIN delivery_categories dc ON dc.id=o.delivery_category_id
-                                 LEFT JOIN shipment_clients sc ON sc.id=o.client_id
-                                 LEFT JOIN clients c ON c.id=o.client_3pl_id
-                                 WHERE o.id=?""", (oid,))[0]
-        d = self._create_dialog(f"Заказ {order[0]}", 980, 680)
+                                 FROM outbound_orders o LEFT JOIN delivery_categories dc ON dc.id=o.delivery_category_id
+                                 LEFT JOIN shipment_clients sc ON sc.id=o.client_id LEFT JOIN clients c ON c.id=o.client_3pl_id WHERE o.id=?""", (oid,))[0]
+        d = self._create_dialog(f"Заказ {order[0]}", 980, 700)
         top = tk.Frame(d, bg=self.C["card_bg"]); top.pack(fill="x", padx=10, pady=8)
         labels = ["№ заказа", "Категория", "Создан", "Доставка", "Город", "Адрес", "Получатель", "Телефон", "Плательщик", "Клиент", "3PL"]
         for i, val in enumerate(order):
             tk.Label(top, text=f"{labels[i]}: {val}", bg=self.C["card_bg"], font=self.F["small_bold" if i in (0, 9) else "small"]).grid(row=i//2, column=i%2, sticky="w", padx=8, pady=2)
 
         mid = tk.Frame(d, bg=self.C["card_bg"]); mid.pack(fill="both", expand=True, padx=10)
-        cols=("id","rn","status","plan","fact");
-        tree=ttk.Treeview(mid, columns=cols, show="headings", height=10)
+        tree=ttk.Treeview(mid, columns=("id","rn","status","plan","fact"), show="headings", height=10)
         for c,t,w in [("id","ID",50),("rn","№ РН",160),("status","Статус",100),("plan","План",90),("fact","Факт",90)]:
             tree.heading(c,text=t); tree.column(c,width=w)
         tree.pack(fill="both", expand=True)
+
+        package_frame = tk.Frame(d, bg=self.C["card_bg"]); package_frame.pack(fill="both", padx=10, pady=(0, 8))
+        tk.Label(package_frame, text="Тарные места по заказу", bg=self.C["card_bg"], font=self.F["small_bold"]).pack(anchor="w")
+        package_list = tk.Listbox(package_frame, height=5); package_list.pack(fill="x", pady=4)
+
+        def refresh_packages():
+            package_list.delete(0, tk.END)
+            for row in self.db.query("SELECT package_number FROM outbound_packages WHERE order_id=? ORDER BY id", (oid,)):
+                package_list.insert(tk.END, row[0])
+
         def load_rn():
             for x in tree.get_children(): tree.delete(x)
             rows=self.db.query("""SELECT w.id,w.waybill_number,w.status,COALESCE(SUM(i.planned_qty),0),COALESCE(SUM(i.actual_qty),0)
                                   FROM outbound_waybills w LEFT JOIN outbound_waybill_items i ON i.waybill_id=w.id
                                   WHERE w.order_id=? GROUP BY w.id ORDER BY w.id""",(oid,))
             for r in rows: tree.insert("", "end", values=r)
+            refresh_packages()
         load_rn()
 
         controls=tk.Frame(d,bg=self.C["card_bg"]); controls.pack(fill="x", padx=10, pady=8)
@@ -3381,34 +3526,31 @@ class WMSApp(tk.Tk):
         def get_wid():
             sel=tree.selection(); return int(tree.item(sel[0],"values")[0]) if sel else None
 
-        self._make_raised_btn(controls, "Открыть РН", command=lambda: self._open_waybill(get_wid(), load_rn), icon="📄").pack(side="left")
-        self._make_raised_btn(controls, "Отобразить все товары", command=lambda: self._open_all_items_for_order(oid), icon="📋").pack(side="left", padx=(8,0))
-
         def create_packages():
             try: n=int(package_cnt.get())
             except: return
             if n<=0: return
             existing={r[0] for r in self.db.query("SELECT package_number FROM outbound_packages WHERE order_id=?",(oid,))}
-            new=[]
-            while len(new)<n:
+            while n>0:
                 num=f"{random.randint(0,99999):05d}"
                 if num in existing: continue
-                existing.add(num); new.append(num)
+                existing.add(num); n -= 1
                 self.db.execute("INSERT INTO outbound_packages(order_id,package_number,created_by,created_at) VALUES(?,?,?,?)",(oid,num,self.current_user,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             self.db.execute("UPDATE outbound_orders SET package_count=(SELECT COUNT(*) FROM outbound_packages WHERE order_id=?) WHERE id=?",(oid,oid))
-            messagebox.showinfo("Тарные места", "Созданы: " + ", ".join(new[:10]) + (" ..." if len(new)>10 else ""), parent=d)
+            refresh_packages()
 
-        def print_packages():
-            packs=self.db.query("SELECT package_number FROM outbound_packages WHERE order_id=? ORDER BY id",(oid,))
+        def open_print(selected_only=False):
+            packs=[package_list.get(i) for i in package_list.curselection()] if selected_only else [package_list.get(i) for i in range(package_list.size())]
             if not packs:
-                messagebox.showwarning("Внимание","Сначала создайте тарные места", parent=d); return
-            order_num=order[0]
+                messagebox.showwarning("Внимание", "Нет выбранных тарных мест", parent=d); return
             rns=[x[0] for x in self.db.query("SELECT waybill_number FROM outbound_waybills WHERE order_id=?",(oid,))]
-            out=f"packages_order_{order_num}.pdf"
-            with open(out,"w",encoding="utf-8") as f:
-                for i,pn in enumerate(packs,1):
-                    f.write(f"=== ТАРНОЕ МЕСТО {pn[0]} (100x100 мм) ===\nКлиент: {order[9]}\nЗаказ: {order_num}\nРН: {', '.join(rns)}\nСоздал: {self.current_user}\nМесто {i} из {len(packs)}\nШтрихкод: |||{pn[0]}|||\n\n")
-            messagebox.showinfo("Готово", f"Файл сформирован: {os.path.abspath(out)}", parent=d)
+            html=['<html><head><meta charset="utf-8"><style>body{font-family:Arial} .label{width:100mm;height:100mm;border:1px solid #000;margin:6mm;padding:4mm;page-break-after:always}.barcode{font-family:monospace;font-size:24px;letter-spacing:2px}</style></head><body>']
+            total = package_list.size()
+            for idx,pn in enumerate(packs,1):
+                bars = ''.join('▌' if int(ch)%2 else '▐' for ch in pn)
+                html.append(f"<div class='label'><div class='barcode'>{bars} {pn} {bars}</div><h3>{order[9]}</h3><div>Тарное место: <b>{pn}</b></div><div>Заказ: {order[0]}</div><div>РН: {', '.join(rns)}</div><div>Создал: {self.current_user}</div><div>{idx}/{total}</div></div>")
+            html.append("<script>window.onload=function(){window.print();}</script></body></html>")
+            webbrowser.open("data:text/html;charset=utf-8," + urllib.parse.quote(''.join(html)))
 
         def finish_order():
             left=self.db.query("SELECT COUNT(*) FROM outbound_waybills WHERE order_id=? AND status<>'Отгружено'",(oid,))[0][0]
@@ -3420,47 +3562,70 @@ class WMSApp(tk.Tk):
             self.db.execute("UPDATE outbound_orders SET status='Отгружен', shipped_at=?, shipped_by=? WHERE id=?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.current_user, oid))
             d.destroy(); self.refresh_shipments()
 
+        self._make_raised_btn(controls, "Открыть РН", command=lambda: self._open_waybill(get_wid(), load_rn), icon="📄").pack(side="left")
+        self._make_raised_btn(controls, "Отобразить все товары", command=lambda: self._open_all_items_for_order(oid), icon="📋").pack(side="left", padx=(8,0))
         self._make_raised_btn(controls, "Создать тарные места", command=create_packages, icon="📦").pack(side="left", padx=(8,0))
-        self._make_raised_btn(controls, "Распечатать тарные места", command=print_packages, icon="🖨️").pack(side="left", padx=(8,0))
+        self._make_raised_btn(controls, "Печать выбранных", command=lambda: open_print(True), icon="🖨️").pack(side="left", padx=(8,0))
+        self._make_raised_btn(controls, "Печать всех", command=open_print, icon="🖨️").pack(side="left", padx=(8,0))
         self._make_raised_btn(controls, "Завершить отгрузку", bg_color=self.C["success"], command=finish_order, icon="✅").pack(side="right")
 
+    def _open_batch_input_dialog(self, title, on_code, parent):
+        d = self._create_dialog(title, 520, 420)
+        codes = tk.Listbox(d, height=14); codes.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+        value = tk.StringVar(); row = tk.Frame(d, bg=self.C["card_bg"]); row.pack(fill="x", padx=10, pady=(0, 10))
+        ent = tk.Entry(row, textvariable=value); ent.pack(side="left", fill="x", expand=True)
+
+        def submit(event=None):
+            code = value.get().strip()
+            if not code: return
+            ok, msg = on_code(code)
+            codes.insert(tk.END, f"{'✅' if ok else '❌'} {code} - {msg}")
+            value.set("")
+        ent.bind("<Return>", submit)
+        self._make_raised_btn(row, "Закрыть", command=d.destroy, bg_color=self.C["success"]).pack(side="right")
+        ent.focus_set()
+
     def _open_waybill(self, waybill_id, callback=None):
-        if not waybill_id:
-            return
-        d=self._create_dialog("РН", 760, 560)
-        items=self.db.query("""SELECT i.id,p.id,COALESCE(p.name,p.brand,p.article,''), i.planned_qty, i.actual_qty, COALESCE(p.serial_tracking,'Нет'), COALESCE(p.barcode,''), COALESCE(i.scans,'[]')
+        if not waybill_id: return
+        d=self._create_dialog("РН", 820, 620)
+
+        def load_items():
+            return self.db.query("""SELECT i.id,p.id,COALESCE(p.name,p.brand,p.article,''), i.planned_qty, i.actual_qty, COALESCE(p.serial_tracking,'Нет'), COALESCE(p.barcode,''), COALESCE(i.scans,'[]')
                                FROM outbound_waybill_items i JOIN products p ON p.id=i.product_id WHERE i.waybill_id=?""",(waybill_id,))
+
         tree=ttk.Treeview(d, columns=("iid","pid","name","plan","fact","serial"), show="headings", height=14)
         for c,t,w in [("iid","ID",45),("pid","PID",45),("name","Товар",300),("plan","План",80),("fact","Факт",80),("serial","Серийный",80)]:
             tree.heading(c,text=t); tree.column(c,width=w)
         tree.pack(fill="both", expand=True, padx=10, pady=10)
-        for r in items: tree.insert("", "end", values=(r[0],r[1],r[2],r[3],r[4],r[5]))
 
-        code_var=tk.StringVar()
-        row=tk.Frame(d,bg=self.C["card_bg"]); row.pack(fill="x", padx=10, pady=8)
+        def redraw():
+            for i in tree.get_children(): tree.delete(i)
+            for r in load_items(): tree.insert("", "end", iid=str(r[0]), values=(r[0],r[1],r[2],r[3],r[4],r[5]))
+        redraw()
+
+        code_var=tk.StringVar(); row=tk.Frame(d,bg=self.C["card_bg"]); row.pack(fill="x", padx=10, pady=8)
         tk.Entry(row,textvariable=code_var,width=35).pack(side="left")
 
-        def apply_code(code):
-            for item in items:
-                iid,pid,name,plan,fact,serial,barcode,scans=item
-                if code==barcode or (serial=="Да" and code):
-                    data=json.loads(scans or "[]"); data.append(code)
-                    self.db.execute("UPDATE outbound_waybill_items SET actual_qty=?, scans=? WHERE id=?", (len(data), json.dumps(data, ensure_ascii=False), iid))
-                    return True
-            return False
+        def add_code(code):
+            sel = tree.selection()
+            if not sel: return False, "Выберите строку товара"
+            item_row = next((x for x in load_items() if x[0] == int(sel[0])), None)
+            if not item_row: return False, "Строка не найдена"
+            if not self._validate_marking_for_item(item_row, code):
+                return False, "Штрихкод/серия введены неверно"
+            iid, _pid, _name, _plan, _fact, _serial, _barcode, scans = item_row
+            data=json.loads(scans or "[]")
+            if code in data: return False, "Код уже отсканирован"
+            data.append(code)
+            self.db.execute("UPDATE outbound_waybill_items SET actual_qty=?, scans=? WHERE id=?", (len(data), json.dumps(data, ensure_ascii=False), iid))
+            redraw(); return True, "Принято"
 
         def scan_one():
             c=code_var.get().strip();
             if not c: return
-            if not apply_code(c): messagebox.showwarning("Внимание","Код не найден", parent=d)
-            d.destroy(); self._open_waybill(waybill_id, callback)
-
-        def batch():
-            txt=simpledialog.askstring("Пакетный ввод","Вставьте коды через пробел/новую строку", parent=d)
-            if not txt: return
-            for c in re.split(r"[\s,;]+", txt.strip()):
-                if c: apply_code(c)
-            d.destroy(); self._open_waybill(waybill_id, callback)
+            ok,msg=add_code(c)
+            if not ok: messagebox.showwarning("Внимание", msg, parent=d)
+            code_var.set("")
 
         def conduct():
             self.db.execute("UPDATE outbound_waybills SET status='Отгружено' WHERE id=?", (waybill_id,))
@@ -3468,42 +3633,40 @@ class WMSApp(tk.Tk):
             d.destroy()
 
         self._make_raised_btn(row, "Сканировать", command=scan_one, icon="📷").pack(side="left", padx=(8,0))
-        self._make_raised_btn(row, "Пакетный ввод", command=batch, icon="📥").pack(side="left", padx=(8,0))
+        self._make_raised_btn(row, "Пакетный ввод", command=lambda: self._open_batch_input_dialog("Пакетный ввод РН", add_code, d), icon="📥").pack(side="left", padx=(8,0))
         self._make_raised_btn(row, "Отгрузить провести РН", bg_color=self.C["success"], command=conduct, icon="✅").pack(side="right")
 
     def _open_all_items_for_order(self, order_id):
-        d=self._create_dialog("Все товары заказа", 820, 600)
-        rows=self.db.query("""SELECT p.id,COALESCE(p.name,p.brand,p.article,''), SUM(i.planned_qty), SUM(i.actual_qty)
-                              FROM outbound_waybill_items i
-                              JOIN outbound_waybills w ON w.id=i.waybill_id
-                              JOIN products p ON p.id=i.product_id
-                              WHERE w.order_id=? GROUP BY p.id""",(order_id,))
+        d=self._create_dialog("Все товары заказа", 820, 620)
         tree=ttk.Treeview(d, columns=("pid","name","plan","fact"), show="headings", height=18)
         for c,t,w in [("pid","PID",60),("name","Товар",360),("plan","План",90),("fact","Факт",90)]:
             tree.heading(c,text=t); tree.column(c,width=w)
         tree.pack(fill="both", expand=True, padx=10, pady=10)
-        for r in rows: tree.insert("", "end", values=r)
 
-        def batch_all():
-            txt=simpledialog.askstring("Пакетный ввод","Сканируйте коды по всем РН", parent=d)
-            if not txt: return
-            codes=[x for x in re.split(r"[\s,;]+", txt.strip()) if x]
-            for code in codes:
-                rec=self.db.query("""SELECT i.id, COALESCE(i.scans,'[]')
-                                     FROM outbound_waybill_items i
-                                     JOIN outbound_waybills w ON w.id=i.waybill_id
-                                     JOIN products p ON p.id=i.product_id
-                                     WHERE w.order_id=? AND (p.barcode=? OR p.serial_tracking='Да')
-                                     ORDER BY i.id LIMIT 1""",(order_id, code))
-                if rec:
-                    iid, scans = rec[0]
-                    data=json.loads(scans or "[]"); data.append(code)
-                    self.db.execute("UPDATE outbound_waybill_items SET actual_qty=?, scans=? WHERE id=?", (len(data), json.dumps(data, ensure_ascii=False), iid))
-            d.destroy(); self._open_all_items_for_order(order_id)
+        def redraw():
+            for i in tree.get_children(): tree.delete(i)
+            rows=self.db.query("""SELECT p.id,COALESCE(p.name,p.brand,p.article,''), SUM(i.planned_qty), SUM(i.actual_qty)
+                              FROM outbound_waybill_items i JOIN outbound_waybills w ON w.id=i.waybill_id
+                              JOIN products p ON p.id=i.product_id WHERE w.order_id=? GROUP BY p.id""",(order_id,))
+            for r in rows: tree.insert("", "end", values=r)
+        redraw()
 
-        self._make_raised_btn(d, "Пакетный ввод", command=batch_all, icon="📥").pack(side="left", padx=10, pady=8)
+        def on_code(code):
+            rec=self.db.query("""SELECT i.id, i.product_id, COALESCE(p.name,p.brand,p.article,''), i.planned_qty, i.actual_qty,
+                                      COALESCE(p.serial_tracking,'Нет'), COALESCE(p.barcode,''), COALESCE(i.scans,'[]')
+                               FROM outbound_waybill_items i JOIN outbound_waybills w ON w.id=i.waybill_id
+                               JOIN products p ON p.id=i.product_id WHERE w.order_id=?""",(order_id,))
+            for row in rec:
+                if self._validate_marking_for_item(row, code):
+                    data=json.loads(row[7] or "[]")
+                    if code in data: return False, "Код уже отсканирован"
+                    data.append(code)
+                    self.db.execute("UPDATE outbound_waybill_items SET actual_qty=?, scans=? WHERE id=?", (len(data), json.dumps(data, ensure_ascii=False), row[0]))
+                    redraw(); return True, f"Товар: {row[2]}"
+            return False, "Штрихкод/серия введены неверно"
+
+        self._make_raised_btn(d, "Пакетный ввод", command=lambda: self._open_batch_input_dialog("Пакетный ввод (все РН)", on_code, d), icon="📥").pack(side="left", padx=10, pady=8)
         self._make_raised_btn(d, "Сохранить", command=d.destroy, bg_color=self.C["success"], icon="💾").pack(side="right", padx=10, pady=8)
-
     # ==================== СПРАВОЧНИКИ ОТГРУЗКИ ====================
 
     def _build_warehouses_ref_page(self):
