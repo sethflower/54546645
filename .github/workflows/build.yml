@@ -1,4 +1,4 @@
-name: Build (PyQt6)
+name: Build (PyQt6 Spec)
 
 on:
   push:
@@ -7,7 +7,6 @@ on:
 
 jobs:
   build-windows:
-    name: Build Windows EXE
     runs-on: windows-latest
 
     steps:
@@ -27,32 +26,24 @@ jobs:
           pip install --upgrade pyinstaller
           pip install -r requirements.txt
 
-      - name: Diagnostics (stdlib + PyQt6)
+      - name: Diagnostics
         shell: pwsh
         run: |
           python -c "import sys; print(sys.version)"
           python -c "import pkgutil; print('pkgutil OK:', pkgutil.__file__)"
           python -c "import PyQt6; print('PyQt6 OK:', PyQt6.__file__)"
 
-      - name: Build with PyInstaller (PyQt6)
+      - name: Build from spec
         shell: pwsh
         run: |
-          pyinstaller `
-            --noconfirm `
-            --clean `
-            --windowed `
-            --onefile `
-            --name "TSD_Registry" `
-            --collect-all PyQt6 `
-            --collect-submodules PyQt6 `
-            --hidden-import pkgutil `
-            main.py
+          pyinstaller --noconfirm --clean TSD_Registry.spec
 
-      - name: Add initial data file (optional)
+      # Если json нет в репозитории — создайте его рядом с exe:
+      - name: Ensure data file exists (optional)
         shell: pwsh
         run: |
-          if (!(Test-Path "dist/tsd_registry_data.json")) {
-            "{}" | Out-File -Encoding utf8 "dist/tsd_registry_data.json"
+          if (!(Test-Path "dist/TSD_Registry/tsd_registry_data.json")) {
+            "{}" | Out-File -Encoding utf8 "dist/TSD_Registry/tsd_registry_data.json"
           }
 
       - name: Upload artifact
@@ -60,5 +51,4 @@ jobs:
         with:
           name: TSD_Registry_Windows
           path: |
-            dist/TSD_Registry.exe
-            dist/tsd_registry_data.json
+            dist/TSD_Registry/**
