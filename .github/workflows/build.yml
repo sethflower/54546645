@@ -30,16 +30,20 @@ jobs:
       # ВАЖНО:
       # 1) замените main.py на ваш файл входа
       # 2) при желании задайте имя exe через --name
-      - name: Build with PyInstaller
-        shell: pwsh
-        run: |
-          pyinstaller `
-            --noconfirm `
-            --clean `
-            --windowed `
-            --onefile `
-            --name "TSD_Registry" `
-            main.py
+      - name: Build with PyInstaller (PyQt6)
+  shell: pwsh
+  run: |
+    python -c "import PyQt6; print('PyQt6 OK:', PyQt6.__file__)"
+    pyinstaller `
+      --noconfirm `
+      --clean `
+      --windowed `
+      --onefile `
+      --name "TSD_Registry" `
+      --collect-all PyQt6 `
+      --collect-submodules PyQt6 `
+      main.py
+
 
       # (Опционально) положить рядом пустой json, чтобы при первом запуске уже был файл
       # Если вам это не нужно — удалите шаг
