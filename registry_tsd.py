@@ -472,16 +472,16 @@ class TSDRegistryApp:
         page = self.pages["catalog"]
         P = self.PALETTE
 
-        # три колонки через grid (адаптивно)
-        page.columnconfigure(0, weight=3)
-        page.columnconfigure(1, weight=2)
-        page.columnconfigure(2, weight=2)
-        page.rowconfigure(0, weight=1)
+        # вертикальная компоновка карточек (сверху вниз)
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(0, weight=2)
+        page.rowconfigure(1, weight=1)
+        page.rowconfigure(2, weight=1)
 
         # -- ТСД --
         self.devices_card = self._make_card(page, "Терминалы (ТСД)")
         self.devices_card.grid(row=0, column=0, sticky="nsew",
-                               padx=(0, 12), pady=0)
+                               padx=0, pady=(0, 12))
         btn_bar = tk.Frame(self.devices_card.inner, bg=P["surface"])
         btn_bar.pack(fill="x", pady=(0, 8))
         ttk.Button(btn_bar, text="＋ Добавить", style="Accent.TButton",
@@ -503,8 +503,8 @@ class TSDRegistryApp:
 
         # -- Локации --
         self.locations_card = self._make_card(page, "Локации")
-        self.locations_card.grid(row=0, column=1, sticky="nsew",
-                                 padx=(0, 12), pady=0)
+        self.locations_card.grid(row=1, column=0, sticky="nsew",
+                                 padx=0, pady=(0, 12))
         btn_bar2 = tk.Frame(self.locations_card.inner, bg=P["surface"])
         btn_bar2.pack(fill="x", pady=(0, 8))
         ttk.Button(btn_bar2, text="＋", style="Accent.TButton",
@@ -524,7 +524,7 @@ class TSDRegistryApp:
 
         # -- Состояния --
         self.statuses_card = self._make_card(page, "Состояния")
-        self.statuses_card.grid(row=0, column=2, sticky="nsew", pady=0)
+        self.statuses_card.grid(row=2, column=0, sticky="nsew", pady=0)
         btn_bar3 = tk.Frame(self.statuses_card.inner, bg=P["surface"])
         btn_bar3.pack(fill="x", pady=(0, 8))
         ttk.Button(btn_bar3, text="＋", style="Accent.TButton",
@@ -731,7 +731,7 @@ class TSDRegistryApp:
                    COALESCE(s.name, '') AS status
             FROM devices d
             LEFT JOIN statuses s ON s.id = d.status_id
-            ORDER BY d.id DESC
+            ORDER BY d.id ASC
         """)
         for r in cur.fetchall():
             self._insert_striped(self.devices_tree,
@@ -741,7 +741,7 @@ class TSDRegistryApp:
     def _load_locations(self):
         self._clear_tree(self.locations_tree)
         cur = self.conn.cursor()
-        cur.execute("SELECT id, name FROM locations ORDER BY name")
+        cur.execute("SELECT id, name FROM locations ORDER BY id")
         for r in cur.fetchall():
             self._insert_striped(self.locations_tree,
                                  (r["id"], r["name"]))
@@ -749,7 +749,7 @@ class TSDRegistryApp:
     def _load_statuses(self):
         self._clear_tree(self.statuses_tree)
         cur = self.conn.cursor()
-        cur.execute("SELECT id, name FROM statuses ORDER BY name")
+        cur.execute("SELECT id, name FROM statuses ORDER BY id")
         for r in cur.fetchall():
             self._insert_striped(self.statuses_tree,
                                  (r["id"], r["name"]))
@@ -1202,12 +1202,12 @@ class TSDRegistryApp:
     # ═══════════════════════════════════════════════════════════
     def _get_status_names(self):
         cur = self.conn.cursor()
-        cur.execute("SELECT name FROM statuses ORDER BY name")
+        cur.execute("SELECT name FROM statuses ORDER BY id")
         return [r["name"] for r in cur.fetchall()]
 
     def _get_location_names(self):
         cur = self.conn.cursor()
-        cur.execute("SELECT name FROM locations ORDER BY name")
+        cur.execute("SELECT name FROM locations ORDER BY id")
         return [r["name"] for r in cur.fetchall()]
 
     def _get_status_id(self, name: str):
