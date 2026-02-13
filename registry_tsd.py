@@ -610,7 +610,7 @@ class TSDRegistryApp:
         tree = ttk.Treeview(frame, columns=columns, show="headings",
                              selectmode="browse")
         for c in columns:
-                        tree.heading(c, text=headers[c], anchor="w")
+            tree.heading(c, text=headers[c], anchor="w")
             tree.column(c, width=widths[c], minwidth=widths[c],
                         anchor="w", stretch=True)
 
