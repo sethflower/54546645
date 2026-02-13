@@ -6,7 +6,7 @@ from datetime import datetime
 # ─── КОНФИГУРАЦИЯ И КОНСТАНТЫ ──────────────────────────────────────
 DB_FILE = "tsd_registry.db"
 APP_TITLE = "TSD Enterprise | Учет оборудования"
-APP_SIZE = "1280x800"
+APP_SIZE = "1280x850"
 
 # Современная корпоративная палитра (Slate & Blue)
 COLORS = {
@@ -89,6 +89,12 @@ class TSDRegistryApp:
                 FOREIGN KEY(status_id) REFERENCES statuses(id),
                 FOREIGN KEY(location_id) REFERENCES locations(id)
             )""")
+            
+            # Предзаполнение статуса "Рабочий", если база пустая, чтобы логика работала сразу
+            try:
+                cur.execute("INSERT OR IGNORE INTO statuses (name) VALUES ('Рабочий')")
+            except:
+                pass
 
     # ─── ДИЗАЙН И СТИЛИ ────────────────────────────────────────────
     def _setup_styles(self):
@@ -105,7 +111,7 @@ class TSDRegistryApp:
         style.configure("Header.TLabel", background=COLORS["bg_app"], foreground=COLORS["text_main"], font=FONTS["h1"])
         style.configure("CardHeader.TLabel", background=COLORS["bg_card"], foreground=COLORS["text_main"], font=FONTS["h2"])
         style.configure("SubHeader.TLabel", background=COLORS["bg_app"], foreground=COLORS["secondary"], font=FONTS["body"])
-        style.configure("StatValue.TLabel", background=COLORS["bg_card"], foreground=COLORS["primary"], font=("Segoe UI", 32, "bold"))
+        style.configure("StatValue.TLabel", background=COLORS["bg_card"], foreground=COLORS["primary"], font=("Segoe UI", 28, "bold"))
         style.configure("StatLabel.TLabel", background=COLORS["bg_card"], foreground=COLORS["secondary"], font=FONTS["small"])
 
         # -- Кнопки (Buttons) --
@@ -140,13 +146,12 @@ class TSDRegistryApp:
         style.map("Ghost.TButton", background=[("active", "#E5E7EB")])
 
         # -- Таблицы (Treeview) --
-        # Современный вид таблицы: высокие строки, без границ ячеек
         style.configure("Treeview",
                         background=COLORS["bg_card"],
                         fieldbackground=COLORS["bg_card"],
                         foreground=COLORS["text_main"],
                         font=FONTS["body"],
-                        rowheight=45,  # Высокие строки для удобства
+                        rowheight=45,
                         borderwidth=0)
         
         style.configure("Treeview.Heading",
@@ -173,7 +178,7 @@ class TSDRegistryApp:
 
     # ─── UI LAYOUT ─────────────────────────────────────────────────
     def _build_layout(self):
-        # Основной контейнер: Сетка 2 колонки (Сайдбар фикс, Контент растягивается)
+        # Основной контейнер
         self.main_container = tk.Frame(self.root, bg=COLORS["bg_app"])
         self.main_container.pack(fill="both", expand=True)
         self.main_container.columnconfigure(1, weight=1)
@@ -183,7 +188,6 @@ class TSDRegistryApp:
         self._build_content_area()
 
     def _build_sidebar(self):
-        # Сайдбар (левая колонка)
         self.sidebar = tk.Frame(self.main_container, bg=COLORS["bg_sidebar"], width=260)
         self.sidebar.grid(row=0, column=0, sticky="ns")
         self.sidebar.grid_propagate(False)
@@ -192,7 +196,6 @@ class TSDRegistryApp:
         logo_frame = tk.Frame(self.sidebar, bg=COLORS["bg_sidebar"])
         logo_frame.pack(fill="x", pady=(30, 40), padx=25)
         
-        # Имитация логотипа
         tk.Label(logo_frame, text="TSD", fg="white", bg=COLORS["primary"], 
                  font=("Segoe UI", 14, "bold"), width=3).pack(side="left")
         tk.Label(logo_frame, text="Enterprise", fg="white", bg=COLORS["bg_sidebar"], 
@@ -204,7 +207,7 @@ class TSDRegistryApp:
         self._add_sidebar_btn("catalog", "📁  Справочники")
         self._add_sidebar_btn("stats", "📊  Аналитика")
 
-        # Нижняя кнопка (Полный экран)
+        # Нижняя кнопка
         tk.Frame(self.sidebar, bg="#1F2937", height=1).pack(side="bottom", fill="x", pady=0)
         btn = tk.Button(self.sidebar, text="⛶  На весь экран", 
                         bg=COLORS["bg_sidebar"], fg=COLORS["text_light"],
@@ -213,7 +216,6 @@ class TSDRegistryApp:
         btn.pack(side="bottom", fill="x")
 
     def _add_sidebar_btn(self, key, text):
-        # Используем tk.Button, так как их проще красить чем ttk
         btn = tk.Button(self.sidebar, text=text, 
                         bg=COLORS["bg_sidebar"], fg=COLORS["text_light"],
                         font=FONTS["body"], bd=0, 
@@ -224,11 +226,9 @@ class TSDRegistryApp:
         self.nav_btns[key] = btn
 
     def _build_content_area(self):
-        # Правая часть
         self.content_frame = tk.Frame(self.main_container, bg=COLORS["bg_app"])
         self.content_frame.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
         
-        # Заголовок страницы + Кнопка обновить
         self.top_bar = tk.Frame(self.content_frame, bg=COLORS["bg_app"])
         self.top_bar.pack(fill="x", pady=(0, 20))
         
@@ -241,7 +241,6 @@ class TSDRegistryApp:
         ttk.Button(self.top_bar, text="🔄 Обновить данные", style="Ghost.TButton", 
                    command=self.refresh_all_data).pack(side="right")
 
-        # Контейнер для сменяемых страниц
         self.pages_container = tk.Frame(self.content_frame, bg=COLORS["bg_app"])
         self.pages_container.pack(fill="both", expand=True)
 
@@ -249,7 +248,6 @@ class TSDRegistryApp:
         for p in ["registry", "catalog", "stats"]:
             frame = tk.Frame(self.pages_container, bg=COLORS["bg_app"])
             self.pages[p] = frame
-            # Grid configure для страниц, чтобы контент растягивался
             frame.columnconfigure(0, weight=1)
             frame.rowconfigure(0, weight=1)
 
@@ -257,18 +255,14 @@ class TSDRegistryApp:
         self._init_page_catalog()
         self._init_page_stats()
 
-    # ─── ЛОГИКА НАВИГАЦИИ ──────────────────────────────────────────
     def show_page(self, key):
         self.current_page = key
-        
-        # Обновление меню
         for k, btn in self.nav_btns.items():
             if k == key:
                 btn.configure(bg="#1F2937", fg="white", font=FONTS["body_bold"], borderwidth=0)
             else:
                 btn.configure(bg=COLORS["bg_sidebar"], fg=COLORS["text_light"], font=FONTS["body"])
 
-        # Обновление заголовков
         titles = {
             "registry": ("Реестр ТСД", "Управление парком терминалов"),
             "catalog": ("Справочники", "Настройка локаций и статусов"),
@@ -278,22 +272,19 @@ class TSDRegistryApp:
         self.page_title.configure(text=t)
         self.page_subtitle.configure(text=s)
 
-        # Смена кадра
         for frame in self.pages.values():
             frame.pack_forget()
         self.pages[key].pack(fill="both", expand=True)
 
     # ═══════════════════════════════════════════════════════════════
-    #  СТРАНИЦА: РЕЕСТР
+    #  СТРАНИЦА: РЕЕСТР (Кнопка добавления убрана)
     # ═══════════════════════════════════════════════════════════════
     def _init_page_registry(self):
         p = self.pages["registry"]
         
-        # Панель инструментов (Поиск + Действия)
         toolbar = tk.Frame(p, bg=COLORS["bg_app"])
         toolbar.pack(fill="x", pady=(0, 15))
 
-        # Поиск
         search_cont = tk.Frame(toolbar, bg="white", highlightbackground=COLORS["border"], highlightthickness=1)
         search_cont.pack(side="left")
         tk.Label(search_cont, text="🔍", bg="white", fg=COLORS["secondary"]).pack(side="left", padx=(10, 5))
@@ -304,14 +295,11 @@ class TSDRegistryApp:
                          bd=0, bg="white", width=30)
         entry.pack(side="left", ipady=8, padx=5)
 
-        ttk.Button(toolbar, text="＋ Добавить ТСД", style="Primary.TButton", 
-                   command=self._open_device_dialog).pack(side="right")
+        # !!! Кнопка добавления ТСД удалена отсюда по запросу !!!
 
-        # Карточка с таблицей
-        card = tk.Frame(p, bg=COLORS["bg_card"], padx=1, pady=1) # Тонкая рамка за счет паддинга
+        card = tk.Frame(p, bg=COLORS["bg_card"], padx=1, pady=1)
         card.pack(fill="both", expand=True)
         
-        # Сама таблица
         cols = ("id", "brand", "model", "imei", "status", "employee", "location", "updated")
         headers = {"id": "#", "brand": "Бренд", "model": "Модель", "imei": "IMEI", 
                    "status": "Статус", "employee": "Сотрудник", "location": "Локация", "updated": "Обновлено"}
@@ -322,7 +310,6 @@ class TSDRegistryApp:
             self.tree_reg.heading(col, text=headers[col], anchor="w")
             self.tree_reg.column(col, anchor="w", width=100)
         
-        # Настройка ширины
         self.tree_reg.column("id", width=50, stretch=False)
         self.tree_reg.column("imei", width=150)
         self.tree_reg.column("updated", width=140)
@@ -340,31 +327,23 @@ class TSDRegistryApp:
     # ═══════════════════════════════════════════════════════════════
     def _init_page_catalog(self):
         p = self.pages["catalog"]
-        
-        # Сетка 2x2 для карточек справочников
         p.columnconfigure(0, weight=1)
         p.columnconfigure(1, weight=1)
         p.rowconfigure(0, weight=1)
         p.rowconfigure(1, weight=1)
 
-        # 1. Локации
         self._create_catalog_card(p, "Локации", "location", 0, 0)
-        # 2. Статусы
         self._create_catalog_card(p, "Статусы устройств", "status", 0, 1)
-        # 3. Список всех устройств (Упрощенный)
         self._create_catalog_card(p, "Список устройств (Управление)", "device_simple", 1, 0, colspan=2)
 
     def _create_catalog_card(self, parent, title, kind, row, col, colspan=1):
-        # Обертка карточки
         frame = tk.Frame(parent, bg=COLORS["bg_card"], padx=20, pady=20)
         frame.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=(0, 20), pady=(0, 20))
         
-        # Хедер карточки
         h_frame = tk.Frame(frame, bg=COLORS["bg_card"])
-        h_frame.pack(fill="x", pady=(0, 15)) # ИСПРАВЛЕНО mb -> pady
+        h_frame.pack(fill="x", pady=(0, 15))
         ttk.Label(h_frame, text=title, style="CardHeader.TLabel").pack(side="left")
         
-        # Кнопки действий
         btn_frame = tk.Frame(h_frame, bg=COLORS["bg_card"])
         btn_frame.pack(side="right")
         
@@ -381,7 +360,6 @@ class TSDRegistryApp:
         ttk.Button(btn_frame, text="✎", style="Ghost.TButton", width=3, command=edit_cmd).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="✕", style="Danger.TButton", width=3, command=del_cmd).pack(side="left", padx=2)
 
-        # Таблица
         if kind == "device_simple":
             cols = ("id", "brand", "model", "imei")
             headers = {"id": "#", "brand": "Бренд", "model": "Модель", "imei": "IMEI"}
@@ -394,47 +372,74 @@ class TSDRegistryApp:
             tree.heading(c, text=headers[c], anchor="w")
             tree.column(c, anchor="w", width=100)
         tree.column("id", width=40, stretch=False)
-        
         tree.pack(fill="both", expand=True)
         
-        # Сохраняем ссылку на дерево
         if kind == "location": self.tree_loc = tree
         elif kind == "status": self.tree_stat = tree
         elif kind == "device_simple": self.tree_dev_s = tree
 
     # ═══════════════════════════════════════════════════════════════
-    #  СТРАНИЦА: АНАЛИТИКА
+    #  СТРАНИЦА: АНАЛИТИКА (ИЗМЕНЕНА)
     # ═══════════════════════════════════════════════════════════════
     def _init_page_stats(self):
         p = self.pages["stats"]
         
-        # Верхние виджеты (KPI)
+        # 1. Верхние виджеты (5 штук)
         kpi_frame = tk.Frame(p, bg=COLORS["bg_app"])
         kpi_frame.pack(fill="x", pady=(0, 20))
         
         self.kpi_labels = {}
-        for idx, (key, title) in enumerate([("total", "Всего устройств"), ("assigned", "В работе"), ("free", "На складе")]):
-            card = tk.Frame(kpi_frame, bg=COLORS["bg_card"], padx=25, pady=20)
-            card.pack(side="left", fill="both", expand=True, padx=(0, 20) if idx < 2 else 0)
+        
+        # Определяем метрики для отображения
+        metrics = [
+            ("total", "Всего"), 
+            ("working", "Рабочие"), 
+            ("broken", "Не рабочие"),
+            ("free", "Свободно"), # Рабочий + Свободный
+            ("busy", "Занято")    # Рабочий + Занят
+        ]
+        
+        for idx, (key, title) in enumerate(metrics):
+            # Равномерное распределение
+            card = tk.Frame(kpi_frame, bg=COLORS["bg_card"], padx=20, pady=20)
+            card.pack(side="left", fill="both", expand=True, padx=(0, 15) if idx < len(metrics)-1 else 0)
             
             ttk.Label(card, text=title, style="StatLabel.TLabel").pack(anchor="w")
             lbl = ttk.Label(card, text="0", style="StatValue.TLabel")
             lbl.pack(anchor="w", pady=(5, 0))
             self.kpi_labels[key] = lbl
 
-        # Детальная статистика (Таблица)
-        detail_frame = tk.Frame(p, bg=COLORS["bg_card"], padx=25, pady=25)
-        detail_frame.pack(fill="both", expand=True)
+        # 2. Нижняя часть с таблицами (2 колонки)
+        bottom_frame = tk.Frame(p, bg=COLORS["bg_app"])
+        bottom_frame.pack(fill="both", expand=True)
+
+        # -- Левая таблица: По статусам --
+        left_frame = tk.Frame(bottom_frame, bg=COLORS["bg_card"], padx=20, pady=20)
+        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
         
-        # ИСПРАВЛЕНО mb -> pady
-        ttk.Label(detail_frame, text="Детализация по статусам", style="CardHeader.TLabel").pack(anchor="w", pady=(0, 15))
+        ttk.Label(left_frame, text="Детализация по статусам", style="CardHeader.TLabel").pack(anchor="w", pady=(0, 15))
         
-        cols = ("status", "count", "percent")
-        self.tree_stats = ttk.Treeview(detail_frame, columns=cols, show="headings", style="Treeview")
-        self.tree_stats.heading("status", text="Статус", anchor="w")
-        self.tree_stats.heading("count", text="Количество", anchor="w")
-        self.tree_stats.heading("percent", text="Доля %", anchor="w")
-        self.tree_stats.pack(fill="both", expand=True)
+        cols_stat = ("status", "count", "percent")
+        self.tree_stats_detail = ttk.Treeview(left_frame, columns=cols_stat, show="headings", style="Treeview")
+        self.tree_stats_detail.heading("status", text="Статус", anchor="w")
+        self.tree_stats_detail.heading("count", text="Кол-во", anchor="w")
+        self.tree_stats_detail.heading("percent", text="%", anchor="w")
+        self.tree_stats_detail.column("count", width=80)
+        self.tree_stats_detail.column("percent", width=80)
+        self.tree_stats_detail.pack(fill="both", expand=True)
+
+        # -- Правая таблица: По локациям --
+        right_frame = tk.Frame(bottom_frame, bg=COLORS["bg_card"], padx=20, pady=20)
+        right_frame.pack(side="right", fill="both", expand=True, padx=(10, 0))
+        
+        ttk.Label(right_frame, text="Детализация по локациям", style="CardHeader.TLabel").pack(anchor="w", pady=(0, 15))
+        
+        cols_loc = ("location", "count")
+        self.tree_loc_detail = ttk.Treeview(right_frame, columns=cols_loc, show="headings", style="Treeview")
+        self.tree_loc_detail.heading("location", text="Локация", anchor="w")
+        self.tree_loc_detail.heading("count", text="Кол-во", anchor="w")
+        self.tree_loc_detail.column("count", width=100)
+        self.tree_loc_detail.pack(fill="both", expand=True)
 
     # ═══════════════════════════════════════════════════════════════
     #  РАБОТА С ДАННЫМИ
@@ -449,7 +454,10 @@ class TSDRegistryApp:
         cur = self.conn.cursor()
         sql = """
             SELECT d.id, d.brand, d.model, d.imei, 
-                   s.name as status, d.employee, l.name as location, d.updated_at
+                   COALESCE(s.name, '—') as status, 
+                   d.employee, 
+                   COALESCE(l.name, '—') as location, 
+                   d.updated_at
             FROM devices d
             LEFT JOIN statuses s ON d.status_id = s.id
             LEFT JOIN locations l ON d.location_id = l.id
@@ -466,14 +474,10 @@ class TSDRegistryApp:
         
         for i, row in enumerate(cur.fetchall()):
             vals = list(row)
-            # Простая замена None на строки
             vals = [v if v is not None else "—" for v in vals]
-            
-            # Чередование цветов
             tag = "even" if i % 2 == 0 else "odd"
             self.tree_reg.insert("", "end", values=vals, tags=(tag,))
         
-        # Настройка цветов строк
         self.tree_reg.tag_configure("odd", background=COLORS["row_stripe"])
         self.tree_reg.tag_configure("even", background=COLORS["bg_card"])
 
@@ -484,47 +488,66 @@ class TSDRegistryApp:
         
         cur = self.conn.cursor()
         
-        # Локации
         cur.execute("SELECT id, name FROM locations ORDER BY name")
         for r in cur.fetchall(): self.tree_loc.insert("", "end", values=list(r))
         
-        # Статусы
         cur.execute("SELECT id, name FROM statuses ORDER BY name")
         for r in cur.fetchall(): self.tree_stat.insert("", "end", values=list(r))
         
-        # Устройства (простой вид)
         cur.execute("SELECT id, brand, model, imei FROM devices ORDER BY brand, model")
         for r in cur.fetchall(): self.tree_dev_s.insert("", "end", values=list(r))
 
     def _load_stats(self):
         cur = self.conn.cursor()
         
-        # KPI
-        cur.execute("SELECT COUNT(*) as cnt FROM devices")
-        total = cur.fetchone()['cnt']
+        # 1. Расчет KPI
+        # Для сложной логики используем один запрос с агрегацией
+        sql_kpi = """
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN s.name = 'Рабочий' THEN 1 ELSE 0 END) as working,
+                SUM(CASE WHEN s.name != 'Рабочий' OR s.name IS NULL THEN 1 ELSE 0 END) as broken,
+                SUM(CASE WHEN s.name = 'Рабочий' AND (d.employee = 'Свободный' OR d.employee IS NULL OR d.employee = '') THEN 1 ELSE 0 END) as free,
+                SUM(CASE WHEN s.name = 'Рабочий' AND d.employee != 'Свободный' AND d.employee IS NOT NULL AND d.employee != '' THEN 1 ELSE 0 END) as busy
+            FROM devices d
+            LEFT JOIN statuses s ON d.status_id = s.id
+        """
+        cur.execute(sql_kpi)
+        kpi_data = cur.fetchone()
         
-        cur.execute("SELECT COUNT(*) as cnt FROM devices WHERE employee IS NOT NULL AND employee != 'Свободный'")
-        assigned = cur.fetchone()['cnt']
-        
-        free = total - assigned
+        total = kpi_data['total']
         
         self.kpi_labels["total"].config(text=str(total))
-        self.kpi_labels["assigned"].config(text=str(assigned))
-        self.kpi_labels["free"].config(text=str(free))
+        self.kpi_labels["working"].config(text=str(kpi_data['working']))
+        self.kpi_labels["broken"].config(text=str(kpi_data['broken']))
+        self.kpi_labels["free"].config(text=str(kpi_data['free']))
+        self.kpi_labels["busy"].config(text=str(kpi_data['busy']))
 
-        # Детализация
-        self._clear_tree(self.tree_stats)
+        # 2. Детализация по Статусам
+        self._clear_tree(self.tree_stats_detail)
         cur.execute("""
-            SELECT s.name, COUNT(d.id) as cnt 
+            SELECT COALESCE(s.name, 'Без статуса') as name, COUNT(d.id) as cnt 
             FROM devices d 
-            JOIN statuses s ON d.status_id = s.id 
+            LEFT JOIN statuses s ON d.status_id = s.id 
             GROUP BY s.id
+            ORDER BY cnt DESC
         """)
-        rows = cur.fetchall()
-        for r in rows:
+        for r in cur.fetchall():
             name, cnt = r['name'], r['cnt']
             pct = f"{(cnt/total*100):.1f}%" if total > 0 else "0%"
-            self.tree_stats.insert("", "end", values=(name, cnt, pct))
+            self.tree_stats_detail.insert("", "end", values=(name, cnt, pct))
+            
+        # 3. Детализация по Локациям
+        self._clear_tree(self.tree_loc_detail)
+        cur.execute("""
+            SELECT COALESCE(l.name, 'Не указана') as name, COUNT(d.id) as cnt 
+            FROM devices d 
+            LEFT JOIN locations l ON d.location_id = l.id 
+            GROUP BY l.id
+            ORDER BY cnt DESC
+        """)
+        for r in cur.fetchall():
+            self.tree_loc_detail.insert("", "end", values=(r['name'], r['cnt']))
 
     def _clear_tree(self, tree):
         for item in tree.get_children():
@@ -540,8 +563,6 @@ class TSDRegistryApp:
         top.configure(bg=COLORS["bg_card"])
         top.transient(self.root)
         top.grab_set()
-        
-        # Центрирование
         x = self.root.winfo_x() + (self.root.winfo_width()//2) - (width//2)
         y = self.root.winfo_y() + (self.root.winfo_height()//2) - (height//2)
         top.geometry(f"+{x}+{y}")
@@ -553,31 +574,25 @@ class TSDRegistryApp:
         title = "Редактирование ТСД" if is_edit else "Новое устройство"
         dlg = self._create_modal(title, 500, 450)
         
-        # Поля
         fields = {}
         content = tk.Frame(dlg, bg=COLORS["bg_card"], padx=30, pady=20)
         content.pack(fill="both", expand=True)
         
-        # Заголовок (ИСПРАВЛЕНО mb -> pady)
         tk.Label(content, text=title, font=FONTS["h2"], bg=COLORS["bg_card"], fg=COLORS["primary"]).pack(anchor="w", pady=(0, 20))
 
-        # Helper для создания полей
         def add_field(label, var_key, options=None):
             f_cont = tk.Frame(content, bg=COLORS["bg_card"])
             f_cont.pack(fill="x", pady=5)
             tk.Label(f_cont, text=label, font=FONTS["body_bold"], bg=COLORS["bg_card"], fg=COLORS["secondary"]).pack(anchor="w")
-            
             var = tk.StringVar()
             if options:
                 w = ttk.Combobox(f_cont, textvariable=var, values=options, state="readonly", font=FONTS["body"])
             else:
                 w = tk.Entry(f_cont, textvariable=var, font=FONTS["body"], bg="#F9FAFB", bd=1, relief="solid")
-            
             w.pack(fill="x", ipady=6, pady=(5, 0))
             fields[var_key] = var
             return w
 
-        # Списки для комбобоксов
         cur = self.conn.cursor()
         statuses = [r[0] for r in cur.execute("SELECT name FROM statuses").fetchall()]
         
@@ -586,17 +601,14 @@ class TSDRegistryApp:
         add_field("IMEI", "imei")
         add_field("Статус *", "status", statuses)
         
-        # Если редактирование - заполняем
         if is_edit:
             row = cur.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
             fields["brand"].set(row["brand"])
             fields["model"].set(row["model"])
             fields["imei"].set(row["imei"])
-            # Получаем имя статуса по ID
             st_name = cur.execute("SELECT name FROM statuses WHERE id=?", (row["status_id"],)).fetchone()
             if st_name: fields["status"].set(st_name[0])
 
-        # Кнопки
         btn_area = tk.Frame(dlg, bg="#F9FAFB", height=60)
         btn_area.pack(side="bottom", fill="x")
         
@@ -607,13 +619,11 @@ class TSDRegistryApp:
                 return
             
             try:
-                # Получаем ID статуса
                 s_id_row = cur.execute("SELECT id FROM statuses WHERE name=?", (data["status"],)).fetchone()
                 if not s_id_row:
                      messagebox.showerror("Ошибка", "Некорректный статус", parent=dlg)
                      return
                 s_id = s_id_row[0]
-
                 now = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
                 if is_edit:
@@ -634,7 +644,6 @@ class TSDRegistryApp:
     def _on_registry_double_click(self, event):
         sel = self.tree_reg.selection()
         if not sel: return
-        
         item = self.tree_reg.item(sel[0])
         dev_id = item['values'][0]
         self._open_assignment_dialog(dev_id)
@@ -649,10 +658,8 @@ class TSDRegistryApp:
         dev = cur.execute("SELECT * FROM devices WHERE id=?", (dev_id,)).fetchone()
         
         tk.Label(content, text=f"{dev['brand']} {dev['model']}", font=FONTS["h2"], bg=COLORS["bg_card"]).pack(anchor="w")
-        # ИСПРАВЛЕНО mb -> pady
         tk.Label(content, text=f"IMEI: {dev['imei']}", font=FONTS["body"], fg=COLORS["secondary"], bg=COLORS["bg_card"]).pack(anchor="w", pady=(0, 20))
 
-        # Поля формы (ИСПРАВЛЕНО mt -> pady)
         tk.Label(content, text="Сотрудник (ФИО)", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", pady=(10, 0))
         emp_var = tk.StringVar(value=dev['employee'])
         tk.Entry(content, textvariable=emp_var, font=FONTS["body"], bg="#F9FAFB").pack(fill="x", ipady=6, pady=5)
@@ -671,7 +678,6 @@ class TSDRegistryApp:
         if cur_stat: stat_var.set(cur_stat[0])
         ttk.Combobox(content, textvariable=stat_var, values=stats, state="readonly").pack(fill="x", ipady=6, pady=5)
 
-        # Сохранение
         def save_assignment():
             emp = emp_var.get().strip() or "Свободный"
             l_name = loc_var.get()
@@ -695,7 +701,6 @@ class TSDRegistryApp:
                 messagebox.showerror("Ошибка", str(e))
 
         ttk.Button(content, text="Применить изменения", style="Primary.TButton", command=save_assignment).pack(fill="x", pady=30)
-
 
     # --- ДИАЛОГ: СПРАВОЧНИКИ ---
     def _open_dict_dialog(self, kind, rec_id=None):
@@ -781,7 +786,6 @@ class TSDRegistryApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    # Убираем размытость на Windows HighDPI мониторах
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
