@@ -2,7 +2,6 @@ import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
-import math
 
 DB_FILE = "tsd_registry.db"
 
@@ -136,9 +135,6 @@ class TSDRegistryApp:
                 FOREIGN KEY(location_id) REFERENCES locations(id)
             )""")
         cur.execute("SELECT COUNT(*) AS cnt FROM statuses")
-        if cur.fetchone()["cnt"] == 0:
-            cur.executemany("INSERT INTO statuses(name) VALUES(?)",
-                            [("Рабочий",), ("В ремонте",), ("Списан",)])
         self.conn.commit()
 
     # ─── стили ─────────────────────────────────────────────────
@@ -493,6 +489,9 @@ class TSDRegistryApp:
         ttk.Button(btn_bar, text="✎ Редактировать", style="Ghost.TButton",
                    command=self._edit_selected_device)\
             .pack(side="left", padx=(8, 0))
+        ttk.Button(btn_bar, text="🗑 Удалить", style="Danger.TButton",
+                   command=self._delete_selected_device)\
+            .pack(side="left", padx=(8, 0))
 
         cols_d = ("id", "brand", "model", "imei", "status")
         self.devices_tree = self._make_tree(
@@ -514,6 +513,9 @@ class TSDRegistryApp:
         ttk.Button(btn_bar2, text="✎", style="Ghost.TButton",
                    command=lambda: self._edit_dict("location"))\
             .pack(side="left", padx=(8, 0))
+        ttk.Button(btn_bar2, text="🗑", style="Danger.TButton",
+                   command=lambda: self._delete_dict("location"))\
+            .pack(side="left", padx=(8, 0))
 
         self.locations_tree = self._make_tree(
             self.locations_card.inner, ("id", "name"),
@@ -530,6 +532,9 @@ class TSDRegistryApp:
             .pack(side="left")
         ttk.Button(btn_bar3, text="✎", style="Ghost.TButton",
                    command=lambda: self._edit_dict("status"))\
+            .pack(side="left", padx=(8, 0))
+        ttk.Button(btn_bar3, text="🗑", style="Danger.TButton",
+                   command=lambda: self._delete_dict("status"))\
             .pack(side="left", padx=(8, 0))
 
         self.statuses_tree = self._make_tree(
@@ -551,14 +556,13 @@ class TSDRegistryApp:
         self.stat_cards = {}
         for key, label in [("total", "Всего ТСД"),
                            ("assigned", "Закреплено"),
-                           ("free", "Свободных"),
-                           ("repair", "В ремонте")]:
+                           ("free", "Свободных")]:
             c = self._stat_number_card(self.stats_top, "0", label)
             c.pack(side="left", fill="x", expand=True,
-                   padx=(0, 12) if key != "repair" else 0)
+                   padx=(0, 12))
             self.stat_cards[key] = c
 
-        # детальный текст
+        # детальная сводка в виде таблиц
         detail_card = tk.Frame(page, bg=P["surface"], bd=0,
                                highlightbackground=P["border"],
                                highlightthickness=1)
@@ -571,13 +575,46 @@ class TSDRegistryApp:
         tk.Frame(detail_card, bg=P["border"], height=1)\
             .pack(fill="x", padx=20, pady=(12, 0))
 
-        self.stats_text = tk.Text(
-            detail_card, wrap="word",
-            font=(self.FONT_FAMILY, 11), bg=P["surface"],
-            fg=P["text"], relief="flat", bd=0, padx=22, pady=14,
-            insertbackground=P["accent"], selectbackground=P["accent_light"])
-        self.stats_text.pack(fill="both", expand=True)
-        self.stats_text.configure(state="disabled")
+        self.stats_tables_wrap = tk.Frame(detail_card, bg=P["surface"])
+        self.stats_tables_wrap.pack(fill="both", expand=True, padx=16, pady=14)
+
+        self.stats_summary_tree = self._build_stats_tree(
+            self.stats_tables_wrap,
+            "Итоги",
+            ("metric", "value"),
+            {"metric": "Показатель", "value": "Значение"},
+            {"metric": 220, "value": 120},
+        )
+
+        self.stats_by_location_tree = self._build_stats_tree(
+            self.stats_tables_wrap,
+            "По локациям",
+            ("name", "count"),
+            {"name": "Локация", "count": "Кол-во ТСД"},
+            {"name": 260, "count": 120},
+        )
+
+        self.stats_by_status_tree = self._build_stats_tree(
+            self.stats_tables_wrap,
+            "По состояниям",
+            ("name", "count"),
+            {"name": "Состояние", "count": "Кол-во ТСД"},
+            {"name": 220, "count": 120},
+        )
+
+        self.stats_loc_status_tree = self._build_stats_tree(
+            self.stats_tables_wrap,
+            "Детализация по локациям",
+            ("location", "status", "count"),
+            {"location": "Локация", "status": "Состояние", "count": "Кол-во"},
+            {"location": 220, "status": 220, "count": 90},
+        )
+
+    def _build_stats_tree(self, parent, title, columns, headers, widths):
+        block = tk.Frame(parent, bg=self.PALETTE["surface"])
+        block.pack(fill="x", pady=(0, 12))
+        ttk.Label(block, text=title, style="CardSub.TLabel").pack(anchor="w", pady=(0, 6))
+        return self._make_tree(block, columns, headers, widths)
 
     # ── вспомогательные виджеты ────────────────────────────────
     class _CardProxy:
@@ -730,16 +767,10 @@ class TSDRegistryApp:
 
         free = total - assigned
 
-        cur.execute("""SELECT COUNT(*) AS cnt FROM devices d
-                       LEFT JOIN statuses s ON s.id = d.status_id
-                       WHERE s.name = 'В ремонте'""")
-        repair = cur.fetchone()["cnt"]
-
         # обновляем карточки
         self.stat_cards["total"].num_label.config(text=str(total))
         self.stat_cards["assigned"].num_label.config(text=str(assigned))
         self.stat_cards["free"].num_label.config(text=str(free))
-        self.stat_cards["repair"].num_label.config(text=str(repair))
 
         # подробная сводка
         cur.execute("""
@@ -773,55 +804,37 @@ class TSDRegistryApp:
         """)
         loc_status = cur.fetchall()
 
-        lines = []
-        lines.append("━━━  ОБЩИЕ ПОКАЗАТЕЛИ  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"   Всего ТСД в системе:         {total}")
-        lines.append(f"   Закреплено за сотрудниками:   {assigned}")
-        lines.append(f"   Свободных:                    {free}")
-        lines.append(f"   В ремонте:                    {repair}")
-        lines.append("")
+        self._clear_tree(self.stats_summary_tree)
+        self._insert_striped(self.stats_summary_tree, ("Всего ТСД", total))
+        self._insert_striped(self.stats_summary_tree, ("Закреплено", assigned))
+        self._insert_striped(self.stats_summary_tree, ("Свободных", free))
 
-        lines.append("━━━  ПО ЛОКАЦИЯМ  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        self._clear_tree(self.stats_by_location_tree)
         if by_location:
-            max_name = max(len(r["name"]) for r in by_location)
             for r in by_location:
-                bar_len = min(r["cnt"] * 3, 40)
-                bar = "█" * bar_len
-                lines.append(
-                    f"   {r['name']:<{max_name}}  {r['cnt']:>4}  {bar}")
+                self._insert_striped(self.stats_by_location_tree,
+                                     (r["name"], r["cnt"]))
         else:
-            lines.append("   — нет данных —")
-        lines.append("")
+            self._insert_striped(self.stats_by_location_tree,
+                                 ("— нет данных —", 0))
 
-        lines.append("━━━  ПО СОСТОЯНИЯМ  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        self._clear_tree(self.stats_by_status_tree)
         if by_status:
-            max_name = max(len(r["status_name"]) for r in by_status)
             for r in by_status:
-                bar_len = min(r["cnt"] * 3, 40)
-                bar = "▓" * bar_len
-                lines.append(
-                    f"   {r['status_name']:<{max_name}}  {r['cnt']:>4}  {bar}")
+                self._insert_striped(self.stats_by_status_tree,
+                                     (r["status_name"], r["cnt"]))
         else:
-            lines.append("   — нет данных —")
-        lines.append("")
+            self._insert_striped(self.stats_by_status_tree,
+                                 ("— нет данных —", 0))
 
-        lines.append("━━━  ДЕТАЛИЗАЦИЯ ПО ЛОКАЦИЯМ  ━━━━━━━━━━━━━━━━━━━━━━━━")
+        self._clear_tree(self.stats_loc_status_tree)
         if loc_status:
-            current_loc = None
             for r in loc_status:
-                if r["location_name"] != current_loc:
-                    current_loc = r["location_name"]
-                    lines.append(f"\n   📍 {current_loc}")
-                    lines.append(f"   {'─' * 40}")
-                lines.append(
-                    f"      • {r['status_name']}: {r['cnt']}")
+                self._insert_striped(self.stats_loc_status_tree,
+                                     (r["location_name"], r["status_name"], r["cnt"]))
         else:
-            lines.append("   — нет данных —")
-
-        self.stats_text.configure(state="normal")
-        self.stats_text.delete("1.0", "end")
-        self.stats_text.insert("1.0", "\n".join(lines))
-        self.stats_text.configure(state="disabled")
+            self._insert_striped(self.stats_loc_status_tree,
+                                 ("— нет данных —", "—", 0))
 
     # ═══════════════════════════════════════════════════════════
     #  ДИАЛОГИ
@@ -969,6 +982,26 @@ class TSDRegistryApp:
         device_id = int(self.devices_tree.item(sel[0], "values")[0])
         self._open_device_dialog(device_id)
 
+    def _delete_selected_device(self):
+        sel = self.devices_tree.selection()
+        if not sel:
+            messagebox.showinfo("Подсказка",
+                                "Сначала выберите ТСД для удаления.")
+            return
+
+        device_id = int(self.devices_tree.item(sel[0], "values")[0])
+        confirm = messagebox.askyesno(
+            "Удаление",
+            "Удалить выбранный ТСД? Это действие нельзя отменить.",
+        )
+        if not confirm:
+            return
+
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM devices WHERE id=?", (device_id,))
+        self.conn.commit()
+        self.refresh_all()
+
     # ── Диалог «Добавить / Редактировать справочник» ───────────
     def _open_dict_dialog(self, kind: str, record_id=None):
         table = "locations" if kind == "location" else "statuses"
@@ -1045,6 +1078,31 @@ class TSDRegistryApp:
             return
         rec_id = int(tree.item(sel[0], "values")[0])
         self._open_dict_dialog(kind, rec_id)
+
+    def _delete_dict(self, kind: str):
+        tree = self.locations_tree if kind == "location" else self.statuses_tree
+        table = "locations" if kind == "location" else "statuses"
+        column = "location_id" if kind == "location" else "status_id"
+
+        sel = tree.selection()
+        if not sel:
+            messagebox.showinfo("Подсказка", "Сначала выберите запись для удаления.")
+            return
+
+        rec_id = int(tree.item(sel[0], "values")[0])
+        rec_name = tree.item(sel[0], "values")[1]
+        confirm = messagebox.askyesno(
+            "Удаление",
+            f"Удалить запись «{rec_name}»? Это действие нельзя отменить.",
+        )
+        if not confirm:
+            return
+
+        cur = self.conn.cursor()
+        cur.execute(f"UPDATE devices SET {column}=NULL WHERE {column}=?", (rec_id,))
+        cur.execute(f"DELETE FROM {table} WHERE id=?", (rec_id,))
+        self.conn.commit()
+        self.refresh_all()
 
     # ── Диалог «Закрепление ТСД» ──────────────────────────────
     def _open_assignment_dialog(self, _event=None):
@@ -1199,4 +1257,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
