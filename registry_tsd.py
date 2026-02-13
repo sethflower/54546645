@@ -34,7 +34,6 @@ FONTS = {
     "body": ("Segoe UI", 10),
     "body_bold": ("Segoe UI", 10, "bold"),
     "small": ("Segoe UI", 9),
-    "icon": ("Segoe UI Emoji", 14),  # Для эмодзи-иконок
 }
 
 # ─── КЛАСС ПРИЛОЖЕНИЯ ──────────────────────────────────────────────
@@ -266,7 +265,6 @@ class TSDRegistryApp:
         for k, btn in self.nav_btns.items():
             if k == key:
                 btn.configure(bg="#1F2937", fg="white", font=FONTS["body_bold"], borderwidth=0)
-                # Добавляем синюю полоску слева (имитация border-left)
             else:
                 btn.configure(bg=COLORS["bg_sidebar"], fg=COLORS["text_light"], font=FONTS["body"])
 
@@ -363,7 +361,7 @@ class TSDRegistryApp:
         
         # Хедер карточки
         h_frame = tk.Frame(frame, bg=COLORS["bg_card"])
-        h_frame.pack(fill="x", mb=15)
+        h_frame.pack(fill="x", pady=(0, 15)) # ИСПРАВЛЕНО mb -> pady
         ttk.Label(h_frame, text=title, style="CardHeader.TLabel").pack(side="left")
         
         # Кнопки действий
@@ -428,7 +426,8 @@ class TSDRegistryApp:
         detail_frame = tk.Frame(p, bg=COLORS["bg_card"], padx=25, pady=25)
         detail_frame.pack(fill="both", expand=True)
         
-        ttk.Label(detail_frame, text="Детализация по статусам", style="CardHeader.TLabel").pack(anchor="w", mb=15)
+        # ИСПРАВЛЕНО mb -> pady
+        ttk.Label(detail_frame, text="Детализация по статусам", style="CardHeader.TLabel").pack(anchor="w", pady=(0, 15))
         
         cols = ("status", "count", "percent")
         self.tree_stats = ttk.Treeview(detail_frame, columns=cols, show="headings", style="Treeview")
@@ -559,8 +558,8 @@ class TSDRegistryApp:
         content = tk.Frame(dlg, bg=COLORS["bg_card"], padx=30, pady=20)
         content.pack(fill="both", expand=True)
         
-        # Заголовок
-        tk.Label(content, text=title, font=FONTS["h2"], bg=COLORS["bg_card"], fg=COLORS["primary"]).pack(anchor="w", mb=20)
+        # Заголовок (ИСПРАВЛЕНО mb -> pady)
+        tk.Label(content, text=title, font=FONTS["h2"], bg=COLORS["bg_card"], fg=COLORS["primary"]).pack(anchor="w", pady=(0, 20))
 
         # Helper для создания полей
         def add_field(label, var_key, options=None):
@@ -573,7 +572,6 @@ class TSDRegistryApp:
                 w = ttk.Combobox(f_cont, textvariable=var, values=options, state="readonly", font=FONTS["body"])
             else:
                 w = tk.Entry(f_cont, textvariable=var, font=FONTS["body"], bg="#F9FAFB", bd=1, relief="solid")
-                # Хак для border color в tk.Entry сложен, используем frame или рельеф
             
             w.pack(fill="x", ipady=6, pady=(5, 0))
             fields[var_key] = var
@@ -582,8 +580,7 @@ class TSDRegistryApp:
         # Списки для комбобоксов
         cur = self.conn.cursor()
         statuses = [r[0] for r in cur.execute("SELECT name FROM statuses").fetchall()]
-        locations = [r[0] for r in cur.execute("SELECT name FROM locations").fetchall()]
-
+        
         add_field("Бренд", "brand")
         add_field("Модель", "model")
         add_field("IMEI", "imei")
@@ -611,7 +608,12 @@ class TSDRegistryApp:
             
             try:
                 # Получаем ID статуса
-                s_id = cur.execute("SELECT id FROM statuses WHERE name=?", (data["status"],)).fetchone()[0]
+                s_id_row = cur.execute("SELECT id FROM statuses WHERE name=?", (data["status"],)).fetchone()
+                if not s_id_row:
+                     messagebox.showerror("Ошибка", "Некорректный статус", parent=dlg)
+                     return
+                s_id = s_id_row[0]
+
                 now = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
                 if is_edit:
@@ -647,21 +649,22 @@ class TSDRegistryApp:
         dev = cur.execute("SELECT * FROM devices WHERE id=?", (dev_id,)).fetchone()
         
         tk.Label(content, text=f"{dev['brand']} {dev['model']}", font=FONTS["h2"], bg=COLORS["bg_card"]).pack(anchor="w")
-        tk.Label(content, text=f"IMEI: {dev['imei']}", font=FONTS["body"], fg=COLORS["secondary"], bg=COLORS["bg_card"]).pack(anchor="w", mb=20)
+        # ИСПРАВЛЕНО mb -> pady
+        tk.Label(content, text=f"IMEI: {dev['imei']}", font=FONTS["body"], fg=COLORS["secondary"], bg=COLORS["bg_card"]).pack(anchor="w", pady=(0, 20))
 
-        # Поля формы
-        tk.Label(content, text="Сотрудник (ФИО)", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", mt=10)
+        # Поля формы (ИСПРАВЛЕНО mt -> pady)
+        tk.Label(content, text="Сотрудник (ФИО)", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", pady=(10, 0))
         emp_var = tk.StringVar(value=dev['employee'])
         tk.Entry(content, textvariable=emp_var, font=FONTS["body"], bg="#F9FAFB").pack(fill="x", ipady=6, pady=5)
         
-        tk.Label(content, text="Локация", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", mt=10)
+        tk.Label(content, text="Локация", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", pady=(10, 0))
         locs = [r[0] for r in cur.execute("SELECT name FROM locations").fetchall()]
         loc_var = tk.StringVar()
         cur_loc = cur.execute("SELECT name FROM locations WHERE id=?", (dev['location_id'],)).fetchone()
         if cur_loc: loc_var.set(cur_loc[0])
         ttk.Combobox(content, textvariable=loc_var, values=locs, state="readonly").pack(fill="x", ipady=6, pady=5)
         
-        tk.Label(content, text="Новый статус", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", mt=10)
+        tk.Label(content, text="Новый статус", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", pady=(10, 0))
         stats = [r[0] for r in cur.execute("SELECT name FROM statuses").fetchall()]
         stat_var = tk.StringVar()
         cur_stat = cur.execute("SELECT name FROM statuses WHERE id=?", (dev['status_id'],)).fetchone()
