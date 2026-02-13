@@ -22,7 +22,16 @@ from PyQt6.QtGui import QFont, QColor
 
 # ========================== ХРАНИЛИЩЕ ДАННЫХ ==========================
 
-DATA_FILE = "tsd_registry_data.json"
+DATA_FILE_NAME = "tsd_registry_data.json"
+
+
+def get_data_file_path():
+    """Возвращает путь к файлу данных рядом с exe/скриптом."""
+    if getattr(sys, "frozen", False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, DATA_FILE_NAME)
 
 
 def load_data():
