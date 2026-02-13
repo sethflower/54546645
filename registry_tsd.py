@@ -3,126 +3,82 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
 
+# ─── КОНФИГУРАЦИЯ И КОНСТАНТЫ ──────────────────────────────────────
 DB_FILE = "tsd_registry.db"
+APP_TITLE = "TSD Enterprise | Учет оборудования"
+APP_SIZE = "1280x800"
 
+# Современная корпоративная палитра (Slate & Blue)
+COLORS = {
+    "bg_app":          "#F3F4F6",  # Очень светло-серый фон
+    "bg_sidebar":      "#111827",  # Почти черный (Deep Navy)
+    "bg_card":         "#FFFFFF",  # Чистый белый
+    "primary":         "#2563EB",  # Яркий корпоративный синий
+    "primary_hover":   "#1D4ED8",  # Темнее при наведении
+    "secondary":       "#64748B",  # Серый для второстепенного текста
+    "text_main":       "#1F2937",  # Темно-серый для основного текста
+    "text_light":      "#9CA3AF",  # Светло-серый
+    "text_on_dark":    "#F9FAFB",  # Белый текст на темном фоне
+    "border":          "#E5E7EB",  # Светлая граница
+    "success":         "#10B981",  # Зеленый
+    "warning":         "#F59E0B",  # Оранжевый
+    "danger":          "#EF4444",  # Красный
+    "row_stripe":      "#F9FAFB",  # Цвет чередования строк
+    "row_hover":       "#EFF6FF",  # Подсветка строки (светло-голубой)
+}
 
-class RoundedFrame(tk.Canvas):
-    """Канвас, имитирующий панель с закруглёнными углами и тенью."""
+FONTS = {
+    "h1": ("Segoe UI", 24, "bold"),
+    "h2": ("Segoe UI", 16, "bold"),
+    "h3": ("Segoe UI", 12, "bold"),
+    "body": ("Segoe UI", 10),
+    "body_bold": ("Segoe UI", 10, "bold"),
+    "small": ("Segoe UI", 9),
+    "icon": ("Segoe UI Emoji", 14),  # Для эмодзи-иконок
+}
 
-    def __init__(self, parent, bg_color="#ffffff", corner_radius=16,
-                 shadow_color="#e2e8f0", shadow_offset=3, **kw):
-        self.bg_color = bg_color
-        self.corner_radius = corner_radius
-        self.shadow_color = shadow_color
-        self.shadow_offset = shadow_offset
-        super().__init__(parent, highlightthickness=0, bg=parent["bg"], **kw)
-        self.inner_frame = tk.Frame(self, bg=bg_color)
-        self.bind("<Configure>", self._redraw)
-
-    def _round_rect(self, x1, y1, x2, y2, r, **kw):
-        points = [
-            x1 + r, y1,
-            x2 - r, y1,
-            x2, y1, x2, y1 + r,
-            x2, y2 - r,
-            x2, y2, x2 - r, y2,
-            x1 + r, y2,
-            x1, y2, x1, y2 - r,
-            x1, y1 + r,
-            x1, y1, x1 + r, y1,
-        ]
-        return self.create_polygon(points, smooth=True, **kw)
-
-    def _redraw(self, _event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        r = self.corner_radius
-        s = self.shadow_offset
-        # тень
-        self._round_rect(s, s, w - 1, h - 1, r, fill=self.shadow_color,
-                         outline=self.shadow_color)
-        # основная панель
-        self._round_rect(0, 0, w - s - 1, h - s - 1, r,
-                         fill=self.bg_color, outline=self.bg_color)
-        self.create_window(r, r, window=self.inner_frame, anchor="nw",
-                           width=w - s - 2 * r, height=h - s - 2 * r)
-
-
+# ─── КЛАСС ПРИЛОЖЕНИЯ ──────────────────────────────────────────────
 class TSDRegistryApp:
-    # ─── палитра ───────────────────────────────────────────────
-    PALETTE = {
-        # фоны
-        "bg":              "#f0f4f8",
-        "surface":         "#ffffff",
-        "surface_hover":   "#f7fafc",
-        "sidebar":         "#1e293b",
-        "sidebar_hover":   "#334155",
-        "sidebar_active":  "#3b82f6",
-        # текст
-        "text":            "#1e293b",
-        "text_secondary":  "#64748b",
-        "text_on_dark":    "#e2e8f0",
-        "text_on_accent":  "#ffffff",
-        # акценты
-        "accent":          "#3b82f6",
-        "accent_hover":    "#2563eb",
-        "accent_light":    "#dbeafe",
-        "success":         "#10b981",
-        "success_light":   "#d1fae5",
-        "warning":         "#f59e0b",
-        "warning_light":   "#fef3c7",
-        "danger":          "#ef4444",
-        "danger_light":    "#fee2e2",
-        # декор
-        "border":          "#e2e8f0",
-        "shadow":          "#cbd5e1",
-        "divider":         "#f1f5f9",
-        # таблица
-        "tree_head_bg":    "#f8fafc",
-        "tree_sel":        "#dbeafe",
-        "tree_stripe":     "#f8fafc",
-    }
-    FONT_FAMILY = "Segoe UI"
-
-    # ─── init ──────────────────────────────────────────────────
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root):
         self.root = root
-        self.root.title("TSD Registry — Реєстр ТСД")
-        self.root.geometry("1440x860")
-        self.root.minsize(1024, 640)
-        self.is_fullscreen = False
-        self.current_page = "registry"
+        self.root.title(APP_TITLE)
+        self.root.geometry(APP_SIZE)
+        self.root.minsize(1000, 600)
+        self.root.configure(bg=COLORS["bg_app"])
 
+        self.is_fullscreen = False
+        self.current_page = None
+        
+        # Подключение к БД
         self.conn = sqlite3.connect(DB_FILE)
         self.conn.row_factory = sqlite3.Row
         self._init_db()
 
-        self.root.configure(bg=self.PALETTE["bg"])
-        self._apply_styles()
+        # Инициализация стилей и интерфейса
+        self._setup_styles()
         self._build_layout()
-        self._show_page("registry")
-        self.refresh_all()
+        
+        # Загрузка первой страницы
+        self.show_page("registry")
+        self.refresh_all_data()
 
-        self.root.bind("<F11>", lambda e: self._toggle_fullscreen())
-        self.root.bind("<Escape>", lambda e: self._exit_fullscreen())
-        self.root.bind("<Configure>", self._on_resize)
+        # Бинды
+        self.root.bind("<F11>", self._toggle_fullscreen)
+        self.root.bind("<Escape>", self._exit_fullscreen)
 
-    # ─── база данных ───────────────────────────────────────────
     def _init_db(self):
-        cur = self.conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS statuses (
+        """Инициализация таблиц базы данных."""
+        with self.conn:
+            cur = self.conn.cursor()
+            cur.execute("""CREATE TABLE IF NOT EXISTS statuses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL
             )""")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS locations (
+            cur.execute("""CREATE TABLE IF NOT EXISTS locations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL
             )""")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS devices (
+            cur.execute("""CREATE TABLE IF NOT EXISTS devices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 brand TEXT NOT NULL,
                 model TEXT NOT NULL,
@@ -134,1126 +90,700 @@ class TSDRegistryApp:
                 FOREIGN KEY(status_id) REFERENCES statuses(id),
                 FOREIGN KEY(location_id) REFERENCES locations(id)
             )""")
-        cur.execute("SELECT COUNT(*) AS cnt FROM statuses")
-        self.conn.commit()
 
-    # ─── стили ─────────────────────────────────────────────────
-    def _apply_styles(self):
-        s = ttk.Style()
-        s.theme_use("clam")
-        P = self.PALETTE
-        F = self.FONT_FAMILY
+    # ─── ДИЗАЙН И СТИЛИ ────────────────────────────────────────────
+    def _setup_styles(self):
+        style = ttk.Style()
+        style.theme_use("clam")  # Основа для кастомизации
 
-        s.configure("TFrame", background=P["bg"])
-        s.configure("Surface.TFrame", background=P["surface"])
-        s.configure("Sidebar.TFrame", background=P["sidebar"])
+        # -- Общие --
+        style.configure("TFrame", background=COLORS["bg_app"])
+        style.configure("Card.TFrame", background=COLORS["bg_card"], relief="flat")
+        
+        # -- Метки (Labels) --
+        style.configure("TLabel", background=COLORS["bg_app"], foreground=COLORS["text_main"], font=FONTS["body"])
+        style.configure("Card.TLabel", background=COLORS["bg_card"], foreground=COLORS["text_main"], font=FONTS["body"])
+        style.configure("Header.TLabel", background=COLORS["bg_app"], foreground=COLORS["text_main"], font=FONTS["h1"])
+        style.configure("CardHeader.TLabel", background=COLORS["bg_card"], foreground=COLORS["text_main"], font=FONTS["h2"])
+        style.configure("SubHeader.TLabel", background=COLORS["bg_app"], foreground=COLORS["secondary"], font=FONTS["body"])
+        style.configure("StatValue.TLabel", background=COLORS["bg_card"], foreground=COLORS["primary"], font=("Segoe UI", 32, "bold"))
+        style.configure("StatLabel.TLabel", background=COLORS["bg_card"], foreground=COLORS["secondary"], font=FONTS["small"])
 
-        s.configure("TLabel", background=P["surface"], foreground=P["text"],
-                     font=(F, 10))
-        s.configure("BG.TLabel", background=P["bg"], foreground=P["text"],
-                     font=(F, 10))
-        s.configure("Title.TLabel", background=P["bg"],
-                     foreground=P["text"], font=(F, 20, "bold"))
-        s.configure("Subtitle.TLabel", background=P["bg"],
-                     foreground=P["text_secondary"], font=(F, 10))
-        s.configure("CardTitle.TLabel", background=P["surface"],
-                     foreground=P["text"], font=(F, 13, "bold"))
-        s.configure("CardSub.TLabel", background=P["surface"],
-                     foreground=P["text_secondary"], font=(F, 9))
-        s.configure("SideLabel.TLabel", background=P["sidebar"],
-                     foreground=P["text_on_dark"], font=(F, 11))
-        s.configure("SideLabelBold.TLabel", background=P["sidebar"],
-                     foreground="#ffffff", font=(F, 14, "bold"))
-        s.configure("StatNum.TLabel", background=P["surface"],
-                     foreground=P["accent"], font=(F, 28, "bold"))
-        s.configure("StatCaption.TLabel", background=P["surface"],
-                     foreground=P["text_secondary"], font=(F, 10))
+        # -- Кнопки (Buttons) --
+        # Primary Action Button
+        style.configure("Primary.TButton",
+                        font=FONTS["body_bold"],
+                        background=COLORS["primary"],
+                        foreground="white",
+                        borderwidth=0,
+                        focuscolor=COLORS["primary"],
+                        padding=(20, 10))
+        style.map("Primary.TButton",
+                  background=[("active", COLORS["primary_hover"]), ("disabled", COLORS["secondary"])])
 
-        # кнопки
-        s.configure("Accent.TButton", font=(F, 10, "bold"),
-                     padding=(16, 9), foreground="white",
-                     background=P["accent"], borderwidth=0, relief="flat")
-        s.map("Accent.TButton",
-              background=[("active", P["accent_hover"]),
-                          ("disabled", "#94a3b8")])
+        # Danger Button
+        style.configure("Danger.TButton",
+                        font=FONTS["body_bold"],
+                        background=COLORS["danger"],
+                        foreground="white",
+                        borderwidth=0,
+                        padding=(15, 8))
+        style.map("Danger.TButton", background=[("active", "#DC2626")])
 
-        s.configure("Ghost.TButton", font=(F, 10), padding=(14, 8),
-                     foreground=P["text"], background=P["divider"],
-                     borderwidth=0, relief="flat")
-        s.map("Ghost.TButton",
-              background=[("active", P["border"])])
+        # Ghost/Outline Button
+        style.configure("Ghost.TButton",
+                        font=FONTS["body"],
+                        background=COLORS["bg_app"],
+                        foreground=COLORS["text_main"],
+                        borderwidth=1,
+                        bordercolor=COLORS["border"],
+                        padding=(15, 8))
+        style.map("Ghost.TButton", background=[("active", "#E5E7EB")])
 
-        s.configure("Danger.TButton", font=(F, 10, "bold"),
-                     padding=(14, 8), foreground="white",
-                     background=P["danger"], borderwidth=0, relief="flat")
-        s.map("Danger.TButton",
-              background=[("active", "#dc2626")])
+        # -- Таблицы (Treeview) --
+        # Современный вид таблицы: высокие строки, без границ ячеек
+        style.configure("Treeview",
+                        background=COLORS["bg_card"],
+                        fieldbackground=COLORS["bg_card"],
+                        foreground=COLORS["text_main"],
+                        font=FONTS["body"],
+                        rowheight=45,  # Высокие строки для удобства
+                        borderwidth=0)
+        
+        style.configure("Treeview.Heading",
+                        background=COLORS["bg_app"],
+                        foreground=COLORS["secondary"],
+                        font=FONTS["body_bold"],
+                        padding=(10, 10),
+                        relief="flat")
+        
+        style.map("Treeview",
+                  background=[("selected", COLORS["row_hover"])],
+                  foreground=[("selected", COLORS["primary"])])
 
-        s.configure("SideBtn.TButton", font=(F, 11), padding=(14, 12),
-                     foreground=P["text_on_dark"],
-                     background=P["sidebar"], borderwidth=0,
-                     relief="flat", anchor="w")
-        s.map("SideBtn.TButton",
-              background=[("active", P["sidebar_hover"])])
+        # -- Скроллбар --
+        style.layout("Vertical.TScrollbar",
+                     [('Vertical.Scrollbar.trough',
+                       {'children': [('Vertical.Scrollbar.thumb', 
+                                      {'expand': '1', 'sticky': 'nswe'})],
+                        'sticky': 'ns'})])
+        style.configure("Vertical.TScrollbar", troughcolor=COLORS["bg_app"], background="#CBD5E1", borderwidth=0, width=10)
 
-        s.configure("SideBtnActive.TButton", font=(F, 11, "bold"),
-                     padding=(14, 12), foreground="#ffffff",
-                     background=P["sidebar_active"], borderwidth=0,
-                     relief="flat", anchor="w")
-        s.map("SideBtnActive.TButton",
-              background=[("active", P["accent_hover"])])
+        # -- Поля ввода --
+        style.configure("TEntry", fieldbackground=COLORS["bg_card"], borderwidth=1, padding=5)
 
-        # таблицы
-        s.configure("Treeview", background="white",
-                     foreground=P["text"], fieldbackground="white",
-                     bordercolor=P["border"], borderwidth=1,
-                     rowheight=36, font=(F, 10))
-        s.configure("Treeview.Heading", background=P["tree_head_bg"],
-                     foreground=P["text"], font=(F, 10, "bold"),
-                     relief="flat", borderwidth=0, padding=(8, 6))
-        s.map("Treeview",
-              background=[("selected", P["tree_sel"])],
-              foreground=[("selected", P["text"])])
-        s.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-
-        # полоса прокрутки
-        s.configure("Round.Vertical.TScrollbar",
-                     gripcount=0, background=P["border"],
-                     troughcolor=P["divider"], borderwidth=0,
-                     relief="flat", width=8)
-        s.map("Round.Vertical.TScrollbar",
-              background=[("active", P["shadow"])])
-
-        # записи
-        s.configure("TEntry", padding=(10, 8), font=(F, 10),
-                     relief="flat", borderwidth=1,
-                     fieldbackground="#f8fafc")
-        s.map("TEntry", bordercolor=[("focus", P["accent"])])
-
-        s.configure("TCombobox", padding=(10, 8), font=(F, 10),
-                     relief="flat", borderwidth=1,
-                     fieldbackground="#f8fafc")
-
-    # ─── скелет интерфейса ─────────────────────────────────────
+    # ─── UI LAYOUT ─────────────────────────────────────────────────
     def _build_layout(self):
-        self.main_container = tk.Frame(self.root, bg=self.PALETTE["bg"])
+        # Основной контейнер: Сетка 2 колонки (Сайдбар фикс, Контент растягивается)
+        self.main_container = tk.Frame(self.root, bg=COLORS["bg_app"])
         self.main_container.pack(fill="both", expand=True)
+        self.main_container.columnconfigure(1, weight=1)
+        self.main_container.rowconfigure(0, weight=1)
 
-        # боковая панель
-        self.sidebar = tk.Frame(self.main_container,
-                                bg=self.PALETTE["sidebar"], width=220)
-        self.sidebar.pack(side="left", fill="y")
-        self.sidebar.pack_propagate(False)
         self._build_sidebar()
+        self._build_content_area()
 
-        # область контента
-        self.content_area = tk.Frame(self.main_container,
-                                     bg=self.PALETTE["bg"])
-        self.content_area.pack(side="left", fill="both", expand=True)
-
-        self._build_topbar()
-
-        self.page_container = tk.Frame(self.content_area,
-                                       bg=self.PALETTE["bg"])
-        self.page_container.pack(fill="both", expand=True, padx=24, pady=(0, 24))
-
-        # страницы
-        self.pages = {}
-        for name in ("registry", "catalog", "stats"):
-            f = tk.Frame(self.page_container, bg=self.PALETTE["bg"])
-            self.pages[name] = f
-
-        self._build_page_registry()
-        self._build_page_catalog()
-        self._build_page_stats()
-
-    # ── боковая панель ─────────────────────────────────────────
     def _build_sidebar(self):
-        P = self.PALETTE
-        sb = self.sidebar
+        # Сайдбар (левая колонка)
+        self.sidebar = tk.Frame(self.main_container, bg=COLORS["bg_sidebar"], width=260)
+        self.sidebar.grid(row=0, column=0, sticky="ns")
+        self.sidebar.grid_propagate(False)
 
-        # логотип
-        logo_frame = tk.Frame(sb, bg=P["sidebar"])
-        logo_frame.pack(fill="x", pady=(28, 32), padx=20)
+        # Логотип
+        logo_frame = tk.Frame(self.sidebar, bg=COLORS["bg_sidebar"])
+        logo_frame.pack(fill="x", pady=(30, 40), padx=25)
+        
+        # Имитация логотипа
+        tk.Label(logo_frame, text="TSD", fg="white", bg=COLORS["primary"], 
+                 font=("Segoe UI", 14, "bold"), width=3).pack(side="left")
+        tk.Label(logo_frame, text="Enterprise", fg="white", bg=COLORS["bg_sidebar"], 
+                 font=("Segoe UI", 16, "bold")).pack(side="left", padx=10)
 
-        logo_icon = tk.Canvas(logo_frame, width=40, height=40,
-                              bg=P["sidebar"], highlightthickness=0)
-        logo_icon.pack(side="left")
-        logo_icon.create_oval(4, 4, 36, 36, fill=P["accent"],
-                              outline=P["accent"])
-        logo_icon.create_text(20, 20, text="T", fill="white",
-                              font=(self.FONT_FAMILY, 16, "bold"))
+        # Меню навигации
+        self.nav_btns = {}
+        self._add_sidebar_btn("registry", "📋  Реестр оборудования")
+        self._add_sidebar_btn("catalog", "📁  Справочники")
+        self._add_sidebar_btn("stats", "📊  Аналитика")
 
-        ttk.Label(logo_frame, text="TSD Registry",
-                  style="SideLabelBold.TLabel").pack(side="left", padx=(12, 0))
+        # Нижняя кнопка (Полный экран)
+        tk.Frame(self.sidebar, bg="#1F2937", height=1).pack(side="bottom", fill="x", pady=0)
+        btn = tk.Button(self.sidebar, text="⛶  На весь экран", 
+                        bg=COLORS["bg_sidebar"], fg=COLORS["text_light"],
+                        font=FONTS["body"], bd=0, activebackground="#1F2937", activeforeground="white",
+                        cursor="hand2", command=self._toggle_fullscreen, anchor="w", padx=25, pady=20)
+        btn.pack(side="bottom", fill="x")
 
-        # разделитель
-        tk.Frame(sb, bg="#334155", height=1).pack(fill="x", padx=16, pady=(0, 16))
+    def _add_sidebar_btn(self, key, text):
+        # Используем tk.Button, так как их проще красить чем ttk
+        btn = tk.Button(self.sidebar, text=text, 
+                        bg=COLORS["bg_sidebar"], fg=COLORS["text_light"],
+                        font=FONTS["body"], bd=0, 
+                        activebackground="#1F2937", activeforeground="white",
+                        cursor="hand2", anchor="w", padx=25, pady=15,
+                        command=lambda k=key: self.show_page(k))
+        btn.pack(fill="x", pady=2)
+        self.nav_btns[key] = btn
 
-        # навигационные кнопки
-        self.nav_buttons = {}
-        nav_items = [
-            ("registry", "📋  Реестр"),
-            ("catalog",  "📁  Справочник"),
-            ("stats",    "📊  Статистика"),
-        ]
-        for key, label in nav_items:
-            btn = tk.Button(
-                sb, text=label, anchor="w",
-                font=(self.FONT_FAMILY, 11),
-                fg=P["text_on_dark"], bg=P["sidebar"],
-                activebackground=P["sidebar_hover"],
-                activeforeground="#ffffff",
-                bd=0, padx=24, pady=12, cursor="hand2",
-                command=lambda k=key: self._show_page(k),
-            )
-            btn.pack(fill="x")
-            btn.bind("<Enter>",
-                     lambda e, b=btn: b.config(bg=P["sidebar_hover"])
-                     if b != self.nav_buttons.get(self.current_page) else None)
-            btn.bind("<Leave>",
-                     lambda e, b=btn: b.config(bg=P["sidebar"])
-                     if b != self.nav_buttons.get(self.current_page) else None)
-            self.nav_buttons[key] = btn
+    def _build_content_area(self):
+        # Правая часть
+        self.content_frame = tk.Frame(self.main_container, bg=COLORS["bg_app"])
+        self.content_frame.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
+        
+        # Заголовок страницы + Кнопка обновить
+        self.top_bar = tk.Frame(self.content_frame, bg=COLORS["bg_app"])
+        self.top_bar.pack(fill="x", pady=(0, 20))
+        
+        self.page_title = ttk.Label(self.top_bar, text="Заголовок", style="Header.TLabel")
+        self.page_title.pack(side="left")
+        
+        self.page_subtitle = ttk.Label(self.top_bar, text="Описание", style="SubHeader.TLabel")
+        self.page_subtitle.pack(side="left", padx=(15, 0), pady=(8, 0))
 
-        # нижняя часть
-        spacer = tk.Frame(sb, bg=P["sidebar"])
-        spacer.pack(fill="both", expand=True)
+        ttk.Button(self.top_bar, text="🔄 Обновить данные", style="Ghost.TButton", 
+                   command=self.refresh_all_data).pack(side="right")
 
-        tk.Frame(sb, bg="#334155", height=1).pack(fill="x", padx=16, pady=(0, 8))
+        # Контейнер для сменяемых страниц
+        self.pages_container = tk.Frame(self.content_frame, bg=COLORS["bg_app"])
+        self.pages_container.pack(fill="both", expand=True)
 
-        fs_btn = tk.Button(
-            sb, text="⛶  Полный экран", anchor="w",
-            font=(self.FONT_FAMILY, 10), fg=P["text_on_dark"],
-            bg=P["sidebar"], activebackground=P["sidebar_hover"],
-            activeforeground="#ffffff", bd=0, padx=24, pady=10,
-            cursor="hand2", command=self._toggle_fullscreen,
-        )
-        fs_btn.pack(fill="x", pady=(0, 16))
-        fs_btn.bind("<Enter>", lambda e: fs_btn.config(bg=P["sidebar_hover"]))
-        fs_btn.bind("<Leave>", lambda e: fs_btn.config(bg=P["sidebar"]))
+        self.pages = {}
+        for p in ["registry", "catalog", "stats"]:
+            frame = tk.Frame(self.pages_container, bg=COLORS["bg_app"])
+            self.pages[p] = frame
+            # Grid configure для страниц, чтобы контент растягивался
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(0, weight=1)
 
-    def _build_topbar(self):
-        P = self.PALETTE
-        bar = tk.Frame(self.content_area, bg=P["bg"], height=72)
-        bar.pack(fill="x", padx=24, pady=(20, 12))
-        bar.pack_propagate(False)
+        self._init_page_registry()
+        self._init_page_catalog()
+        self._init_page_stats()
 
-        self.topbar_title = ttk.Label(bar, text="Реестр", style="Title.TLabel")
-        self.topbar_title.pack(side="left", anchor="s", pady=(0, 4))
-
-        self.topbar_subtitle = ttk.Label(
-            bar, text="Учёт терминалов сбора данных",
-            style="Subtitle.TLabel")
-        self.topbar_subtitle.pack(side="left", anchor="s", padx=(16, 0),
-                                  pady=(0, 6))
-
-        btn_frame = tk.Frame(bar, bg=P["bg"])
-        btn_frame.pack(side="right", anchor="s", pady=(0, 4))
-
-        ttk.Button(btn_frame, text="🔄  Обновить", style="Accent.TButton",
-                   command=self.refresh_all).pack(side="right")
-
-    # ── переключение страниц ───────────────────────────────────
-    def _show_page(self, name: str):
-        P = self.PALETTE
-        self.current_page = name
-
-        for key, btn in self.nav_buttons.items():
-            if key == name:
-                btn.config(bg=P["sidebar_active"], fg="#ffffff",
-                           font=(self.FONT_FAMILY, 11, "bold"))
+    # ─── ЛОГИКА НАВИГАЦИИ ──────────────────────────────────────────
+    def show_page(self, key):
+        self.current_page = key
+        
+        # Обновление меню
+        for k, btn in self.nav_btns.items():
+            if k == key:
+                btn.configure(bg="#1F2937", fg="white", font=FONTS["body_bold"], borderwidth=0)
+                # Добавляем синюю полоску слева (имитация border-left)
             else:
-                btn.config(bg=P["sidebar"], fg=P["text_on_dark"],
-                           font=(self.FONT_FAMILY, 11))
+                btn.configure(bg=COLORS["bg_sidebar"], fg=COLORS["text_light"], font=FONTS["body"])
 
-        titles = {"registry": "Реестр", "catalog": "Справочник",
-                  "stats": "Статистика"}
-        subtitles = {
-            "registry": "Все ТСД в системе — двойной клик для редактирования",
-            "catalog": "Управление справочниками",
-            "stats": "Сводная аналитика",
+        # Обновление заголовков
+        titles = {
+            "registry": ("Реестр ТСД", "Управление парком терминалов"),
+            "catalog": ("Справочники", "Настройка локаций и статусов"),
+            "stats": ("Аналитика", "Сводная информация по оборудованию")
         }
-        self.topbar_title.config(text=titles[name])
-        self.topbar_subtitle.config(text=subtitles[name])
+        t, s = titles.get(key, ("", ""))
+        self.page_title.configure(text=t)
+        self.page_subtitle.configure(text=s)
 
-        for pg in self.pages.values():
-            pg.pack_forget()
-        self.pages[name].pack(fill="both", expand=True)
+        # Смена кадра
+        for frame in self.pages.values():
+            frame.pack_forget()
+        self.pages[key].pack(fill="both", expand=True)
 
-    # ═══════════════════════════════════════════════════════════
-    #  СТРАНИЦА «РЕЕСТР»
-    # ═══════════════════════════════════════════════════════════
-    def _build_page_registry(self):
-        page = self.pages["registry"]
-        P = self.PALETTE
+    # ═══════════════════════════════════════════════════════════════
+    #  СТРАНИЦА: РЕЕСТР
+    # ═══════════════════════════════════════════════════════════════
+    def _init_page_registry(self):
+        p = self.pages["registry"]
+        
+        # Панель инструментов (Поиск + Действия)
+        toolbar = tk.Frame(p, bg=COLORS["bg_app"])
+        toolbar.pack(fill="x", pady=(0, 15))
 
-        # карточка‑обёртка
-        card = tk.Frame(page, bg=P["surface"], bd=0,
-                        highlightbackground=P["border"],
-                        highlightthickness=1)
-        card.pack(fill="both", expand=True)
-
-        # заголовок карточки
-        hdr = tk.Frame(card, bg=P["surface"])
-        hdr.pack(fill="x", padx=20, pady=(16, 0))
-
-        ttk.Label(hdr, text="Все терминалы", style="CardTitle.TLabel")\
-            .pack(side="left")
-        ttk.Label(hdr, text="Двойной клик — закрепить / изменить",
-                  style="CardSub.TLabel").pack(side="left", padx=(12, 0))
-
-        # поиск
+        # Поиск
+        search_cont = tk.Frame(toolbar, bg="white", highlightbackground=COLORS["border"], highlightthickness=1)
+        search_cont.pack(side="left")
+        tk.Label(search_cont, text="🔍", bg="white", fg=COLORS["secondary"]).pack(side="left", padx=(10, 5))
+        
         self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self._filter_registry())
+        self.search_var.trace_add("write", lambda *a: self._load_registry(self.search_var.get()))
+        entry = tk.Entry(search_cont, textvariable=self.search_var, font=FONTS["body"], 
+                         bd=0, bg="white", width=30)
+        entry.pack(side="left", ipady=8, padx=5)
 
-        search_frame = tk.Frame(hdr, bg=P["surface"])
-        search_frame.pack(side="right")
-        tk.Label(search_frame, text="🔍", bg=P["surface"],
-                 font=(self.FONT_FAMILY, 12)).pack(side="left")
-        self.search_entry = tk.Entry(
-            search_frame, textvariable=self.search_var,
-            font=(self.FONT_FAMILY, 10), bg="#f8fafc",
-            fg=P["text"], relief="flat", bd=0, width=28,
-            insertbackground=P["accent"])
-        self.search_entry.pack(side="left", ipady=6, padx=(4, 0))
-        self.search_entry.insert(0, "")
-        self.search_entry.bind("<FocusIn>", lambda e: None)
+        ttk.Button(toolbar, text="＋ Добавить ТСД", style="Primary.TButton", 
+                   command=self._open_device_dialog).pack(side="right")
 
-        tk.Frame(card, bg=P["border"], height=1).pack(fill="x",
-                                                       padx=20, pady=(14, 0))
+        # Карточка с таблицей
+        card = tk.Frame(p, bg=COLORS["bg_card"], padx=1, pady=1) # Тонкая рамка за счет паддинга
+        card.pack(fill="both", expand=True)
+        
+        # Сама таблица
+        cols = ("id", "brand", "model", "imei", "status", "employee", "location", "updated")
+        headers = {"id": "#", "brand": "Бренд", "model": "Модель", "imei": "IMEI", 
+                   "status": "Статус", "employee": "Сотрудник", "location": "Локация", "updated": "Обновлено"}
+        
+        self.tree_reg = ttk.Treeview(card, columns=cols, show="headings", style="Treeview")
+        
+        for col in cols:
+            self.tree_reg.heading(col, text=headers[col], anchor="w")
+            self.tree_reg.column(col, anchor="w", width=100)
+        
+        # Настройка ширины
+        self.tree_reg.column("id", width=50, stretch=False)
+        self.tree_reg.column("imei", width=150)
+        self.tree_reg.column("updated", width=140)
 
-        # таблица
-        tree_frame = tk.Frame(card, bg=P["surface"])
-        tree_frame.pack(fill="both", expand=True, padx=2, pady=(0, 2))
-
-        columns = ("id", "brand", "model", "imei", "status",
-                   "employee", "location", "updated")
-        self.registry_tree = ttk.Treeview(
-            tree_frame, columns=columns, show="headings", selectmode="browse")
-
-        headers = {"id": "#", "brand": "Бренд", "model": "Модель",
-                   "imei": "IMEI", "status": "Состояние",
-                   "employee": "Сотрудник", "location": "Локация",
-                   "updated": "Обновлено"}
-        min_w = {"id": 50, "brand": 100, "model": 130, "imei": 160,
-                 "status": 110, "employee": 150, "location": 150,
-                 "updated": 155}
-
-        for col in columns:
-            self.registry_tree.heading(col, text=headers[col],
-                                       anchor="w")
-            self.registry_tree.column(col, width=min_w[col],
-                                      minwidth=min_w[col], anchor="w",
-                                      stretch=True)
-
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical",
-                             command=self.registry_tree.yview,
-                             style="Round.Vertical.TScrollbar")
-        self.registry_tree.configure(yscrollcommand=vsb.set)
-
-        self.registry_tree.pack(side="left", fill="both", expand=True)
+        vsb = ttk.Scrollbar(card, orient="vertical", command=self.tree_reg.yview, style="Vertical.TScrollbar")
+        self.tree_reg.configure(yscrollcommand=vsb.set)
+        
+        self.tree_reg.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
-        self.registry_tree.bind("<Double-1>", self._open_assignment_dialog)
 
-        # чередование строк
-        self.registry_tree.tag_configure("stripe",
-                                         background=P["tree_stripe"])
-        self.registry_tree.tag_configure("normal", background="white")
+        self.tree_reg.bind("<Double-1>", self._on_registry_double_click)
 
-    def _filter_registry(self):
-        query = self.search_var.get().lower().strip()
-        self._load_registry(query)
+    # ═══════════════════════════════════════════════════════════════
+    #  СТРАНИЦА: СПРАВОЧНИКИ
+    # ═══════════════════════════════════════════════════════════════
+    def _init_page_catalog(self):
+        p = self.pages["catalog"]
+        
+        # Сетка 2x2 для карточек справочников
+        p.columnconfigure(0, weight=1)
+        p.columnconfigure(1, weight=1)
+        p.rowconfigure(0, weight=1)
+        p.rowconfigure(1, weight=1)
 
-    # ═══════════════════════════════════════════════════════════
-    #  СТРАНИЦА «СПРАВОЧНИК»
-    # ═══════════════════════════════════════════════════════════
-    def _build_page_catalog(self):
-        page = self.pages["catalog"]
-        P = self.PALETTE
+        # 1. Локации
+        self._create_catalog_card(p, "Локации", "location", 0, 0)
+        # 2. Статусы
+        self._create_catalog_card(p, "Статусы устройств", "status", 0, 1)
+        # 3. Список всех устройств (Упрощенный)
+        self._create_catalog_card(p, "Список устройств (Управление)", "device_simple", 1, 0, colspan=2)
 
-        # вертикальная компоновка карточек (сверху вниз)
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(0, weight=2)
-        page.rowconfigure(1, weight=1)
-        page.rowconfigure(2, weight=1)
+    def _create_catalog_card(self, parent, title, kind, row, col, colspan=1):
+        # Обертка карточки
+        frame = tk.Frame(parent, bg=COLORS["bg_card"], padx=20, pady=20)
+        frame.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=(0, 20), pady=(0, 20))
+        
+        # Хедер карточки
+        h_frame = tk.Frame(frame, bg=COLORS["bg_card"])
+        h_frame.pack(fill="x", mb=15)
+        ttk.Label(h_frame, text=title, style="CardHeader.TLabel").pack(side="left")
+        
+        # Кнопки действий
+        btn_frame = tk.Frame(h_frame, bg=COLORS["bg_card"])
+        btn_frame.pack(side="right")
+        
+        if kind != "device_simple":
+            add_cmd = lambda: self._open_dict_dialog(kind)
+            edit_cmd = lambda: self._action_dict(kind, "edit")
+            del_cmd = lambda: self._action_dict(kind, "delete")
+        else:
+            add_cmd = self._open_device_dialog
+            edit_cmd = self._edit_selected_device_simple
+            del_cmd = self._delete_selected_device_simple
 
-        # -- ТСД --
-        self.devices_card = self._make_card(page, "Терминалы (ТСД)")
-        self.devices_card.grid(row=0, column=0, sticky="nsew",
-                               padx=0, pady=(0, 12))
-        btn_bar = tk.Frame(self.devices_card.inner, bg=P["surface"])
-        btn_bar.pack(fill="x", pady=(0, 8))
-        ttk.Button(btn_bar, text="＋ Добавить", style="Accent.TButton",
-                   command=self._open_device_dialog).pack(side="left")
-        ttk.Button(btn_bar, text="✎ Редактировать", style="Ghost.TButton",
-                   command=self._edit_selected_device)\
-            .pack(side="left", padx=(8, 0))
-        ttk.Button(btn_bar, text="🗑 Удалить", style="Danger.TButton",
-                   command=self._delete_selected_device)\
-            .pack(side="left", padx=(8, 0))
+        ttk.Button(btn_frame, text="+", style="Ghost.TButton", width=3, command=add_cmd).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="✎", style="Ghost.TButton", width=3, command=edit_cmd).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="✕", style="Danger.TButton", width=3, command=del_cmd).pack(side="left", padx=2)
 
-        cols_d = ("id", "brand", "model", "imei", "status")
-        self.devices_tree = self._make_tree(
-            self.devices_card.inner, cols_d,
-            {"id": "#", "brand": "Бренд", "model": "Модель",
-             "imei": "IMEI", "status": "Состояние"},
-            {"id": 45, "brand": 100, "model": 130, "imei": 160,
-             "status": 100})
+        # Таблица
+        if kind == "device_simple":
+            cols = ("id", "brand", "model", "imei")
+            headers = {"id": "#", "brand": "Бренд", "model": "Модель", "imei": "IMEI"}
+        else:
+            cols = ("id", "name")
+            headers = {"id": "#", "name": "Название"}
 
-        # -- Локации --
-        self.locations_card = self._make_card(page, "Локации")
-        self.locations_card.grid(row=1, column=0, sticky="nsew",
-                                 padx=0, pady=(0, 12))
-        btn_bar2 = tk.Frame(self.locations_card.inner, bg=P["surface"])
-        btn_bar2.pack(fill="x", pady=(0, 8))
-        ttk.Button(btn_bar2, text="＋", style="Accent.TButton",
-                   command=lambda: self._open_dict_dialog("location"))\
-            .pack(side="left")
-        ttk.Button(btn_bar2, text="✎", style="Ghost.TButton",
-                   command=lambda: self._edit_dict("location"))\
-            .pack(side="left", padx=(8, 0))
-        ttk.Button(btn_bar2, text="🗑", style="Danger.TButton",
-                   command=lambda: self._delete_dict("location"))\
-            .pack(side="left", padx=(8, 0))
-
-        self.locations_tree = self._make_tree(
-            self.locations_card.inner, ("id", "name"),
-            {"id": "#", "name": "Название"},
-            {"id": 45, "name": 200})
-
-        # -- Состояния --
-        self.statuses_card = self._make_card(page, "Состояния")
-        self.statuses_card.grid(row=2, column=0, sticky="nsew", pady=0)
-        btn_bar3 = tk.Frame(self.statuses_card.inner, bg=P["surface"])
-        btn_bar3.pack(fill="x", pady=(0, 8))
-        ttk.Button(btn_bar3, text="＋", style="Accent.TButton",
-                   command=lambda: self._open_dict_dialog("status"))\
-            .pack(side="left")
-        ttk.Button(btn_bar3, text="✎", style="Ghost.TButton",
-                   command=lambda: self._edit_dict("status"))\
-            .pack(side="left", padx=(8, 0))
-        ttk.Button(btn_bar3, text="🗑", style="Danger.TButton",
-                   command=lambda: self._delete_dict("status"))\
-            .pack(side="left", padx=(8, 0))
-
-        self.statuses_tree = self._make_tree(
-            self.statuses_card.inner, ("id", "name"),
-            {"id": "#", "name": "Название"},
-            {"id": 45, "name": 200})
-
-    # ═══════════════════════════════════════════════════════════
-    #  СТРАНИЦА «СТАТИСТИКА»
-    # ═══════════════════════════════════════════════════════════
-    def _build_page_stats(self):
-        page = self.pages["stats"]
-        P = self.PALETTE
-
-        # верхняя полоска с карточками‑числами
-        self.stats_top = tk.Frame(page, bg=P["bg"])
-        self.stats_top.pack(fill="x", pady=(0, 16))
-
-        self.stat_cards = {}
-        for key, label in [("total", "Всего ТСД"),
-                           ("assigned", "Закреплено"),
-                           ("free", "Свободных")]:
-            c = self._stat_number_card(self.stats_top, "0", label)
-            c.pack(side="left", fill="x", expand=True,
-                   padx=(0, 12))
-            self.stat_cards[key] = c
-
-        # детальная сводка в виде таблиц
-        detail_card = tk.Frame(page, bg=P["surface"], bd=0,
-                               highlightbackground=P["border"],
-                               highlightthickness=1)
-        detail_card.pack(fill="both", expand=True)
-
-        hdr = tk.Frame(detail_card, bg=P["surface"])
-        hdr.pack(fill="x", padx=20, pady=(14, 0))
-        ttk.Label(hdr, text="Подробная сводка",
-                  style="CardTitle.TLabel").pack(side="left")
-        tk.Frame(detail_card, bg=P["border"], height=1)\
-            .pack(fill="x", padx=20, pady=(12, 0))
-
-        self.stats_tables_wrap = tk.Frame(detail_card, bg=P["surface"])
-        self.stats_tables_wrap.pack(fill="both", expand=True, padx=16, pady=14)
-
-        self.stats_summary_tree = self._build_stats_tree(
-            self.stats_tables_wrap,
-            "Итоги",
-            ("metric", "value"),
-            {"metric": "Показатель", "value": "Значение"},
-            {"metric": 220, "value": 120},
-        )
-
-        self.stats_by_location_tree = self._build_stats_tree(
-            self.stats_tables_wrap,
-            "По локациям",
-            ("name", "count"),
-            {"name": "Локация", "count": "Кол-во ТСД"},
-            {"name": 260, "count": 120},
-        )
-
-        self.stats_by_status_tree = self._build_stats_tree(
-            self.stats_tables_wrap,
-            "По состояниям",
-            ("name", "count"),
-            {"name": "Состояние", "count": "Кол-во ТСД"},
-            {"name": 220, "count": 120},
-        )
-
-        self.stats_loc_status_tree = self._build_stats_tree(
-            self.stats_tables_wrap,
-            "Детализация по локациям",
-            ("location", "status", "count"),
-            {"location": "Локация", "status": "Состояние", "count": "Кол-во"},
-            {"location": 220, "status": 220, "count": 90},
-        )
-
-    def _build_stats_tree(self, parent, title, columns, headers, widths):
-        block = tk.Frame(parent, bg=self.PALETTE["surface"])
-        block.pack(fill="x", pady=(0, 12))
-        ttk.Label(block, text=title, style="CardSub.TLabel").pack(anchor="w", pady=(0, 6))
-        return self._make_tree(block, columns, headers, widths)
-
-    # ── вспомогательные виджеты ────────────────────────────────
-    class _CardProxy:
-        """Обёртка для карточки, чтобы хранить ссылку на inner frame."""
-        def __init__(self, outer, inner):
-            self.outer = outer
-            self.inner = inner
-        def grid(self, **kw): self.outer.grid(**kw)
-        def pack(self, **kw): self.outer.pack(**kw)
-
-    def _make_card(self, parent, title: str):
-        P = self.PALETTE
-        outer = tk.Frame(parent, bg=P["surface"], bd=0,
-                         highlightbackground=P["border"],
-                         highlightthickness=1)
-        hdr = tk.Frame(outer, bg=P["surface"])
-        hdr.pack(fill="x", padx=16, pady=(14, 0))
-        ttk.Label(hdr, text=title, style="CardTitle.TLabel").pack(side="left")
-        tk.Frame(outer, bg=P["border"], height=1)\
-            .pack(fill="x", padx=16, pady=(10, 0))
-        inner = tk.Frame(outer, bg=P["surface"])
-        inner.pack(fill="both", expand=True, padx=16, pady=(10, 14))
-        return self._CardProxy(outer, inner)
-
-    def _make_tree(self, parent, columns, headers, widths):
-        P = self.PALETTE
-        frame = tk.Frame(parent, bg=P["surface"])
-        frame.pack(fill="both", expand=True)
-
-        tree = ttk.Treeview(frame, columns=columns, show="headings",
-                             selectmode="browse")
-        for c in columns:
+        tree = ttk.Treeview(frame, columns=cols, show="headings", style="Treeview", height=6)
+        for c in cols:
             tree.heading(c, text=headers[c], anchor="w")
-            tree.column(c, width=widths[c], minwidth=widths[c],
-                        anchor="w", stretch=True)
+            tree.column(c, anchor="w", width=100)
+        tree.column("id", width=40, stretch=False)
+        
+        tree.pack(fill="both", expand=True)
+        
+        # Сохраняем ссылку на дерево
+        if kind == "location": self.tree_loc = tree
+        elif kind == "status": self.tree_stat = tree
+        elif kind == "device_simple": self.tree_dev_s = tree
 
-        vsb = ttk.Scrollbar(frame, orient="vertical",
-                             command=tree.yview,
-                             style="Round.Vertical.TScrollbar")
-        tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+    # ═══════════════════════════════════════════════════════════════
+    #  СТРАНИЦА: АНАЛИТИКА
+    # ═══════════════════════════════════════════════════════════════
+    def _init_page_stats(self):
+        p = self.pages["stats"]
+        
+        # Верхние виджеты (KPI)
+        kpi_frame = tk.Frame(p, bg=COLORS["bg_app"])
+        kpi_frame.pack(fill="x", pady=(0, 20))
+        
+        self.kpi_labels = {}
+        for idx, (key, title) in enumerate([("total", "Всего устройств"), ("assigned", "В работе"), ("free", "На складе")]):
+            card = tk.Frame(kpi_frame, bg=COLORS["bg_card"], padx=25, pady=20)
+            card.pack(side="left", fill="both", expand=True, padx=(0, 20) if idx < 2 else 0)
+            
+            ttk.Label(card, text=title, style="StatLabel.TLabel").pack(anchor="w")
+            lbl = ttk.Label(card, text="0", style="StatValue.TLabel")
+            lbl.pack(anchor="w", pady=(5, 0))
+            self.kpi_labels[key] = lbl
 
-        tree.tag_configure("stripe", background=P["tree_stripe"])
-        tree.tag_configure("normal", background="white")
-        return tree
+        # Детальная статистика (Таблица)
+        detail_frame = tk.Frame(p, bg=COLORS["bg_card"], padx=25, pady=25)
+        detail_frame.pack(fill="both", expand=True)
+        
+        ttk.Label(detail_frame, text="Детализация по статусам", style="CardHeader.TLabel").pack(anchor="w", mb=15)
+        
+        cols = ("status", "count", "percent")
+        self.tree_stats = ttk.Treeview(detail_frame, columns=cols, show="headings", style="Treeview")
+        self.tree_stats.heading("status", text="Статус", anchor="w")
+        self.tree_stats.heading("count", text="Количество", anchor="w")
+        self.tree_stats.heading("percent", text="Доля %", anchor="w")
+        self.tree_stats.pack(fill="both", expand=True)
 
-    def _stat_number_card(self, parent, number: str, caption: str):
-        P = self.PALETTE
-        card = tk.Frame(parent, bg=P["surface"], bd=0,
-                        highlightbackground=P["border"],
-                        highlightthickness=1)
-        inner = tk.Frame(card, bg=P["surface"])
-        inner.pack(padx=20, pady=16)
-
-        num_label = ttk.Label(inner, text=number, style="StatNum.TLabel")
-        num_label.pack(anchor="w")
-        cap_label = ttk.Label(inner, text=caption, style="StatCaption.TLabel")
-        cap_label.pack(anchor="w", pady=(2, 0))
-
-        card.num_label = num_label
-        card.cap_label = cap_label
-        return card
-
-    # ═══════════════════════════════════════════════════════════
-    #  ЗАГРУЗКА ДАННЫХ
-    # ═══════════════════════════════════════════════════════════
-    def refresh_all(self):
+    # ═══════════════════════════════════════════════════════════════
+    #  РАБОТА С ДАННЫМИ
+    # ═══════════════════════════════════════════════════════════════
+    def refresh_all_data(self):
         self._load_registry()
-        self._load_devices()
-        self._load_locations()
-        self._load_statuses()
+        self._load_catalogs()
         self._load_stats()
 
-    def _clear_tree(self, tree: ttk.Treeview):
-        for row in tree.get_children():
-            tree.delete(row)
-
-    def _insert_striped(self, tree, values):
-        """Вставка с чередованием цвета строк."""
-        existing = len(tree.get_children())
-        tag = "stripe" if existing % 2 == 1 else "normal"
-        tree.insert("", "end", values=values, tags=(tag,))
-
-    def _load_registry(self, search: str = ""):
-        self._clear_tree(self.registry_tree)
+    def _load_registry(self, search_query=""):
+        self._clear_tree(self.tree_reg)
         cur = self.conn.cursor()
-        cur.execute("""
-            SELECT d.id, d.brand, d.model, d.imei,
-                   COALESCE(s.name, '') AS status,
-                   COALESCE(NULLIF(d.employee, ''), 'Свободный') AS employee,
-                   COALESCE(l.name, '') AS location,
-                   d.updated_at
+        sql = """
+            SELECT d.id, d.brand, d.model, d.imei, 
+                   s.name as status, d.employee, l.name as location, d.updated_at
             FROM devices d
-            LEFT JOIN statuses s ON s.id = d.status_id
-            LEFT JOIN locations l ON l.id = d.location_id
-            ORDER BY d.id DESC
-        """)
-        for r in cur.fetchall():
-            vals = (r["id"], r["brand"], r["model"], r["imei"],
-                    r["status"], r["employee"], r["location"],
-                    r["updated_at"])
-            if search:
-                combined = " ".join(str(v).lower() for v in vals)
-                if search not in combined:
-                    continue
-            self._insert_striped(self.registry_tree, vals)
+            LEFT JOIN statuses s ON d.status_id = s.id
+            LEFT JOIN locations l ON d.location_id = l.id
+            WHERE 1=1
+        """
+        params = []
+        if search_query:
+            q = f"%{search_query.strip()}%"
+            sql += " AND (d.brand LIKE ? OR d.model LIKE ? OR d.imei LIKE ? OR d.employee LIKE ?)"
+            params = [q, q, q, q]
+        
+        sql += " ORDER BY d.updated_at DESC"
+        cur.execute(sql, params)
+        
+        for i, row in enumerate(cur.fetchall()):
+            vals = list(row)
+            # Простая замена None на строки
+            vals = [v if v is not None else "—" for v in vals]
+            
+            # Чередование цветов
+            tag = "even" if i % 2 == 0 else "odd"
+            self.tree_reg.insert("", "end", values=vals, tags=(tag,))
+        
+        # Настройка цветов строк
+        self.tree_reg.tag_configure("odd", background=COLORS["row_stripe"])
+        self.tree_reg.tag_configure("even", background=COLORS["bg_card"])
 
-    def _load_devices(self):
-        self._clear_tree(self.devices_tree)
+    def _load_catalogs(self):
+        self._clear_tree(self.tree_loc)
+        self._clear_tree(self.tree_stat)
+        self._clear_tree(self.tree_dev_s)
+        
         cur = self.conn.cursor()
-        cur.execute("""
-            SELECT d.id, d.brand, d.model, d.imei,
-                   COALESCE(s.name, '') AS status
-            FROM devices d
-            LEFT JOIN statuses s ON s.id = d.status_id
-            ORDER BY d.id ASC
-        """)
-        for r in cur.fetchall():
-            self._insert_striped(self.devices_tree,
-                                 (r["id"], r["brand"], r["model"],
-                                  r["imei"], r["status"]))
-
-    def _load_locations(self):
-        self._clear_tree(self.locations_tree)
-        cur = self.conn.cursor()
-        cur.execute("SELECT id, name FROM locations ORDER BY id")
-        for r in cur.fetchall():
-            self._insert_striped(self.locations_tree,
-                                 (r["id"], r["name"]))
-
-    def _load_statuses(self):
-        self._clear_tree(self.statuses_tree)
-        cur = self.conn.cursor()
-        cur.execute("SELECT id, name FROM statuses ORDER BY id")
-        for r in cur.fetchall():
-            self._insert_striped(self.statuses_tree,
-                                 (r["id"], r["name"]))
+        
+        # Локации
+        cur.execute("SELECT id, name FROM locations ORDER BY name")
+        for r in cur.fetchall(): self.tree_loc.insert("", "end", values=list(r))
+        
+        # Статусы
+        cur.execute("SELECT id, name FROM statuses ORDER BY name")
+        for r in cur.fetchall(): self.tree_stat.insert("", "end", values=list(r))
+        
+        # Устройства (простой вид)
+        cur.execute("SELECT id, brand, model, imei FROM devices ORDER BY brand, model")
+        for r in cur.fetchall(): self.tree_dev_s.insert("", "end", values=list(r))
 
     def _load_stats(self):
         cur = self.conn.cursor()
-
-        cur.execute("SELECT COUNT(*) AS cnt FROM devices")
-        total = cur.fetchone()["cnt"]
-
-        cur.execute("""SELECT COUNT(*) AS cnt FROM devices
-                       WHERE TRIM(COALESCE(employee, '')) <> ''
-                       AND employee <> 'Свободный'""")
-        assigned = cur.fetchone()["cnt"]
-
+        
+        # KPI
+        cur.execute("SELECT COUNT(*) as cnt FROM devices")
+        total = cur.fetchone()['cnt']
+        
+        cur.execute("SELECT COUNT(*) as cnt FROM devices WHERE employee IS NOT NULL AND employee != 'Свободный'")
+        assigned = cur.fetchone()['cnt']
+        
         free = total - assigned
+        
+        self.kpi_labels["total"].config(text=str(total))
+        self.kpi_labels["assigned"].config(text=str(assigned))
+        self.kpi_labels["free"].config(text=str(free))
 
-        # обновляем карточки
-        self.stat_cards["total"].num_label.config(text=str(total))
-        self.stat_cards["assigned"].num_label.config(text=str(assigned))
-        self.stat_cards["free"].num_label.config(text=str(free))
-
-        # подробная сводка
+        # Детализация
+        self._clear_tree(self.tree_stats)
         cur.execute("""
-            SELECT l.name, COUNT(d.id) AS cnt
-            FROM locations l
-            LEFT JOIN devices d ON d.location_id = l.id
-            GROUP BY l.id, l.name HAVING cnt > 0
-            ORDER BY l.name
+            SELECT s.name, COUNT(d.id) as cnt 
+            FROM devices d 
+            JOIN statuses s ON d.status_id = s.id 
+            GROUP BY s.id
         """)
-        by_location = cur.fetchall()
+        rows = cur.fetchall()
+        for r in rows:
+            name, cnt = r['name'], r['cnt']
+            pct = f"{(cnt/total*100):.1f}%" if total > 0 else "0%"
+            self.tree_stats.insert("", "end", values=(name, cnt, pct))
 
-        cur.execute("""
-            SELECT COALESCE(s.name, 'Без состояния') AS status_name,
-                   COUNT(d.id) AS cnt
-            FROM devices d
-            LEFT JOIN statuses s ON s.id = d.status_id
-            GROUP BY status_name
-            ORDER BY cnt DESC, status_name
-        """)
-        by_status = cur.fetchall()
+    def _clear_tree(self, tree):
+        for item in tree.get_children():
+            tree.delete(item)
 
-        cur.execute("""
-            SELECT COALESCE(l.name, 'Без локации') AS location_name,
-                   COALESCE(s.name, 'Без состояния') AS status_name,
-                   COUNT(d.id) AS cnt
-            FROM devices d
-            LEFT JOIN locations l ON l.id = d.location_id
-            LEFT JOIN statuses s ON s.id = d.status_id
-            GROUP BY location_name, status_name
-            ORDER BY location_name, cnt DESC
-        """)
-        loc_status = cur.fetchall()
+    # ═══════════════════════════════════════════════════════════════
+    #  ДИАЛОГИ И ДЕЙСТВИЯ
+    # ═══════════════════════════════════════════════════════════════
+    def _create_modal(self, title, width=500, height=400):
+        top = tk.Toplevel(self.root)
+        top.title(title)
+        top.geometry(f"{width}x{height}")
+        top.configure(bg=COLORS["bg_card"])
+        top.transient(self.root)
+        top.grab_set()
+        
+        # Центрирование
+        x = self.root.winfo_x() + (self.root.winfo_width()//2) - (width//2)
+        y = self.root.winfo_y() + (self.root.winfo_height()//2) - (height//2)
+        top.geometry(f"+{x}+{y}")
+        return top
 
-        self._clear_tree(self.stats_summary_tree)
-        self._insert_striped(self.stats_summary_tree, ("Всего ТСД", total))
-        self._insert_striped(self.stats_summary_tree, ("Закреплено", assigned))
-        self._insert_striped(self.stats_summary_tree, ("Свободных", free))
-
-        self._clear_tree(self.stats_by_location_tree)
-        if by_location:
-            for r in by_location:
-                self._insert_striped(self.stats_by_location_tree,
-                                     (r["name"], r["cnt"]))
-        else:
-            self._insert_striped(self.stats_by_location_tree,
-                                 ("— нет данных —", 0))
-
-        self._clear_tree(self.stats_by_status_tree)
-        if by_status:
-            for r in by_status:
-                self._insert_striped(self.stats_by_status_tree,
-                                     (r["status_name"], r["cnt"]))
-        else:
-            self._insert_striped(self.stats_by_status_tree,
-                                 ("— нет данных —", 0))
-
-        self._clear_tree(self.stats_loc_status_tree)
-        if loc_status:
-            for r in loc_status:
-                self._insert_striped(self.stats_loc_status_tree,
-                                     (r["location_name"], r["status_name"], r["cnt"]))
-        else:
-            self._insert_striped(self.stats_loc_status_tree,
-                                 ("— нет данных —", "—", 0))
-
-    # ═══════════════════════════════════════════════════════════
-    #  ДИАЛОГИ
-    # ═══════════════════════════════════════════════════════════
-
-    def _styled_toplevel(self, title, width=500, height=400):
-        P = self.PALETTE
-        dlg = tk.Toplevel(self.root)
-        dlg.title(title)
-        dlg.geometry(f"{width}x{height}")
-        dlg.configure(bg=P["surface"])
-        dlg.transient(self.root)
-        dlg.grab_set()
-        dlg.resizable(False, False)
-
-        # центрирование
-        dlg.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() - width) // 2
-        y = self.root.winfo_y() + (self.root.winfo_height() - height) // 2
-        dlg.geometry(f"+{x}+{y}")
-
-        return dlg
-
-    def _make_form_row(self, parent, label_text, row, widget_type="entry",
-                       var=None, values=None):
-        P = self.PALETTE
-        ttk.Label(parent, text=label_text, style="TLabel")\
-            .grid(row=row, column=0, sticky="w", pady=(0, 14), padx=(0, 16))
-
-        if widget_type == "entry":
-            entry = tk.Entry(
-                parent, textvariable=var,
-                font=(self.FONT_FAMILY, 11), bg="#f8fafc",
-                fg=P["text"], relief="flat", bd=1,
-                highlightbackground=P["border"],
-                highlightcolor=P["accent"], highlightthickness=1,
-                insertbackground=P["accent"])
-            entry.grid(row=row, column=1, sticky="ew", pady=(0, 14), ipady=6)
-            return entry
-        elif widget_type == "combo":
-            cb = ttk.Combobox(parent, textvariable=var, values=values,
-                              state="readonly", font=(self.FONT_FAMILY, 10))
-            cb.grid(row=row, column=1, sticky="ew", pady=(0, 14), ipady=4)
-            return cb
-
-    # ── Диалог «Добавить / Редактировать ТСД» ─────────────────
+    # --- ДИАЛОГ: УСТРОЙСТВО ---
     def _open_device_dialog(self, device_id=None):
-        editing = device_id is not None
-        dlg = self._styled_toplevel(
-            "Редактировать ТСД" if editing else "Новый ТСД",
-            width=520, height=380)
-        P = self.PALETTE
+        is_edit = device_id is not None
+        title = "Редактирование ТСД" if is_edit else "Новое устройство"
+        dlg = self._create_modal(title, 500, 450)
+        
+        # Поля
+        fields = {}
+        content = tk.Frame(dlg, bg=COLORS["bg_card"], padx=30, pady=20)
+        content.pack(fill="both", expand=True)
+        
+        # Заголовок
+        tk.Label(content, text=title, font=FONTS["h2"], bg=COLORS["bg_card"], fg=COLORS["primary"]).pack(anchor="w", mb=20)
 
-        # заголовок
-        hdr = tk.Frame(dlg, bg=P["accent"], height=56)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
-        tk.Label(hdr,
-                 text="✎  Редактирование" if editing else "＋  Новый терминал",
-                 bg=P["accent"], fg="white",
-                 font=(self.FONT_FAMILY, 14, "bold"))\
-            .pack(side="left", padx=20, pady=12)
+        # Helper для создания полей
+        def add_field(label, var_key, options=None):
+            f_cont = tk.Frame(content, bg=COLORS["bg_card"])
+            f_cont.pack(fill="x", pady=5)
+            tk.Label(f_cont, text=label, font=FONTS["body_bold"], bg=COLORS["bg_card"], fg=COLORS["secondary"]).pack(anchor="w")
+            
+            var = tk.StringVar()
+            if options:
+                w = ttk.Combobox(f_cont, textvariable=var, values=options, state="readonly", font=FONTS["body"])
+            else:
+                w = tk.Entry(f_cont, textvariable=var, font=FONTS["body"], bg="#F9FAFB", bd=1, relief="solid")
+                # Хак для border color в tk.Entry сложен, используем frame или рельеф
+            
+            w.pack(fill="x", ipady=6, pady=(5, 0))
+            fields[var_key] = var
+            return w
 
-        form = tk.Frame(dlg, bg=P["surface"])
-        form.pack(fill="both", expand=True, padx=28, pady=20)
-        form.columnconfigure(1, weight=1)
+        # Списки для комбобоксов
+        cur = self.conn.cursor()
+        statuses = [r[0] for r in cur.execute("SELECT name FROM statuses").fetchall()]
+        locations = [r[0] for r in cur.execute("SELECT name FROM locations").fetchall()]
 
-        brand_var = tk.StringVar()
-        model_var = tk.StringVar()
-        imei_var = tk.StringVar()
-        status_var = tk.StringVar()
+        add_field("Бренд", "brand")
+        add_field("Модель", "model")
+        add_field("IMEI", "imei")
+        add_field("Статус *", "status", statuses)
+        
+        # Если редактирование - заполняем
+        if is_edit:
+            row = cur.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+            fields["brand"].set(row["brand"])
+            fields["model"].set(row["model"])
+            fields["imei"].set(row["imei"])
+            # Получаем имя статуса по ID
+            st_name = cur.execute("SELECT name FROM statuses WHERE id=?", (row["status_id"],)).fetchone()
+            if st_name: fields["status"].set(st_name[0])
 
-        self._make_form_row(form, "Бренд", 0, var=brand_var)
-        self._make_form_row(form, "Модель", 1, var=model_var)
-        self._make_form_row(form, "IMEI", 2, var=imei_var)
-        self._make_form_row(form, "Состояние", 3, widget_type="combo",
-                            var=status_var, values=self._get_status_names())
+        # Кнопки
+        btn_area = tk.Frame(dlg, bg="#F9FAFB", height=60)
+        btn_area.pack(side="bottom", fill="x")
+        
+        def save():
+            data = {k: v.get().strip() for k, v in fields.items()}
+            if not all([data["brand"], data["model"], data["imei"], data["status"]]):
+                messagebox.showerror("Ошибка", "Заполните обязательные поля", parent=dlg)
+                return
+            
+            try:
+                # Получаем ID статуса
+                s_id = cur.execute("SELECT id FROM statuses WHERE name=?", (data["status"],)).fetchone()[0]
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                
+                if is_edit:
+                    cur.execute("UPDATE devices SET brand=?, model=?, imei=?, status_id=?, updated_at=? WHERE id=?",
+                                (data["brand"], data["model"], data["imei"], s_id, now, device_id))
+                else:
+                    cur.execute("INSERT INTO devices (brand, model, imei, status_id, updated_at) VALUES (?,?,?,?,?)",
+                                (data["brand"], data["model"], data["imei"], s_id, now))
+                self.conn.commit()
+                self.refresh_all_data()
+                dlg.destroy()
+            except Exception as e:
+                messagebox.showerror("Ошибка БД", str(e), parent=dlg)
 
-        if editing:
+        ttk.Button(btn_area, text="Сохранить", style="Primary.TButton", command=save).pack(side="right", padx=20, pady=15)
+        ttk.Button(btn_area, text="Отмена", style="Ghost.TButton", command=dlg.destroy).pack(side="right", padx=0, pady=15)
+
+    def _on_registry_double_click(self, event):
+        sel = self.tree_reg.selection()
+        if not sel: return
+        
+        item = self.tree_reg.item(sel[0])
+        dev_id = item['values'][0]
+        self._open_assignment_dialog(dev_id)
+
+    # --- ДИАЛОГ: НАЗНАЧЕНИЕ (ЗАКРЕПЛЕНИЕ) ---
+    def _open_assignment_dialog(self, dev_id):
+        dlg = self._create_modal("Движение устройства", 500, 480)
+        content = tk.Frame(dlg, bg=COLORS["bg_card"], padx=30, pady=20)
+        content.pack(fill="both", expand=True)
+
+        cur = self.conn.cursor()
+        dev = cur.execute("SELECT * FROM devices WHERE id=?", (dev_id,)).fetchone()
+        
+        tk.Label(content, text=f"{dev['brand']} {dev['model']}", font=FONTS["h2"], bg=COLORS["bg_card"]).pack(anchor="w")
+        tk.Label(content, text=f"IMEI: {dev['imei']}", font=FONTS["body"], fg=COLORS["secondary"], bg=COLORS["bg_card"]).pack(anchor="w", mb=20)
+
+        # Поля формы
+        tk.Label(content, text="Сотрудник (ФИО)", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", mt=10)
+        emp_var = tk.StringVar(value=dev['employee'])
+        tk.Entry(content, textvariable=emp_var, font=FONTS["body"], bg="#F9FAFB").pack(fill="x", ipady=6, pady=5)
+        
+        tk.Label(content, text="Локация", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", mt=10)
+        locs = [r[0] for r in cur.execute("SELECT name FROM locations").fetchall()]
+        loc_var = tk.StringVar()
+        cur_loc = cur.execute("SELECT name FROM locations WHERE id=?", (dev['location_id'],)).fetchone()
+        if cur_loc: loc_var.set(cur_loc[0])
+        ttk.Combobox(content, textvariable=loc_var, values=locs, state="readonly").pack(fill="x", ipady=6, pady=5)
+        
+        tk.Label(content, text="Новый статус", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", mt=10)
+        stats = [r[0] for r in cur.execute("SELECT name FROM statuses").fetchall()]
+        stat_var = tk.StringVar()
+        cur_stat = cur.execute("SELECT name FROM statuses WHERE id=?", (dev['status_id'],)).fetchone()
+        if cur_stat: stat_var.set(cur_stat[0])
+        ttk.Combobox(content, textvariable=stat_var, values=stats, state="readonly").pack(fill="x", ipady=6, pady=5)
+
+        # Сохранение
+        def save_assignment():
+            emp = emp_var.get().strip() or "Свободный"
+            l_name = loc_var.get()
+            s_name = stat_var.get()
+            
+            try:
+                l_id = cur.execute("SELECT id FROM locations WHERE name=?", (l_name,)).fetchone()
+                l_id = l_id[0] if l_id else None
+                s_id = cur.execute("SELECT id FROM statuses WHERE name=?", (s_name,)).fetchone()
+                if not s_id: 
+                    messagebox.showerror("Ошибка", "Выберите статус", parent=dlg)
+                    return
+                
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                cur.execute("""UPDATE devices SET employee=?, location_id=?, status_id=?, updated_at=? 
+                               WHERE id=?""", (emp, l_id, s_id[0], now, dev_id))
+                self.conn.commit()
+                self.refresh_all_data()
+                dlg.destroy()
+            except Exception as e:
+                messagebox.showerror("Ошибка", str(e))
+
+        ttk.Button(content, text="Применить изменения", style="Primary.TButton", command=save_assignment).pack(fill="x", pady=30)
+
+
+    # --- ДИАЛОГ: СПРАВОЧНИКИ ---
+    def _open_dict_dialog(self, kind, rec_id=None):
+        name_map = {"location": "локацию", "status": "статус"}
+        table_map = {"location": "locations", "status": "statuses"}
+        
+        is_edit = rec_id is not None
+        title = f"{'Редактировать' if is_edit else 'Добавить'} {name_map[kind]}"
+        
+        dlg = self._create_modal(title, 400, 250)
+        content = tk.Frame(dlg, bg=COLORS["bg_card"], padx=20, pady=20)
+        content.pack(fill="both", expand=True)
+        
+        tk.Label(content, text="Название", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w")
+        var = tk.StringVar()
+        e = tk.Entry(content, textvariable=var, font=FONTS["body"], bg="#F9FAFB")
+        e.pack(fill="x", ipady=6, pady=5)
+        e.focus_set()
+
+        if is_edit:
             cur = self.conn.cursor()
-            cur.execute("""
-                SELECT d.brand, d.model, d.imei,
-                       COALESCE(s.name, '') AS status_name
-                FROM devices d
-                LEFT JOIN statuses s ON s.id = d.status_id
-                WHERE d.id = ?
-            """, (device_id,))
-            row = cur.fetchone()
-            if row:
-                brand_var.set(row["brand"])
-                model_var.set(row["model"])
-                imei_var.set(row["imei"])
-                status_var.set(row["status_name"])
-
-        # кнопки
-        btn_frame = tk.Frame(dlg, bg=P["surface"])
-        btn_frame.pack(fill="x", padx=28, pady=(0, 20))
+            val = cur.execute(f"SELECT name FROM {table_map[kind]} WHERE id=?", (rec_id,)).fetchone()
+            if val: var.set(val[0])
 
         def save():
-            brand = brand_var.get().strip()
-            model = model_var.get().strip()
-            imei = imei_var.get().strip()
-            status_name = status_var.get().strip()
-            if not all([brand, model, imei, status_name]):
-                messagebox.showerror("Ошибка",
-                                     "Заполните все поля.", parent=dlg)
-                return
-            status_id = self._get_status_id(status_name)
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            val = var.get().strip()
+            if not val: return
             try:
                 cur = self.conn.cursor()
-                if editing:
-                    cur.execute("""UPDATE devices
-                                   SET brand=?, model=?, imei=?,
-                                       status_id=?, updated_at=?
-                                   WHERE id=?""",
-                                (brand, model, imei, status_id,
-                                 now, device_id))
+                if is_edit:
+                    cur.execute(f"UPDATE {table_map[kind]} SET name=? WHERE id=?", (val, rec_id))
                 else:
-                    cur.execute("""INSERT INTO devices
-                                   (brand, model, imei, status_id,
-                                    employee, location_id, updated_at)
-                                   VALUES(?,?,?,?,?,?,?)""",
-                                (brand, model, imei, status_id,
-                                 "Свободный", None, now))
+                    cur.execute(f"INSERT INTO {table_map[kind]} (name) VALUES (?)", (val,))
                 self.conn.commit()
+                self.refresh_all_data()
                 dlg.destroy()
-                self.refresh_all()
             except sqlite3.IntegrityError:
-                messagebox.showerror("Ошибка",
-                                     "IMEI должен быть уникальным.",
-                                     parent=dlg)
+                messagebox.showerror("Ошибка", "Такое имя уже существует", parent=dlg)
 
-        ttk.Button(btn_frame, text="Отмена", style="Ghost.TButton",
-                   command=dlg.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(btn_frame, text="💾  Сохранить", style="Accent.TButton",
-                   command=save).pack(side="right")
+        ttk.Button(content, text="Сохранить", style="Primary.TButton", command=save).pack(side="bottom", fill="x")
 
-    def _edit_selected_device(self):
-        sel = self.devices_tree.selection()
-        if not sel:
-            messagebox.showinfo("Подсказка",
-                                "Выберите ТСД в таблице для редактирования.")
-            return
-        device_id = int(self.devices_tree.item(sel[0], "values")[0])
-        self._open_device_dialog(device_id)
-
-    def _delete_selected_device(self):
-        sel = self.devices_tree.selection()
-        if not sel:
-            messagebox.showinfo("Подсказка",
-                                "Сначала выберите ТСД для удаления.")
-            return
-
-        device_id = int(self.devices_tree.item(sel[0], "values")[0])
-        confirm = messagebox.askyesno(
-            "Удаление",
-            "Удалить выбранный ТСД? Это действие нельзя отменить.",
-        )
-        if not confirm:
-            return
-
-        cur = self.conn.cursor()
-        cur.execute("DELETE FROM devices WHERE id=?", (device_id,))
-        self.conn.commit()
-        self.refresh_all()
-
-    # ── Диалог «Добавить / Редактировать справочник» ───────────
-    def _open_dict_dialog(self, kind: str, record_id=None):
-        table = "locations" if kind == "location" else "statuses"
-        caption = "локацию" if kind == "location" else "состояние"
-        editing = record_id is not None
-
-        dlg = self._styled_toplevel(
-            ("Редактировать " if editing else "Добавить ") + caption,
-            width=440, height=230)
-        P = self.PALETTE
-
-        color = P["success"] if kind == "location" else P["warning"]
-        hdr = tk.Frame(dlg, bg=color, height=50)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
-        tk.Label(hdr,
-                 text=("✎  Редактирование" if editing else "＋  Новая запись"),
-                 bg=color, fg="white",
-                 font=(self.FONT_FAMILY, 13, "bold"))\
-            .pack(side="left", padx=20, pady=10)
-
-        form = tk.Frame(dlg, bg=P["surface"])
-        form.pack(fill="both", expand=True, padx=28, pady=20)
-        form.columnconfigure(1, weight=1)
-
-        name_var = tk.StringVar()
-        self._make_form_row(form, f"Название", 0, var=name_var)
-
-        if editing:
-            cur = self.conn.cursor()
-            cur.execute(f"SELECT name FROM {table} WHERE id=?", (record_id,))
-            row = cur.fetchone()
-            if row:
-                name_var.set(row["name"])
-
-        btn_frame = tk.Frame(dlg, bg=P["surface"])
-        btn_frame.pack(fill="x", padx=28, pady=(0, 20))
-
-        def save():
-            name = name_var.get().strip()
-            if not name:
-                messagebox.showerror("Ошибка",
-                                     "Название не может быть пустым.",
-                                     parent=dlg)
-                return
-            try:
+    def _action_dict(self, kind, action):
+        tree = self.tree_loc if kind == "location" else self.tree_stat
+        sel = tree.selection()
+        if not sel: return
+        item_id = tree.item(sel[0])['values'][0]
+        
+        if action == "edit":
+            self._open_dict_dialog(kind, item_id)
+        elif action == "delete":
+            if messagebox.askyesno("Удаление", "Удалить запись? Ссылки в устройствах будут очищены."):
                 cur = self.conn.cursor()
-                if editing:
-                    cur.execute(f"UPDATE {table} SET name=? WHERE id=?",
-                                (name, record_id))
-                else:
-                    cur.execute(f"INSERT INTO {table}(name) VALUES(?)",
-                                (name,))
+                tbl = "locations" if kind == "location" else "statuses"
+                col = "location_id" if kind == "location" else "status_id"
+                cur.execute(f"UPDATE devices SET {col}=NULL WHERE {col}=?", (item_id,))
+                cur.execute(f"DELETE FROM {tbl} WHERE id=?", (item_id,))
                 self.conn.commit()
-                dlg.destroy()
-                self.refresh_all()
-            except sqlite3.IntegrityError:
-                messagebox.showerror("Ошибка",
-                                     "Такое значение уже существует.",
-                                     parent=dlg)
+                self.refresh_all_data()
 
-        ttk.Button(btn_frame, text="Отмена", style="Ghost.TButton",
-                   command=dlg.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(btn_frame, text="💾  Сохранить", style="Accent.TButton",
-                   command=save).pack(side="right")
+    def _edit_selected_device_simple(self):
+        sel = self.tree_dev_s.selection()
+        if sel:
+            self._open_device_dialog(self.tree_dev_s.item(sel[0])['values'][0])
 
-    def _edit_dict(self, kind: str):
-        tree = self.locations_tree if kind == "location" \
-            else self.statuses_tree
-        sel = tree.selection()
-        if not sel:
-            messagebox.showinfo("Подсказка",
-                                "Сначала выберите запись в таблице.")
-            return
-        rec_id = int(tree.item(sel[0], "values")[0])
-        self._open_dict_dialog(kind, rec_id)
+    def _delete_selected_device_simple(self):
+        sel = self.tree_dev_s.selection()
+        if sel:
+            d_id = self.tree_dev_s.item(sel[0])['values'][0]
+            if messagebox.askyesno("Удаление", "Удалить устройство навсегда?"):
+                self.conn.execute("DELETE FROM devices WHERE id=?", (d_id,))
+                self.conn.commit()
+                self.refresh_all_data()
 
-    def _delete_dict(self, kind: str):
-        tree = self.locations_tree if kind == "location" else self.statuses_tree
-        table = "locations" if kind == "location" else "statuses"
-        column = "location_id" if kind == "location" else "status_id"
-
-        sel = tree.selection()
-        if not sel:
-            messagebox.showinfo("Подсказка", "Сначала выберите запись для удаления.")
-            return
-
-        rec_id = int(tree.item(sel[0], "values")[0])
-        rec_name = tree.item(sel[0], "values")[1]
-        confirm = messagebox.askyesno(
-            "Удаление",
-            f"Удалить запись «{rec_name}»? Это действие нельзя отменить.",
-        )
-        if not confirm:
-            return
-
-        cur = self.conn.cursor()
-        cur.execute(f"UPDATE devices SET {column}=NULL WHERE {column}=?", (rec_id,))
-        cur.execute(f"DELETE FROM {table} WHERE id=?", (rec_id,))
-        self.conn.commit()
-        self.refresh_all()
-
-    # ── Диалог «Закрепление ТСД» ──────────────────────────────
-    def _open_assignment_dialog(self, _event=None):
-        sel = self.registry_tree.selection()
-        if not sel:
-            return
-        device_id = int(self.registry_tree.item(sel[0], "values")[0])
-
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT d.id, d.brand, d.model, d.imei,
-                   COALESCE(s.name, '') AS status_name,
-                   COALESCE(l.name, '') AS location_name,
-                   COALESCE(NULLIF(d.employee, ''), 'Свободный') AS employee
-            FROM devices d
-            LEFT JOIN statuses s ON s.id = d.status_id
-            LEFT JOIN locations l ON l.id = d.location_id
-            WHERE d.id = ?
-        """, (device_id,))
-        row = cur.fetchone()
-        if not row:
-            return
-
-        P = self.PALETTE
-        dlg = self._styled_toplevel("Закрепление ТСД", 540, 420)
-
-        # шапка
-        hdr = tk.Frame(dlg, bg="#6366f1", height=64)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
-        tk.Label(hdr, text="🔗  Закрепление терминала",
-                 bg="#6366f1", fg="white",
-                 font=(self.FONT_FAMILY, 14, "bold"))\
-            .pack(side="left", padx=20)
-
-        # инфо-полоска
-        info_bar = tk.Frame(dlg, bg="#eef2ff")
-        info_bar.pack(fill="x", padx=0, pady=0)
-        tk.Label(info_bar,
-                 text=f"  {row['brand']}  {row['model']}  •  IMEI: {row['imei']}",
-                 bg="#eef2ff", fg="#4338ca",
-                 font=(self.FONT_FAMILY, 10, "bold"))\
-            .pack(anchor="w", padx=20, pady=10)
-
-        form = tk.Frame(dlg, bg=P["surface"])
-        form.pack(fill="both", expand=True, padx=28, pady=20)
-        form.columnconfigure(1, weight=1)
-
-        employee_var = tk.StringVar(value=row["employee"])
-        location_var = tk.StringVar(value=row["location_name"])
-        status_var = tk.StringVar(value=row["status_name"])
-
-        self._make_form_row(form, "Сотрудник", 0, var=employee_var)
-        self._make_form_row(form, "Локация", 1, widget_type="combo",
-                            var=location_var,
-                            values=["", *self._get_location_names()])
-        self._make_form_row(form, "Состояние *", 2, widget_type="combo",
-                            var=status_var,
-                            values=self._get_status_names())
-
-        btn_frame = tk.Frame(dlg, bg=P["surface"])
-        btn_frame.pack(fill="x", padx=28, pady=(0, 20))
-
-        def save():
-            employee = employee_var.get().strip() or "Свободный"
-            location_name = location_var.get().strip()
-            status_name = status_var.get().strip()
-
-            if not status_name:
-                messagebox.showerror("Ошибка",
-                                     "Состояние обязательно.",
-                                     parent=dlg)
-                return
-
-            status_id = self._get_status_id(status_name)
-            location_id = self._get_location_id(location_name) \
-                if location_name else None
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            cur = self.conn.cursor()
-            cur.execute("""UPDATE devices
-                           SET employee=?, location_id=?,
-                               status_id=?, updated_at=?
-                           WHERE id=?""",
-                        (employee, location_id, status_id, now, device_id))
-            self.conn.commit()
-            dlg.destroy()
-            self.refresh_all()
-
-        ttk.Button(btn_frame, text="Отмена", style="Ghost.TButton",
-                   command=dlg.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(btn_frame, text="💾  Сохранить", style="Accent.TButton",
-                   command=save).pack(side="right")
-
-    # ═══════════════════════════════════════════════════════════
-    #  ХЕЛПЕРЫ
-    # ═══════════════════════════════════════════════════════════
-    def _get_status_names(self):
-        cur = self.conn.cursor()
-        cur.execute("SELECT name FROM statuses ORDER BY id")
-        return [r["name"] for r in cur.fetchall()]
-
-    def _get_location_names(self):
-        cur = self.conn.cursor()
-        cur.execute("SELECT name FROM locations ORDER BY id")
-        return [r["name"] for r in cur.fetchall()]
-
-    def _get_status_id(self, name: str):
-        cur = self.conn.cursor()
-        cur.execute("SELECT id FROM statuses WHERE name=?", (name,))
-        row = cur.fetchone()
-        return row["id"] if row else None
-
-    def _get_location_id(self, name: str):
-        cur = self.conn.cursor()
-        cur.execute("SELECT id FROM locations WHERE name=?", (name,))
-        row = cur.fetchone()
-        return row["id"] if row else None
-
-    def _toggle_fullscreen(self):
+    # ─── ХЕЛПЕРЫ ───────────────────────────────────────────────────
+    def _toggle_fullscreen(self, event=None):
         self.is_fullscreen = not self.is_fullscreen
         self.root.attributes("-fullscreen", self.is_fullscreen)
 
-    def _exit_fullscreen(self):
+    def _exit_fullscreen(self, event=None):
         self.is_fullscreen = False
         self.root.attributes("-fullscreen", False)
 
-    def _on_resize(self, event=None):
-        """Адаптивность: скрываем боковую панель на узких окнах."""
-        try:
-            w = self.root.winfo_width()
-            if w < 900:
-                if self.sidebar.winfo_ismapped():
-                    self.sidebar.pack_forget()
-            else:
-                if not self.sidebar.winfo_ismapped():
-                    self.sidebar.pack(side="left", fill="y",
-                                      before=self.content_area)
-        except tk.TclError:
-            pass
-
-
-# ═══════════════════════════════════════════════════════════════
-#  ЗАПУСК
-# ═══════════════════════════════════════════════════════════════
-def main():
-    root = tk.Tk()
-    app = TSDRegistryApp(root)
-    root.mainloop()
-    app.conn.close()
-
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    # Убираем размытость на Windows HighDPI мониторах
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(1)
+    except:
+        pass
+    
+    app = TSDRegistryApp(root)
+    root.mainloop()
