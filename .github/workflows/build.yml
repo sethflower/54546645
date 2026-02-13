@@ -24,29 +24,30 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
+          pip install --upgrade pyinstaller
           pip install -r requirements.txt
-          pip install pyinstaller
 
-      # ВАЖНО:
-      # 1) замените main.py на ваш файл входа
-      # 2) при желании задайте имя exe через --name
+      - name: Diagnostics (stdlib + PyQt6)
+        shell: pwsh
+        run: |
+          python -c "import sys; print(sys.version)"
+          python -c "import pkgutil; print('pkgutil OK:', pkgutil.__file__)"
+          python -c "import PyQt6; print('PyQt6 OK:', PyQt6.__file__)"
+
       - name: Build with PyInstaller (PyQt6)
-  shell: pwsh
-  run: |
-    python -c "import PyQt6; print('PyQt6 OK:', PyQt6.__file__)"
-    pyinstaller `
-      --noconfirm `
-      --clean `
-      --windowed `
-      --onefile `
-      --name "TSD_Registry" `
-      --collect-all PyQt6 `
-      --collect-submodules PyQt6 `
-      main.py
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --windowed `
+            --onefile `
+            --name "TSD_Registry" `
+            --collect-all PyQt6 `
+            --collect-submodules PyQt6 `
+            --hidden-import pkgutil `
+            main.py
 
-
-      # (Опционально) положить рядом пустой json, чтобы при первом запуске уже был файл
-      # Если вам это не нужно — удалите шаг
       - name: Add initial data file (optional)
         shell: pwsh
         run: |
