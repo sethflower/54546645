@@ -41,9 +41,10 @@ def load_data():
         "statuses": [],
         "registry": {}
     }
-    if os.path.exists(DATA_FILE):
+    data_file = get_data_file_path()
+    if os.path.exists(data_file):
         try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
+            with open(data_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for key in default_data:
                     if key not in data:
@@ -55,7 +56,8 @@ def load_data():
 
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+    data_file = get_data_file_path()
+    with open(data_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
