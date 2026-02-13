@@ -23,13 +23,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build EXE
+      - name: Build EXE (onedir for max DLL compatibility)
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --name tsd-registry main.py
+          pyinstaller --noconfirm --clean --windowed --onedir --name tsd-registry --collect-all PyQt6 --hidden-import PyQt6.sip main.py
+
+      - name: Bundle portable zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/tsd-registry/* -DestinationPath dist/tsd-registry-windows-portable.zip -Force
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tsd-registry-windows-exe
-          path: dist/tsd-registry.exe
+          name: tsd-registry-windows-portable
+          path: dist/tsd-registry-windows-portable.zip
           if-no-files-found: error
