@@ -1,5 +1,3 @@
-PySide6
+PyQt6==6.6.1
 requests
 platformdirs
-flet
-PyQt6==6.6.1
