@@ -35,14 +35,14 @@ jobs:
           python -c "import tkinter as tk; print('tkinter OK:', tk.TkVersion)"
 
       # IMPORTANT:
-      # - Replace YOUR_ENTRY_FILE.py with your actual entrypoint (e.g. main.py)
+      # - Replace main.py with your actual entrypoint (e.g. main.py)
       # - If you have an icon, add: --icon app.ico
       - name: Build with PyInstaller (onefile)
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
             --name "TSD_Registry" `
-            "YOUR_ENTRY_FILE.py"
+            "main.py"
 
       - name: Verify build output
         shell: pwsh
