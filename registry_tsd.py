@@ -562,7 +562,7 @@ class LoginFrame(BaseFrame):
             if not token:
                 raise ApiError("Сервер не вернул админ-токен")
             self.app.show_admin(token)
-                self.app.run_bg(lambda: self.app.api.admin_login(pwd), ok=ok)
+        self.app.run_bg(lambda: self.app.api.admin_login(pwd), ok=ok)
 
 
 # ───────────────────────── Сканер ─────────────────────────
@@ -1005,7 +1005,7 @@ class PendingDialog(StyledDialog):
                            ("ID", "Прізвище", "Створено"), (80, 320, 260)):
             self.tree.heading(c, text=h)
             self.tree.column(c, width=w, anchor="center")
-                self.tree.pack(fill="both", expand=True)
+        self.tree.pack(fill="both", expand=True)
 
         bar = tk.Frame(self.body, bg=C.white)
         bar.pack(fill="x", pady=(16, 0))
