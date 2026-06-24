@@ -1,796 +1,629 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+BoxID-ТТН Windows
+Однофайловое Python-приложение для Windows, повторяющее функционал Android-модуля
+сканирования BoxID-ТТН: вход/регистрация, сканирование, офлайн-очередь,
+история, журнал ошибок и админ-панель.
+
+Запуск:
+    python tracking_windows_app.py
+
+Зависимости:
+    pip install requests
+Tkinter обычно входит в стандартную поставку Python для Windows.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import queue
+import re
 import sqlite3
+import sys
+import threading
+import time
+import traceback
 import tkinter as tk
-from tkinter import ttk, messagebox
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from tkinter import messagebox, ttk
+from typing import Any, Callable, Optional
 
-# ─── КОНФИГУРАЦИЯ И КОНСТАНТЫ ──────────────────────────────────────
-DB_FILE = "tsd_registry.db"
-APP_TITLE = "TSD Enterprise | Учет оборудования"
-APP_SIZE = "1280x850"
+try:
+    import requests
+except ImportError:  # pragma: no cover
+    requests = None  # type: ignore
 
-# Современная корпоративная палитра (Slate & Blue)
-COLORS = {
-    "bg_app":          "#F3F4F6",  # Очень светло-серый фон
-    "bg_sidebar":      "#111827",  # Почти черный (Deep Navy)
-    "bg_card":         "#FFFFFF",  # Чистый белый
-    "primary":         "#2563EB",  # Яркий корпоративный синий
-    "primary_hover":   "#1D4ED8",  # Темнее при наведении
-    "secondary":       "#64748B",  # Серый для второстепенного текста
-    "text_main":       "#1F2937",  # Темно-серый для основного текста
-    "text_light":      "#9CA3AF",  # Светло-серый
-    "text_on_dark":    "#F9FAFB",  # Белый текст на темном фоне
-    "border":          "#E5E7EB",  # Светлая граница
-    "success":         "#10B981",  # Зеленый
-    "warning":         "#F59E0B",  # Оранжевый
-    "danger":          "#EF4444",  # Красный
-    "row_stripe":      "#F9FAFB",  # Цвет чередования строк
-    "row_hover":       "#EFF6FF",  # Подсветка строки (светло-голубой)
-}
+APP_NAME = "BoxID-ТТН Windows"
+API_BASE_URL = "https://tracking-app.dclink.ua"
+REQUEST_TIMEOUT = 8
+SYNC_INTERVAL_MS = 20_000
+SCAN_BUFFER_MS = 180
 
-FONTS = {
-    "h1": ("Segoe UI", 24, "bold"),
-    "h2": ("Segoe UI", 16, "bold"),
-    "h3": ("Segoe UI", 12, "bold"),
-    "body": ("Segoe UI", 10),
-    "body_bold": ("Segoe UI", 10, "bold"),
-    "small": ("Segoe UI", 9),
-}
+ROLE_LABELS = {"admin": "Адмін", "operator": "Оператор", "viewer": "Перегляд"}
+ROLE_LEVELS = {"admin": 1, "operator": 0, "viewer": 2}
 
-# ─── КЛАСС ПРИЛОЖЕНИЯ ──────────────────────────────────────────────
-class TSDRegistryApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title(APP_TITLE)
-        self.root.geometry(APP_SIZE)
-        self.root.minsize(1000, 600)
-        self.root.configure(bg=COLORS["bg_app"])
 
-        self.is_fullscreen = False
-        self.current_page = None
-        
-        # Подключение к БД
-        self.conn = sqlite3.connect(DB_FILE)
-        self.conn.row_factory = sqlite3.Row
-        self._init_db()
+def app_dir() -> Path:
+    base = os.environ.get("APPDATA") or str(Path.home())
+    path = Path(base) / "BoxID_TTN_Windows"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-        # Инициализация стилей и интерфейса
-        self._setup_styles()
-        self._build_layout()
-        
-        # Загрузка первой страницы
-        self.show_page("registry")
-        self.refresh_all_data()
 
-        # Бинды
-        self.root.bind("<F11>", self._toggle_fullscreen)
-        self.root.bind("<Escape>", self._exit_fullscreen)
+SETTINGS_FILE = app_dir() / "settings.json"
+DB_FILE = app_dir() / "offline_queue.sqlite3"
 
-    def _init_db(self):
-        """Инициализация таблиц базы данных."""
-        with self.conn:
-            cur = self.conn.cursor()
-            cur.execute("""CREATE TABLE IF NOT EXISTS statuses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL
-            )""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS locations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL
-            )""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS devices (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                brand TEXT NOT NULL,
-                model TEXT NOT NULL,
-                imei TEXT UNIQUE NOT NULL,
-                status_id INTEGER,
-                employee TEXT DEFAULT 'Свободный',
-                location_id INTEGER,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(status_id) REFERENCES statuses(id),
-                FOREIGN KEY(location_id) REFERENCES locations(id)
-            )""")
-            
-            # Предзаполнение статуса "Рабочий", если база пустая, чтобы логика работала сразу
+
+class ApiError(Exception):
+    def __init__(self, message: str, status_code: int = 0):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def only_digits(value: str) -> str:
+    return re.sub(r"\D+", "", value or "")
+
+
+def parse_dt(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.strftime("%d.%m.%Y %H:%M:%S")
+    except Exception:
+        return text
+
+
+def beep_success(root: tk.Tk) -> None:
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_OK)
+    except Exception:
+        root.bell()
+
+
+def beep_error(root: tk.Tk) -> None:
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_ICONHAND)
+    except Exception:
+        root.bell()
+
+
+class Settings:
+    def __init__(self) -> None:
+        self.data: dict[str, Any] = {}
+        self.load()
+
+    def load(self) -> None:
+        if SETTINGS_FILE.exists():
             try:
-                cur.execute("INSERT OR IGNORE INTO statuses (name) VALUES ('Рабочий')")
-            except:
-                pass
+                self.data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                self.data = {}
 
-    # ─── ДИЗАЙН И СТИЛИ ────────────────────────────────────────────
-    def _setup_styles(self):
-        style = ttk.Style()
-        style.theme_use("clam")  # Основа для кастомизации
+    def save(self) -> None:
+        SETTINGS_FILE.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        # -- Общие --
-        style.configure("TFrame", background=COLORS["bg_app"])
-        style.configure("Card.TFrame", background=COLORS["bg_card"], relief="flat")
-        
-        # -- Метки (Labels) --
-        style.configure("TLabel", background=COLORS["bg_app"], foreground=COLORS["text_main"], font=FONTS["body"])
-        style.configure("Card.TLabel", background=COLORS["bg_card"], foreground=COLORS["text_main"], font=FONTS["body"])
-        style.configure("Header.TLabel", background=COLORS["bg_app"], foreground=COLORS["text_main"], font=FONTS["h1"])
-        style.configure("CardHeader.TLabel", background=COLORS["bg_card"], foreground=COLORS["text_main"], font=FONTS["h2"])
-        style.configure("SubHeader.TLabel", background=COLORS["bg_app"], foreground=COLORS["secondary"], font=FONTS["body"])
-        style.configure("StatValue.TLabel", background=COLORS["bg_card"], foreground=COLORS["primary"], font=("Segoe UI", 28, "bold"))
-        style.configure("StatLabel.TLabel", background=COLORS["bg_card"], foreground=COLORS["secondary"], font=FONTS["small"])
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.data.get(key, default)
 
-        # -- Кнопки (Buttons) --
-        # Primary Action Button
-        style.configure("Primary.TButton",
-                        font=FONTS["body_bold"],
-                        background=COLORS["primary"],
-                        foreground="white",
-                        borderwidth=0,
-                        focuscolor=COLORS["primary"],
-                        padding=(20, 10))
-        style.map("Primary.TButton",
-                  background=[("active", COLORS["primary_hover"]), ("disabled", COLORS["secondary"])])
+    def set(self, key: str, value: Any) -> None:
+        self.data[key] = value
+        self.save()
 
-        # Danger Button
-        style.configure("Danger.TButton",
-                        font=FONTS["body_bold"],
-                        background=COLORS["danger"],
-                        foreground="white",
-                        borderwidth=0,
-                        padding=(15, 8))
-        style.map("Danger.TButton", background=[("active", "#DC2626")])
+    def clear_session(self) -> None:
+        for key in ("token", "access_level", "user_name", "user_role", "last_module"):
+            self.data.pop(key, None)
+        self.save()
 
-        # Ghost/Outline Button
-        style.configure("Ghost.TButton",
-                        font=FONTS["body"],
-                        background=COLORS["bg_app"],
-                        foreground=COLORS["text_main"],
-                        borderwidth=1,
-                        bordercolor=COLORS["border"],
-                        padding=(15, 8))
-        style.map("Ghost.TButton", background=[("active", "#E5E7EB")])
 
-        # -- Таблицы (Treeview) --
-        style.configure("Treeview",
-                        background=COLORS["bg_card"],
-                        fieldbackground=COLORS["bg_card"],
-                        foreground=COLORS["text_main"],
-                        font=FONTS["body"],
-                        rowheight=45,
-                        borderwidth=0)
-        
-        style.configure("Treeview.Heading",
-                        background=COLORS["bg_app"],
-                        foreground=COLORS["secondary"],
-                        font=FONTS["body_bold"],
-                        padding=(10, 10),
-                        relief="flat")
-        
-        style.map("Treeview",
-                  background=[("selected", COLORS["row_hover"])],
-                  foreground=[("selected", COLORS["primary"])])
+class ApiClient:
+    def __init__(self, settings: Settings):
+        if requests is None:
+            raise RuntimeError("Установите библиотеку requests: pip install requests")
+        self.settings = settings
 
-        # -- Скроллбар --
-        style.layout("Vertical.TScrollbar",
-                     [('Vertical.Scrollbar.trough',
-                       {'children': [('Vertical.Scrollbar.thumb', 
-                                      {'expand': '1', 'sticky': 'nswe'})],
-                        'sticky': 'ns'})])
-        style.configure("Vertical.TScrollbar", troughcolor=COLORS["bg_app"], background="#CBD5E1", borderwidth=0, width=10)
+    def _headers(self, token: Optional[str] = None) -> dict[str, str]:
+        token = token if token is not None else self.settings.get("token")
+        h = {"Accept": "application/json", "Content-Type": "application/json"}
+        if token:
+            h["Authorization"] = f"Bearer {token}"
+        return h
 
-        # -- Поля ввода --
-        style.configure("TEntry", fieldbackground=COLORS["bg_card"], borderwidth=1, padding=5)
+    def _request(self, method: str, path: str, *, token: Optional[str] = None, json_body: Any = None) -> Any:
+        try:
+            r = requests.request(method, API_BASE_URL + path, headers=self._headers(token), json=json_body, timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as exc:
+            raise ApiError(f"Нет связи с сервером: {exc}") from exc
+        body: Any = None
+        if r.text:
+            try:
+                body = r.json()
+            except Exception:
+                body = r.text
+        if 200 <= r.status_code < 300:
+            return body
+        msg = f"Ошибка сервера ({r.status_code})"
+        if isinstance(body, dict):
+            msg = str(body.get("detail") or body.get("message") or msg)
+        elif body:
+            msg = str(body)
+        raise ApiError(msg, r.status_code)
 
-    # ─── UI LAYOUT ─────────────────────────────────────────────────
-    def _build_layout(self):
-        # Основной контейнер
-        self.main_container = tk.Frame(self.root, bg=COLORS["bg_app"])
-        self.main_container.pack(fill="both", expand=True)
-        self.main_container.columnconfigure(1, weight=1)
-        self.main_container.rowconfigure(0, weight=1)
+    def login(self, surname: str, password: str) -> dict[str, Any]:
+        return self._request("POST", "/login", json_body={"surname": surname, "password": password}) or {}
 
-        self._build_sidebar()
-        self._build_content_area()
+    def register(self, surname: str, password: str) -> None:
+        self._request("POST", "/register", json_body={"surname": surname, "password": password})
 
-    def _build_sidebar(self):
-        self.sidebar = tk.Frame(self.main_container, bg=COLORS["bg_sidebar"], width=260)
-        self.sidebar.grid(row=0, column=0, sticky="ns")
-        self.sidebar.grid_propagate(False)
+    def admin_login(self, password: str) -> dict[str, Any]:
+        return self._request("POST", "/admin_login", json_body={"password": password}) or {}
 
-        # Логотип
-        logo_frame = tk.Frame(self.sidebar, bg=COLORS["bg_sidebar"])
-        logo_frame.pack(fill="x", pady=(30, 40), padx=25)
-        
-        tk.Label(logo_frame, text="TSD", fg="white", bg=COLORS["primary"], 
-                 font=("Segoe UI", 14, "bold"), width=3).pack(side="left")
-        tk.Label(logo_frame, text="Enterprise", fg="white", bg=COLORS["bg_sidebar"], 
-                 font=("Segoe UI", 16, "bold")).pack(side="left", padx=10)
+    def add_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/add_record", json_body=record) or {}
 
-        # Меню навигации
-        self.nav_btns = {}
-        self._add_sidebar_btn("registry", "📋  Реестр оборудования")
-        self._add_sidebar_btn("catalog", "📁  Справочники")
-        self._add_sidebar_btn("stats", "📊  Аналитика")
+    def history(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/get_history") or []
 
-        # Нижняя кнопка
-        tk.Frame(self.sidebar, bg="#1F2937", height=1).pack(side="bottom", fill="x", pady=0)
-        btn = tk.Button(self.sidebar, text="⛶  На весь экран", 
-                        bg=COLORS["bg_sidebar"], fg=COLORS["text_light"],
-                        font=FONTS["body"], bd=0, activebackground="#1F2937", activeforeground="white",
-                        cursor="hand2", command=self._toggle_fullscreen, anchor="w", padx=25, pady=20)
-        btn.pack(side="bottom", fill="x")
+    def clear_history(self) -> None:
+        self._request("DELETE", "/clear_tracking")
 
-    def _add_sidebar_btn(self, key, text):
-        btn = tk.Button(self.sidebar, text=text, 
-                        bg=COLORS["bg_sidebar"], fg=COLORS["text_light"],
-                        font=FONTS["body"], bd=0, 
-                        activebackground="#1F2937", activeforeground="white",
-                        cursor="hand2", anchor="w", padx=25, pady=15,
-                        command=lambda k=key: self.show_page(k))
-        btn.pack(fill="x", pady=2)
-        self.nav_btns[key] = btn
+    def errors(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/get_errors") or []
 
-    def _build_content_area(self):
-        self.content_frame = tk.Frame(self.main_container, bg=COLORS["bg_app"])
-        self.content_frame.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
-        
-        self.top_bar = tk.Frame(self.content_frame, bg=COLORS["bg_app"])
-        self.top_bar.pack(fill="x", pady=(0, 20))
-        
-        self.page_title = ttk.Label(self.top_bar, text="Заголовок", style="Header.TLabel")
-        self.page_title.pack(side="left")
-        
-        self.page_subtitle = ttk.Label(self.top_bar, text="Описание", style="SubHeader.TLabel")
-        self.page_subtitle.pack(side="left", padx=(15, 0), pady=(8, 0))
+    def clear_errors(self) -> None:
+        self._request("DELETE", "/clear_errors")
 
-        ttk.Button(self.top_bar, text="🔄 Обновить данные", style="Ghost.TButton", 
-                   command=self.refresh_all_data).pack(side="right")
+    def delete_error(self, error_id: int) -> None:
+        self._request("DELETE", f"/delete_error/{error_id}")
 
-        self.pages_container = tk.Frame(self.content_frame, bg=COLORS["bg_app"])
-        self.pages_container.pack(fill="both", expand=True)
+    def pending_users(self, admin_token: str) -> list[dict[str, Any]]:
+        return self._request("GET", "/admin/registration_requests", token=admin_token) or []
 
-        self.pages = {}
-        for p in ["registry", "catalog", "stats"]:
-            frame = tk.Frame(self.pages_container, bg=COLORS["bg_app"])
-            self.pages[p] = frame
-            frame.columnconfigure(0, weight=1)
-            frame.rowconfigure(0, weight=1)
+    def users(self, admin_token: str) -> list[dict[str, Any]]:
+        return self._request("GET", "/admin/users", token=admin_token) or []
 
-        self._init_page_registry()
-        self._init_page_catalog()
-        self._init_page_stats()
+    def approve_user(self, admin_token: str, request_id: int, role: str) -> None:
+        self._request("POST", f"/admin/registration_requests/{request_id}/approve", token=admin_token, json_body={"role": role})
 
-    def show_page(self, key):
-        self.current_page = key
-        for k, btn in self.nav_btns.items():
-            if k == key:
-                btn.configure(bg="#1F2937", fg="white", font=FONTS["body_bold"], borderwidth=0)
-            else:
-                btn.configure(bg=COLORS["bg_sidebar"], fg=COLORS["text_light"], font=FONTS["body"])
+    def reject_user(self, admin_token: str, request_id: int) -> None:
+        self._request("POST", f"/admin/registration_requests/{request_id}/reject", token=admin_token)
 
-        titles = {
-            "registry": ("Реестр ТСД", "Управление парком терминалов"),
-            "catalog": ("Справочники", "Настройка локаций и статусов"),
-            "stats": ("Аналитика", "Сводная информация по оборудованию")
-        }
-        t, s = titles.get(key, ("", ""))
-        self.page_title.configure(text=t)
-        self.page_subtitle.configure(text=s)
+    def update_user(self, admin_token: str, user_id: int, payload: dict[str, Any]) -> None:
+        self._request("PATCH", f"/admin/users/{user_id}", token=admin_token, json_body=payload)
 
-        for frame in self.pages.values():
-            frame.pack_forget()
-        self.pages[key].pack(fill="both", expand=True)
+    def delete_user(self, admin_token: str, user_id: int) -> None:
+        self._request("DELETE", f"/admin/users/{user_id}", token=admin_token)
 
-    # ═══════════════════════════════════════════════════════════════
-    #  СТРАНИЦА: РЕЕСТР (Кнопка добавления убрана)
-    # ═══════════════════════════════════════════════════════════════
-    def _init_page_registry(self):
-        p = self.pages["registry"]
-        
-        toolbar = tk.Frame(p, bg=COLORS["bg_app"])
-        toolbar.pack(fill="x", pady=(0, 15))
 
-        search_cont = tk.Frame(toolbar, bg="white", highlightbackground=COLORS["border"], highlightthickness=1)
-        search_cont.pack(side="left")
-        tk.Label(search_cont, text="🔍", bg="white", fg=COLORS["secondary"]).pack(side="left", padx=(10, 5))
-        
-        self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *a: self._load_registry(self.search_var.get()))
-        entry = tk.Entry(search_cont, textvariable=self.search_var, font=FONTS["body"], 
-                         bd=0, bg="white", width=30)
-        entry.pack(side="left", ipady=8, padx=5)
+class OfflineQueue:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        with sqlite3.connect(DB_FILE) as db:
+            db.execute("CREATE TABLE IF NOT EXISTS records (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
+            db.commit()
 
-        # !!! Кнопка добавления ТСД удалена отсюда по запросу !!!
+    def add(self, record: dict[str, Any]) -> None:
+        with self.lock, sqlite3.connect(DB_FILE) as db:
+            db.execute("INSERT INTO records(payload, created_at) VALUES(?, ?)", (json.dumps(record, ensure_ascii=False), datetime.now(timezone.utc).isoformat()))
+            db.commit()
 
-        card = tk.Frame(p, bg=COLORS["bg_card"], padx=1, pady=1)
-        card.pack(fill="both", expand=True)
-        
-        cols = ("id", "brand", "model", "imei", "status", "employee", "location", "updated")
-        headers = {"id": "#", "brand": "Бренд", "model": "Модель", "imei": "IMEI", 
-                   "status": "Статус", "employee": "Сотрудник", "location": "Локация", "updated": "Обновлено"}
-        
-        self.tree_reg = ttk.Treeview(card, columns=cols, show="headings", style="Treeview")
-        
-        for col in cols:
-            self.tree_reg.heading(col, text=headers[col], anchor="w")
-            self.tree_reg.column(col, anchor="w", width=100)
-        
-        self.tree_reg.column("id", width=50, stretch=False)
-        self.tree_reg.column("imei", width=150)
-        self.tree_reg.column("updated", width=140)
+    def count(self) -> int:
+        with sqlite3.connect(DB_FILE) as db:
+            return int(db.execute("SELECT COUNT(*) FROM records").fetchone()[0])
 
-        vsb = ttk.Scrollbar(card, orient="vertical", command=self.tree_reg.yview, style="Vertical.TScrollbar")
-        self.tree_reg.configure(yscrollcommand=vsb.set)
-        
-        self.tree_reg.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+    def all(self) -> list[tuple[int, dict[str, Any]]]:
+        with sqlite3.connect(DB_FILE) as db:
+            rows = db.execute("SELECT id, payload FROM records ORDER BY id").fetchall()
+        result = []
+        for rid, payload in rows:
+            try:
+                result.append((int(rid), json.loads(payload)))
+            except Exception:
+                self.delete(int(rid))
+        return result
 
-        self.tree_reg.bind("<Double-1>", self._on_registry_double_click)
+    def delete(self, rid: int) -> None:
+        with self.lock, sqlite3.connect(DB_FILE) as db:
+            db.execute("DELETE FROM records WHERE id=?", (rid,))
+            db.commit()
 
-    # ═══════════════════════════════════════════════════════════════
-    #  СТРАНИЦА: СПРАВОЧНИКИ
-    # ═══════════════════════════════════════════════════════════════
-    def _init_page_catalog(self):
-        p = self.pages["catalog"]
-        p.columnconfigure(0, weight=1)
-        p.columnconfigure(1, weight=1)
-        p.rowconfigure(0, weight=1)
-        p.rowconfigure(1, weight=1)
 
-        self._create_catalog_card(p, "Локации", "location", 0, 0)
-        self._create_catalog_card(p, "Статусы устройств", "status", 0, 1)
-        self._create_catalog_card(p, "Список устройств (Управление)", "device_simple", 1, 0, colspan=2)
+class App(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title(APP_NAME)
+        self.geometry("1180x760")
+        self.minsize(980, 650)
+        self.configure(bg="#07153A")
+        self.settings = Settings()
+        self.api = ApiClient(self.settings)
+        self.offline = OfflineQueue()
+        self.tasks: queue.Queue[tuple[Callable, tuple, dict]] = queue.Queue()
+        self.current_frame: Optional[tk.Frame] = None
+        self.style = ttk.Style(self)
+        self.style.theme_use("clam")
+        self._style()
+        self.after(100, self._poll_tasks)
+        self.after(1000, self._sync_loop)
+        self.show_scanner() if self.settings.get("token") else self.show_login()
 
-    def _create_catalog_card(self, parent, title, kind, row, col, colspan=1):
-        frame = tk.Frame(parent, bg=COLORS["bg_card"], padx=20, pady=20)
-        frame.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=(0, 20), pady=(0, 20))
-        
-        h_frame = tk.Frame(frame, bg=COLORS["bg_card"])
-        h_frame.pack(fill="x", pady=(0, 15))
-        ttk.Label(h_frame, text=title, style="CardHeader.TLabel").pack(side="left")
-        
-        btn_frame = tk.Frame(h_frame, bg=COLORS["bg_card"])
-        btn_frame.pack(side="right")
-        
-        if kind != "device_simple":
-            add_cmd = lambda: self._open_dict_dialog(kind)
-            edit_cmd = lambda: self._action_dict(kind, "edit")
-            del_cmd = lambda: self._action_dict(kind, "delete")
+    def _style(self) -> None:
+        self.style.configure("Big.TButton", font=("Segoe UI", 18, "bold"), padding=12)
+        self.style.configure("TEntry", font=("Segoe UI", 18), padding=8)
+        self.style.configure("Treeview", rowheight=38, font=("Segoe UI", 13))
+        self.style.configure("Treeview.Heading", font=("Segoe UI", 13, "bold"))
+
+    def run_bg(self, func: Callable, ok: Callable | None = None, fail: Callable | None = None) -> None:
+        def worker() -> None:
+            try:
+                res = func()
+                if ok:
+                    self.tasks.put((ok, (res,), {}))
+            except Exception as exc:
+                self.tasks.put(((fail or self.show_error), (exc,), {}))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _poll_tasks(self) -> None:
+        while True:
+            try:
+                func, args, kwargs = self.tasks.get_nowait()
+            except queue.Empty:
+                break
+            func(*args, **kwargs)
+        self.after(80, self._poll_tasks)
+
+    def _sync_loop(self) -> None:
+        self.sync_offline(silent=True)
+        self.after(SYNC_INTERVAL_MS, self._sync_loop)
+
+    def sync_offline(self, silent: bool = False) -> None:
+        if not self.settings.get("token") or self.offline.count() == 0:
+            return
+        def job() -> int:
+            sent = 0
+            for rid, record in self.offline.all():
+                self.api.add_record(record)
+                self.offline.delete(rid)
+                sent += 1
+            return sent
+        def ok(sent: int) -> None:
+            if sent and not silent:
+                messagebox.showinfo("Синхронизация", f"Отправлено офлайн-записей: {sent}")
+            if isinstance(self.current_frame, ScannerFrame):
+                self.current_frame.update_queue_badge()
+        self.run_bg(job, ok=ok, fail=(lambda e: None if silent else self.show_error(e)))
+
+    def show_error(self, exc: Exception) -> None:
+        messagebox.showerror("Ошибка", str(exc))
+
+    def switch(self, frame_cls: type[tk.Frame], *args: Any) -> None:
+        if self.current_frame:
+            self.current_frame.destroy()
+        self.current_frame = frame_cls(self, *args)
+        self.current_frame.pack(fill="both", expand=True)
+
+    def show_login(self) -> None: self.switch(LoginFrame)
+    def show_scanner(self) -> None: self.switch(ScannerFrame)
+    def show_history(self) -> None: self.switch(HistoryFrame)
+    def show_errors_frame(self) -> None: self.switch(ErrorsFrame)
+    def show_admin(self, token: str) -> None: self.switch(AdminFrame, token)
+
+
+class BaseFrame(tk.Frame):
+    def __init__(self, app: App, bg: str = "#07153A"):
+        super().__init__(app, bg=bg)
+        self.app = app
+
+    def label(self, parent: tk.Misc, text: str, size: int = 18, fg: str = "white", bg: str | None = None, bold: bool = False) -> tk.Label:
+        return tk.Label(parent, text=text, font=("Segoe UI", size, "bold" if bold else "normal"), fg=fg, bg=bg or parent.cget("bg"))
+
+    def button(self, parent: tk.Misc, text: str, cmd: Callable, bg: str = "#075BFF", fg: str = "white") -> tk.Button:
+        return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg, activebackground=bg, activeforeground=fg, bd=0, relief="flat", font=("Segoe UI", 16, "bold"), padx=18, pady=10, cursor="hand2")
+
+
+class LoginFrame(BaseFrame):
+    def __init__(self, app: App):
+        super().__init__(app)
+        card = tk.Frame(self, bg="white", padx=38, pady=32)
+        card.place(relx=.5, rely=.5, anchor="center", width=560)
+        tk.Label(card, text="BoxID-ТТН", bg="white", fg="#07153A", font=("Segoe UI", 34, "bold")).pack(pady=(0, 8))
+        tk.Label(card, text="Вход в модуль сканирования", bg="white", fg="#60708C", font=("Segoe UI", 16)).pack(pady=(0, 24))
+        self.surname = self._entry(card, "Прізвище / фамилия")
+        self.password = self._entry(card, "Пароль", show="*")
+        self.button(card, "УВІЙТИ / ВОЙТИ", self.login).pack(fill="x", pady=(18, 10))
+        self.button(card, "Реєстрація", self.register, bg="#14C9A6").pack(fill="x", pady=6)
+        self.button(card, "Панель адміністратора", self.admin_login, bg="#FFB020", fg="#07153A").pack(fill="x", pady=6)
+        self.password.bind("<Return>", lambda e: self.login())
+
+    def _entry(self, parent: tk.Misc, placeholder: str, show: str = "") -> tk.Entry:
+        tk.Label(parent, text=placeholder, bg="white", fg="#0B1530", font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(8, 4))
+        e = tk.Entry(parent, show=show, font=("Segoe UI", 20), bd=1, relief="solid")
+        e.pack(fill="x", ipady=10)
+        return e
+
+    def login(self) -> None:
+        surname, password = self.surname.get().strip(), self.password.get().strip()
+        if not surname or not password:
+            messagebox.showwarning("Вход", "Введите фамилию и пароль")
+            return
+        def ok(data: dict[str, Any]) -> None:
+            token = str(data.get("token") or "")
+            if not token:
+                raise ApiError("Сервер не вернул токен")
+            role = str(data.get("role") or "viewer")
+            self.app.settings.set("token", token)
+            self.app.settings.set("user_name", str(data.get("surname") or surname))
+            self.app.settings.set("user_role", role)
+            self.app.settings.set("access_level", int(data.get("access_level") if data.get("access_level") is not None else ROLE_LEVELS.get(role, 2)))
+            self.app.settings.set("last_module", "tracking")
+            self.app.show_scanner()
+        self.app.run_bg(lambda: self.app.api.login(surname, password), ok=ok)
+
+    def register(self) -> None:
+        RegisterDialog(self.app)
+
+    def admin_login(self) -> None:
+        pwd = SimpleInput.ask(self.app, "Админ-панель", "Пароль администратора", secret=True)
+        if not pwd:
+            return
+        def ok(data: dict[str, Any]) -> None:
+            token = str(data.get("token") or data.get("admin_token") or "")
+            if not token:
+                raise ApiError("Сервер не вернул админ-токен")
+            self.app.show_admin(token)
+        self.app.run_bg(lambda: self.app.api.admin_login(pwd), ok=ok)
+
+
+class ScannerFrame(BaseFrame):
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.scan_buffer = ""
+        self.scan_after: Optional[str] = None
+        top = tk.Frame(self, bg="#07153A", padx=22, pady=18); top.pack(fill="x")
+        self.label(top, "BoxID-ТТН", 30, bold=True).pack(side="left")
+        user = app.settings.get("user_name", "operator")
+        role = ROLE_LABELS.get(app.settings.get("user_role", "viewer"), "Перегляд")
+        self.user_lbl = self.label(top, f"  {user} • {role}", 16, fg="#D7E6FF"); self.user_lbl.pack(side="left", padx=18)
+        self.queue_lbl = self.label(top, "", 15, fg="#5EF2D0"); self.queue_lbl.pack(side="left", padx=12)
+        for text, cmd, color in [("История", app.show_history, "#3F8CFF"), ("Ошибки", app.show_errors_frame, "#FFB020"), ("Синхр.", lambda: app.sync_offline(False), "#14C9A6"), ("Выход", self.logout, "#E5484D")]:
+            self.button(top, text, cmd, bg=color, fg=("#07153A" if color == "#FFB020" else "white")).pack(side="right", padx=5)
+        card = tk.Frame(self, bg="white", padx=34, pady=30); card.pack(fill="both", expand=True, padx=26, pady=(0, 24))
+        tk.Label(card, text="Сканирование", bg="white", fg="#07153A", font=("Segoe UI", 32, "bold")).pack(anchor="w")
+        tk.Label(card, text="1) Сканируйте BoxID  →  2) Сканируйте ТТН. Поля очищаются автоматически.", bg="white", fg="#60708C", font=("Segoe UI", 17)).pack(anchor="w", pady=(0, 22))
+        self.box = self.big_entry(card, "BOXID")
+        self.ttn = self.big_entry(card, "ТТН")
+        self.status = tk.Label(card, text="Готово к сканированию", bg="#F2F5FB", fg="#0B1530", font=("Segoe UI", 26, "bold"), pady=22)
+        self.status.pack(fill="x", pady=22)
+        self.box.bind("<Return>", lambda e: self.handle_box())
+        self.ttn.bind("<Return>", lambda e: self.handle_ttn())
+        self.bind_all("<Key>", self.global_key)
+        self.box.focus_set(); self.update_queue_badge()
+
+    def destroy(self) -> None:
+        self.unbind_all("<Key>")
+        super().destroy()
+
+    def big_entry(self, parent: tk.Misc, title: str) -> tk.Entry:
+        tk.Label(parent, text=title, bg="white", fg="#0B1530", font=("Segoe UI", 20, "bold")).pack(anchor="w", pady=(18, 6))
+        e = tk.Entry(parent, font=("Segoe UI", 36, "bold"), bd=2, relief="solid", justify="center")
+        e.pack(fill="x", ipady=18)
+        e.bind("<FocusIn>", lambda ev: e.delete(0, "end"))
+        return e
+
+    def global_key(self, event: tk.Event) -> None:
+        if event.keysym in ("Return", "KP_Enter"):
+            code = only_digits(self.scan_buffer)
+            self.scan_buffer = ""
+            if self.scan_after: self.after_cancel(self.scan_after); self.scan_after = None
+            if code: self.route_code(code)
+            return
+        if event.char and event.char.isprintable():
+            self.scan_buffer += event.char
+            if self.scan_after: self.after_cancel(self.scan_after)
+            self.scan_after = self.after(SCAN_BUFFER_MS, lambda: setattr(self, "scan_buffer", ""))
+
+    def route_code(self, code: str) -> None:
+        if not self.box.get().strip() or self.focus_get() == self.box:
+            self.box.delete(0, "end"); self.box.insert(0, code); beep_success(self.app); self.ttn.focus_set()
         else:
-            add_cmd = self._open_device_dialog
-            edit_cmd = self._edit_selected_device_simple
-            del_cmd = self._delete_selected_device_simple
+            self.ttn.delete(0, "end"); self.ttn.insert(0, code); self.handle_ttn()
 
-        ttk.Button(btn_frame, text="+", style="Ghost.TButton", width=3, command=add_cmd).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="✎", style="Ghost.TButton", width=3, command=edit_cmd).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="✕", style="Danger.TButton", width=3, command=del_cmd).pack(side="left", padx=2)
+    def handle_box(self) -> None:
+        val = only_digits(self.box.get())
+        if val:
+            self.box.delete(0, "end"); self.box.insert(0, val); beep_success(self.app); self.ttn.focus_set()
 
-        if kind == "device_simple":
-            cols = ("id", "brand", "model", "imei")
-            headers = {"id": "#", "brand": "Бренд", "model": "Модель", "imei": "IMEI"}
-        else:
-            cols = ("id", "name")
-            headers = {"id": "#", "name": "Название"}
-
-        tree = ttk.Treeview(frame, columns=cols, show="headings", style="Treeview", height=6)
-        for c in cols:
-            tree.heading(c, text=headers[c], anchor="w")
-            tree.column(c, anchor="w", width=100)
-        tree.column("id", width=40, stretch=False)
-        tree.pack(fill="both", expand=True)
-        
-        if kind == "location": self.tree_loc = tree
-        elif kind == "status": self.tree_stat = tree
-        elif kind == "device_simple": self.tree_dev_s = tree
-
-    # ═══════════════════════════════════════════════════════════════
-    #  СТРАНИЦА: АНАЛИТИКА (ИЗМЕНЕНА)
-    # ═══════════════════════════════════════════════════════════════
-    def _init_page_stats(self):
-        p = self.pages["stats"]
-        
-        # 1. Верхние виджеты (5 штук)
-        kpi_frame = tk.Frame(p, bg=COLORS["bg_app"])
-        kpi_frame.pack(fill="x", pady=(0, 20))
-        
-        self.kpi_labels = {}
-        
-        # Определяем метрики для отображения
-        metrics = [
-            ("total", "Всего"), 
-            ("working", "Рабочие"), 
-            ("broken", "Не рабочие"),
-            ("free", "Свободно"), # Рабочий + Свободный
-            ("busy", "Занято")    # Рабочий + Занят
-        ]
-        
-        for idx, (key, title) in enumerate(metrics):
-            # Равномерное распределение
-            card = tk.Frame(kpi_frame, bg=COLORS["bg_card"], padx=20, pady=20)
-            card.pack(side="left", fill="both", expand=True, padx=(0, 15) if idx < len(metrics)-1 else 0)
-            
-            ttk.Label(card, text=title, style="StatLabel.TLabel").pack(anchor="w")
-            lbl = ttk.Label(card, text="0", style="StatValue.TLabel")
-            lbl.pack(anchor="w", pady=(5, 0))
-            self.kpi_labels[key] = lbl
-
-        # 2. Нижняя часть с таблицами (2 колонки)
-        bottom_frame = tk.Frame(p, bg=COLORS["bg_app"])
-        bottom_frame.pack(fill="both", expand=True)
-
-        # -- Левая таблица: По статусам --
-        left_frame = tk.Frame(bottom_frame, bg=COLORS["bg_card"], padx=20, pady=20)
-        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
-        
-        ttk.Label(left_frame, text="Детализация по статусам", style="CardHeader.TLabel").pack(anchor="w", pady=(0, 15))
-        
-        cols_stat = ("status", "count", "percent")
-        self.tree_stats_detail = ttk.Treeview(left_frame, columns=cols_stat, show="headings", style="Treeview")
-        self.tree_stats_detail.heading("status", text="Статус", anchor="w")
-        self.tree_stats_detail.heading("count", text="Кол-во", anchor="w")
-        self.tree_stats_detail.heading("percent", text="%", anchor="w")
-        self.tree_stats_detail.column("count", width=80)
-        self.tree_stats_detail.column("percent", width=80)
-        self.tree_stats_detail.pack(fill="both", expand=True)
-
-        # -- Правая таблица: По локациям --
-        right_frame = tk.Frame(bottom_frame, bg=COLORS["bg_card"], padx=20, pady=20)
-        right_frame.pack(side="right", fill="both", expand=True, padx=(10, 0))
-        
-        ttk.Label(right_frame, text="Детализация по локациям", style="CardHeader.TLabel").pack(anchor="w", pady=(0, 15))
-        
-        cols_loc = ("location", "count")
-        self.tree_loc_detail = ttk.Treeview(right_frame, columns=cols_loc, show="headings", style="Treeview")
-        self.tree_loc_detail.heading("location", text="Локация", anchor="w")
-        self.tree_loc_detail.heading("count", text="Кол-во", anchor="w")
-        self.tree_loc_detail.column("count", width=100)
-        self.tree_loc_detail.pack(fill="both", expand=True)
-
-    # ═══════════════════════════════════════════════════════════════
-    #  РАБОТА С ДАННЫМИ
-    # ═══════════════════════════════════════════════════════════════
-    def refresh_all_data(self):
-        self._load_registry()
-        self._load_catalogs()
-        self._load_stats()
-
-    def _load_registry(self, search_query=""):
-        self._clear_tree(self.tree_reg)
-        cur = self.conn.cursor()
-        sql = """
-            SELECT d.id, d.brand, d.model, d.imei, 
-                   COALESCE(s.name, '—') as status, 
-                   d.employee, 
-                   COALESCE(l.name, '—') as location, 
-                   d.updated_at
-            FROM devices d
-            LEFT JOIN statuses s ON d.status_id = s.id
-            LEFT JOIN locations l ON d.location_id = l.id
-            WHERE 1=1
-        """
-        params = []
-        if search_query:
-            q = f"%{search_query.strip()}%"
-            sql += " AND (d.brand LIKE ? OR d.model LIKE ? OR d.imei LIKE ? OR d.employee LIKE ?)"
-            params = [q, q, q, q]
-        
-        sql += " ORDER BY d.updated_at DESC"
-        cur.execute(sql, params)
-        
-        for i, row in enumerate(cur.fetchall()):
-            vals = list(row)
-            vals = [v if v is not None else "—" for v in vals]
-            tag = "even" if i % 2 == 0 else "odd"
-            self.tree_reg.insert("", "end", values=vals, tags=(tag,))
-        
-        self.tree_reg.tag_configure("odd", background=COLORS["row_stripe"])
-        self.tree_reg.tag_configure("even", background=COLORS["bg_card"])
-
-    def _load_catalogs(self):
-        self._clear_tree(self.tree_loc)
-        self._clear_tree(self.tree_stat)
-        self._clear_tree(self.tree_dev_s)
-        
-        cur = self.conn.cursor()
-        
-        cur.execute("SELECT id, name FROM locations ORDER BY name")
-        for r in cur.fetchall(): self.tree_loc.insert("", "end", values=list(r))
-        
-        cur.execute("SELECT id, name FROM statuses ORDER BY name")
-        for r in cur.fetchall(): self.tree_stat.insert("", "end", values=list(r))
-        
-        cur.execute("SELECT id, brand, model, imei FROM devices ORDER BY brand, model")
-        for r in cur.fetchall(): self.tree_dev_s.insert("", "end", values=list(r))
-
-    def _load_stats(self):
-        cur = self.conn.cursor()
-        
-        # 1. Расчет KPI
-        # Для сложной логики используем один запрос с агрегацией
-        sql_kpi = """
-            SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN s.name = 'Рабочий' THEN 1 ELSE 0 END) as working,
-                SUM(CASE WHEN s.name != 'Рабочий' OR s.name IS NULL THEN 1 ELSE 0 END) as broken,
-                SUM(CASE WHEN s.name = 'Рабочий' AND (d.employee = 'Свободный' OR d.employee IS NULL OR d.employee = '') THEN 1 ELSE 0 END) as free,
-                SUM(CASE WHEN s.name = 'Рабочий' AND d.employee != 'Свободный' AND d.employee IS NOT NULL AND d.employee != '' THEN 1 ELSE 0 END) as busy
-            FROM devices d
-            LEFT JOIN statuses s ON d.status_id = s.id
-        """
-        cur.execute(sql_kpi)
-        kpi_data = cur.fetchone()
-        
-        total = kpi_data['total']
-        
-        self.kpi_labels["total"].config(text=str(total))
-        self.kpi_labels["working"].config(text=str(kpi_data['working']))
-        self.kpi_labels["broken"].config(text=str(kpi_data['broken']))
-        self.kpi_labels["free"].config(text=str(kpi_data['free']))
-        self.kpi_labels["busy"].config(text=str(kpi_data['busy']))
-
-        # 2. Детализация по Статусам
-        self._clear_tree(self.tree_stats_detail)
-        cur.execute("""
-            SELECT COALESCE(s.name, 'Без статуса') as name, COUNT(d.id) as cnt 
-            FROM devices d 
-            LEFT JOIN statuses s ON d.status_id = s.id 
-            GROUP BY s.id
-            ORDER BY cnt DESC
-        """)
-        for r in cur.fetchall():
-            name, cnt = r['name'], r['cnt']
-            pct = f"{(cnt/total*100):.1f}%" if total > 0 else "0%"
-            self.tree_stats_detail.insert("", "end", values=(name, cnt, pct))
-            
-        # 3. Детализация по Локациям
-        self._clear_tree(self.tree_loc_detail)
-        cur.execute("""
-            SELECT COALESCE(l.name, 'Не указана') as name, COUNT(d.id) as cnt 
-            FROM devices d 
-            LEFT JOIN locations l ON d.location_id = l.id 
-            GROUP BY l.id
-            ORDER BY cnt DESC
-        """)
-        for r in cur.fetchall():
-            self.tree_loc_detail.insert("", "end", values=(r['name'], r['cnt']))
-
-    def _clear_tree(self, tree):
-        for item in tree.get_children():
-            tree.delete(item)
-
-    # ═══════════════════════════════════════════════════════════════
-    #  ДИАЛОГИ И ДЕЙСТВИЯ
-    # ═══════════════════════════════════════════════════════════════
-    def _create_modal(self, title, width=500, height=400):
-        top = tk.Toplevel(self.root)
-        top.title(title)
-        top.geometry(f"{width}x{height}")
-        top.configure(bg=COLORS["bg_card"])
-        top.transient(self.root)
-        top.grab_set()
-        x = self.root.winfo_x() + (self.root.winfo_width()//2) - (width//2)
-        y = self.root.winfo_y() + (self.root.winfo_height()//2) - (height//2)
-        top.geometry(f"+{x}+{y}")
-        return top
-
-    # --- ДИАЛОГ: УСТРОЙСТВО ---
-    def _open_device_dialog(self, device_id=None):
-        is_edit = device_id is not None
-        title = "Редактирование ТСД" if is_edit else "Новое устройство"
-        dlg = self._create_modal(title, 500, 450)
-        
-        fields = {}
-        content = tk.Frame(dlg, bg=COLORS["bg_card"], padx=30, pady=20)
-        content.pack(fill="both", expand=True)
-        
-        tk.Label(content, text=title, font=FONTS["h2"], bg=COLORS["bg_card"], fg=COLORS["primary"]).pack(anchor="w", pady=(0, 20))
-
-        def add_field(label, var_key, options=None):
-            f_cont = tk.Frame(content, bg=COLORS["bg_card"])
-            f_cont.pack(fill="x", pady=5)
-            tk.Label(f_cont, text=label, font=FONTS["body_bold"], bg=COLORS["bg_card"], fg=COLORS["secondary"]).pack(anchor="w")
-            var = tk.StringVar()
-            if options:
-                w = ttk.Combobox(f_cont, textvariable=var, values=options, state="readonly", font=FONTS["body"])
+    def handle_ttn(self) -> None:
+        box, ttn = only_digits(self.box.get()), only_digits(self.ttn.get())
+        if not box:
+            self.box.focus_set(); return
+        if not ttn: return
+        record = {"user_name": self.app.settings.get("user_name", "operator"), "boxid": box, "ttn": ttn}
+        self.status.config(text="⏳ Отправка...", fg="#075BFF")
+        self.box.delete(0, "end"); self.ttn.delete(0, "end"); self.box.focus_set()
+        def ok(data: dict[str, Any]) -> None:
+            note = str(data.get("note") or "") if isinstance(data, dict) else ""
+            if note:
+                beep_error(self.app); self.status.config(text=f"⚠️ Дубликат: {note}", fg="#B26A00")
             else:
-                w = tk.Entry(f_cont, textvariable=var, font=FONTS["body"], bg="#F9FAFB", bd=1, relief="solid")
-            w.pack(fill="x", ipady=6, pady=(5, 0))
-            fields[var_key] = var
-            return w
+                beep_success(self.app); self.status.config(text="✅ Успешно добавлено", fg="#0A8F73")
+            self.update_queue_badge()
+        def fail(exc: Exception) -> None:
+            self.app.offline.add(record); beep_error(self.app); self.status.config(text="📦 Сохранено локально (офлайн)", fg="#B26A00"); self.update_queue_badge()
+        self.app.run_bg(lambda: self.app.api.add_record(record), ok=ok, fail=fail)
 
-        cur = self.conn.cursor()
-        statuses = [r[0] for r in cur.execute("SELECT name FROM statuses").fetchall()]
-        
-        add_field("Бренд", "brand")
-        add_field("Модель", "model")
-        add_field("IMEI", "imei")
-        add_field("Статус *", "status", statuses)
-        
-        if is_edit:
-            row = cur.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
-            fields["brand"].set(row["brand"])
-            fields["model"].set(row["model"])
-            fields["imei"].set(row["imei"])
-            st_name = cur.execute("SELECT name FROM statuses WHERE id=?", (row["status_id"],)).fetchone()
-            if st_name: fields["status"].set(st_name[0])
+    def update_queue_badge(self) -> None:
+        n = self.app.offline.count()
+        self.queue_lbl.config(text=(f"Офлайн очередь: {n}" if n else "Онлайн / очередь пуста"))
 
-        btn_area = tk.Frame(dlg, bg="#F9FAFB", height=60)
-        btn_area.pack(side="bottom", fill="x")
-        
-        def save():
-            data = {k: v.get().strip() for k, v in fields.items()}
-            if not all([data["brand"], data["model"], data["imei"], data["status"]]):
-                messagebox.showerror("Ошибка", "Заполните обязательные поля", parent=dlg)
-                return
-            
-            try:
-                s_id_row = cur.execute("SELECT id FROM statuses WHERE name=?", (data["status"],)).fetchone()
-                if not s_id_row:
-                     messagebox.showerror("Ошибка", "Некорректный статус", parent=dlg)
-                     return
-                s_id = s_id_row[0]
-                now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                
-                if is_edit:
-                    cur.execute("UPDATE devices SET brand=?, model=?, imei=?, status_id=?, updated_at=? WHERE id=?",
-                                (data["brand"], data["model"], data["imei"], s_id, now, device_id))
-                else:
-                    cur.execute("INSERT INTO devices (brand, model, imei, status_id, updated_at) VALUES (?,?,?,?,?)",
-                                (data["brand"], data["model"], data["imei"], s_id, now))
-                self.conn.commit()
-                self.refresh_all_data()
-                dlg.destroy()
-            except Exception as e:
-                messagebox.showerror("Ошибка БД", str(e), parent=dlg)
+    def logout(self) -> None:
+        if messagebox.askyesno("Выход", "Выйти из аккаунта?"):
+            self.app.settings.clear_session(); self.app.show_login()
 
-        ttk.Button(btn_area, text="Сохранить", style="Primary.TButton", command=save).pack(side="right", padx=20, pady=15)
-        ttk.Button(btn_area, text="Отмена", style="Ghost.TButton", command=dlg.destroy).pack(side="right", padx=0, pady=15)
 
-    def _on_registry_double_click(self, event):
-        sel = self.tree_reg.selection()
+class TableFrame(BaseFrame):
+    columns: tuple[str, ...] = ()
+    headings: tuple[str, ...] = ()
+    def make_table(self) -> None:
+        bar = tk.Frame(self, bg="#07153A", padx=18, pady=14); bar.pack(fill="x")
+        self.button(bar, "← Назад", self.app.show_scanner, bg="#3F8CFF").pack(side="left")
+        self.title_lbl = self.label(bar, "", 28, bold=True); self.title_lbl.pack(side="left", padx=18)
+        self.button(bar, "Обновить", self.load, bg="#14C9A6").pack(side="right", padx=4)
+        self.tree = ttk.Treeview(self, columns=self.columns, show="headings")
+        for c, h in zip(self.columns, self.headings):
+            self.tree.heading(c, text=h); self.tree.column(c, width=150, anchor="center")
+        self.tree.pack(fill="both", expand=True, padx=18, pady=18)
+
+
+class HistoryFrame(TableFrame):
+    columns = ("datetime", "user_name", "boxid", "ttn")
+    headings = ("Дата", "Пользователь", "BoxID", "ТТН")
+    def __init__(self, app: App):
+        super().__init__(app, bg="#F7F8FA"); self.make_table(); self.title_lbl.config(text="История сканирований")
+        if app.settings.get("user_role") == "admin": self.button(self.children['!frame'], "Очистить", self.clear, bg="#E5484D").pack(side="right", padx=4)
+        self.load()
+    def load(self) -> None:
+        self.app.run_bg(self.app.api.history, ok=self.fill)
+    def fill(self, rows: list[dict[str, Any]]) -> None:
+        self.tree.delete(*self.tree.get_children())
+        rows.sort(key=lambda r: str(r.get("datetime") or ""), reverse=True)
+        for r in rows: self.tree.insert("", "end", values=(parse_dt(r.get("datetime")), r.get("user_name", ""), r.get("boxid", ""), r.get("ttn", "")))
+    def clear(self) -> None:
+        if messagebox.askyesno("Очистить", "Удалить всю историю?"): self.app.run_bg(self.app.api.clear_history, ok=lambda _: self.load())
+
+
+class ErrorsFrame(TableFrame):
+    columns = ("id", "datetime", "user_name", "boxid", "ttn", "error")
+    headings = ("ID", "Дата", "Пользователь", "BoxID", "ТТН", "Ошибка")
+    def __init__(self, app: App):
+        super().__init__(app, bg="#F7F8FA"); self.make_table(); self.title_lbl.config(text="Журнал ошибок")
+        role = app.settings.get("user_role")
+        if role in ("admin", "operator"):
+            self.button(self.children['!frame'], "Удалить выбранную", self.delete_selected, bg="#E5484D").pack(side="right", padx=4)
+            self.button(self.children['!frame'], "Очистить все", self.clear, bg="#B00020").pack(side="right", padx=4)
+        self.load()
+    def load(self) -> None: self.app.run_bg(self.app.api.errors, ok=self.fill)
+    def fill(self, rows: list[dict[str, Any]]) -> None:
+        self.tree.delete(*self.tree.get_children()); rows.sort(key=lambda r: str(r.get("datetime") or ""), reverse=True)
+        for r in rows: self.tree.insert("", "end", values=(r.get("id", ""), parse_dt(r.get("datetime")), r.get("user_name", ""), r.get("boxid", ""), r.get("ttn", ""), r.get("error") or r.get("message", "")))
+    def delete_selected(self) -> None:
+        sel = self.tree.selection()
         if not sel: return
-        item = self.tree_reg.item(sel[0])
-        dev_id = item['values'][0]
-        self._open_assignment_dialog(dev_id)
+        eid = int(self.tree.item(sel[0], "values")[0])
+        if messagebox.askyesno("Удалить", f"Удалить ошибку #{eid}?"): self.app.run_bg(lambda: self.app.api.delete_error(eid), ok=lambda _: self.load())
+    def clear(self) -> None:
+        if messagebox.askyesno("Очистить", "Удалить весь журнал ошибок?"): self.app.run_bg(self.app.api.clear_errors, ok=lambda _: self.load())
 
-    # --- ДИАЛОГ: НАЗНАЧЕНИЕ (ЗАКРЕПЛЕНИЕ) ---
-    def _open_assignment_dialog(self, dev_id):
-        dlg = self._create_modal("Движение устройства", 500, 480)
-        content = tk.Frame(dlg, bg=COLORS["bg_card"], padx=30, pady=20)
-        content.pack(fill="both", expand=True)
 
-        cur = self.conn.cursor()
-        dev = cur.execute("SELECT * FROM devices WHERE id=?", (dev_id,)).fetchone()
-        
-        tk.Label(content, text=f"{dev['brand']} {dev['model']}", font=FONTS["h2"], bg=COLORS["bg_card"]).pack(anchor="w")
-        tk.Label(content, text=f"IMEI: {dev['imei']}", font=FONTS["body"], fg=COLORS["secondary"], bg=COLORS["bg_card"]).pack(anchor="w", pady=(0, 20))
+class AdminFrame(TableFrame):
+    columns = ("id", "surname", "role", "active", "created")
+    headings = ("ID", "Фамилия", "Роль", "Активен", "Создан")
+    def __init__(self, app: App, admin_token: str):
+        self.admin_token = admin_token; super().__init__(app, bg="#F7F8FA"); self.make_table(); self.title_lbl.config(text="Админ-панель")
+        bar = self.children['!frame']
+        self.button(bar, "Заявки", self.pending, bg="#FFB020", fg="#07153A").pack(side="right", padx=4)
+        self.button(bar, "Роль", self.change_role, bg="#075BFF").pack(side="right", padx=4)
+        self.button(bar, "Вкл/Выкл", self.toggle, bg="#14C9A6").pack(side="right", padx=4)
+        self.button(bar, "Удалить", self.delete, bg="#E5484D").pack(side="right", padx=4)
+        self.load()
+    def load(self) -> None: self.app.run_bg(lambda: self.app.api.users(self.admin_token), ok=self.fill)
+    def fill(self, rows: list[dict[str, Any]]) -> None:
+        self.tree.delete(*self.tree.get_children())
+        for r in rows: self.tree.insert("", "end", values=(r.get("id", ""), r.get("surname", ""), ROLE_LABELS.get(str(r.get("role")), r.get("role", "")), "Да" if r.get("is_active") else "Нет", parse_dt(r.get("created_at"))))
+    def selected_id(self) -> Optional[int]:
+        sel = self.tree.selection(); return int(self.tree.item(sel[0], "values")[0]) if sel else None
+    def pending(self) -> None: PendingDialog(self.app, self.admin_token)
+    def change_role(self) -> None:
+        uid = self.selected_id(); role = ChoiceDialog.ask(self.app, "Роль", "Выберите роль", [("admin", "Адмін"), ("operator", "Оператор"), ("viewer", "Перегляд")])
+        if uid and role: self.app.run_bg(lambda: self.app.api.update_user(self.admin_token, uid, {"role": role}), ok=lambda _: self.load())
+    def toggle(self) -> None:
+        uid = self.selected_id()
+        if uid is None: return
+        active_now = self.tree.item(self.tree.selection()[0], "values")[3] == "Да"
+        self.app.run_bg(lambda: self.app.api.update_user(self.admin_token, uid, {"is_active": not active_now}), ok=lambda _: self.load())
+    def delete(self) -> None:
+        uid = self.selected_id()
+        if uid and messagebox.askyesno("Удалить", f"Удалить пользователя #{uid}?"): self.app.run_bg(lambda: self.app.api.delete_user(self.admin_token, uid), ok=lambda _: self.load())
 
-        tk.Label(content, text="Сотрудник (ФИО)", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", pady=(10, 0))
-        emp_var = tk.StringVar(value=dev['employee'])
-        tk.Entry(content, textvariable=emp_var, font=FONTS["body"], bg="#F9FAFB").pack(fill="x", ipady=6, pady=5)
-        
-        tk.Label(content, text="Локация", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", pady=(10, 0))
-        locs = [r[0] for r in cur.execute("SELECT name FROM locations").fetchall()]
-        loc_var = tk.StringVar()
-        cur_loc = cur.execute("SELECT name FROM locations WHERE id=?", (dev['location_id'],)).fetchone()
-        if cur_loc: loc_var.set(cur_loc[0])
-        ttk.Combobox(content, textvariable=loc_var, values=locs, state="readonly").pack(fill="x", ipady=6, pady=5)
-        
-        tk.Label(content, text="Новый статус", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w", pady=(10, 0))
-        stats = [r[0] for r in cur.execute("SELECT name FROM statuses").fetchall()]
-        stat_var = tk.StringVar()
-        cur_stat = cur.execute("SELECT name FROM statuses WHERE id=?", (dev['status_id'],)).fetchone()
-        if cur_stat: stat_var.set(cur_stat[0])
-        ttk.Combobox(content, textvariable=stat_var, values=stats, state="readonly").pack(fill="x", ipady=6, pady=5)
 
-        def save_assignment():
-            emp = emp_var.get().strip() or "Свободный"
-            l_name = loc_var.get()
-            s_name = stat_var.get()
-            
-            try:
-                l_id = cur.execute("SELECT id FROM locations WHERE name=?", (l_name,)).fetchone()
-                l_id = l_id[0] if l_id else None
-                s_id = cur.execute("SELECT id FROM statuses WHERE name=?", (s_name,)).fetchone()
-                if not s_id: 
-                    messagebox.showerror("Ошибка", "Выберите статус", parent=dlg)
-                    return
-                
-                now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                cur.execute("""UPDATE devices SET employee=?, location_id=?, status_id=?, updated_at=? 
-                               WHERE id=?""", (emp, l_id, s_id[0], now, dev_id))
-                self.conn.commit()
-                self.refresh_all_data()
-                dlg.destroy()
-            except Exception as e:
-                messagebox.showerror("Ошибка", str(e))
+class RegisterDialog(tk.Toplevel):
+    def __init__(self, app: App):
+        super().__init__(app); self.app = app; self.title("Регистрация"); self.geometry("460x360"); self.configure(bg="white"); self.grab_set()
+        tk.Label(self, text="Регистрация", bg="white", fg="#07153A", font=("Segoe UI", 24, "bold")).pack(pady=18)
+        self.surname = self.entry("Фамилия"); self.password = self.entry("Пароль", "*"); self.confirm = self.entry("Повтор пароля", "*")
+        tk.Button(self, text="Отправить заявку", command=self.submit, bg="#14C9A6", fg="white", bd=0, font=("Segoe UI", 15, "bold"), pady=10).pack(fill="x", padx=32, pady=18)
+    def entry(self, label: str, show: str = "") -> tk.Entry:
+        tk.Label(self, text=label, bg="white", fg="#0B1530", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=32)
+        e = tk.Entry(self, show=show, font=("Segoe UI", 16)); e.pack(fill="x", padx=32, pady=(3, 10), ipady=6); return e
+    def submit(self) -> None:
+        s, p, c = self.surname.get().strip(), self.password.get().strip(), self.confirm.get().strip()
+        if not s or not p or not c or p != c or len(p) < 6:
+            messagebox.showwarning("Регистрация", "Заполните поля, пароль от 6 символов, повторы должны совпадать"); return
+        self.app.run_bg(lambda: self.app.api.register(s, p), ok=lambda _: (messagebox.showinfo("Регистрация", "Заявка отправлена. Дождитесь подтверждения администратора."), self.destroy()))
 
-        ttk.Button(content, text="Применить изменения", style="Primary.TButton", command=save_assignment).pack(fill="x", pady=30)
 
-    # --- ДИАЛОГ: СПРАВОЧНИКИ ---
-    def _open_dict_dialog(self, kind, rec_id=None):
-        name_map = {"location": "локацию", "status": "статус"}
-        table_map = {"location": "locations", "status": "statuses"}
-        
-        is_edit = rec_id is not None
-        title = f"{'Редактировать' if is_edit else 'Добавить'} {name_map[kind]}"
-        
-        dlg = self._create_modal(title, 400, 250)
-        content = tk.Frame(dlg, bg=COLORS["bg_card"], padx=20, pady=20)
-        content.pack(fill="both", expand=True)
-        
-        tk.Label(content, text="Название", bg=COLORS["bg_card"], font=FONTS["body_bold"]).pack(anchor="w")
-        var = tk.StringVar()
-        e = tk.Entry(content, textvariable=var, font=FONTS["body"], bg="#F9FAFB")
-        e.pack(fill="x", ipady=6, pady=5)
-        e.focus_set()
+class PendingDialog(tk.Toplevel):
+    def __init__(self, app: App, token: str):
+        super().__init__(app); self.app = app; self.token = token; self.title("Заявки"); self.geometry("760x440"); self.grab_set()
+        self.tree = ttk.Treeview(self, columns=("id", "surname", "created"), show="headings"); self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+        for c, h in zip(("id", "surname", "created"), ("ID", "Фамилия", "Создан")): self.tree.heading(c, text=h)
+        bar = tk.Frame(self); bar.pack(fill="x", padx=10, pady=8)
+        tk.Button(bar, text="Одобрить", command=self.approve).pack(side="left", padx=4); tk.Button(bar, text="Отклонить", command=self.reject).pack(side="left", padx=4); tk.Button(bar, text="Обновить", command=self.load).pack(side="right")
+        self.load()
+    def selected_id(self) -> Optional[int]:
+        sel = self.tree.selection(); return int(self.tree.item(sel[0], "values")[0]) if sel else None
+    def load(self) -> None:
+        self.app.run_bg(lambda: self.app.api.pending_users(self.token), ok=self.fill)
+    def fill(self, rows: list[dict[str, Any]]) -> None:
+        self.tree.delete(*self.tree.get_children())
+        for r in rows: self.tree.insert("", "end", values=(r.get("id", ""), r.get("surname", ""), parse_dt(r.get("created_at"))))
+    def approve(self) -> None:
+        rid = self.selected_id(); role = ChoiceDialog.ask(self.app, "Роль", "Роль нового пользователя", [("operator", "Оператор"), ("viewer", "Перегляд"), ("admin", "Адмін")])
+        if rid and role: self.app.run_bg(lambda: self.app.api.approve_user(self.token, rid, role), ok=lambda _: self.load())
+    def reject(self) -> None:
+        rid = self.selected_id()
+        if rid and messagebox.askyesno("Отклонить", f"Отклонить заявку #{rid}?"): self.app.run_bg(lambda: self.app.api.reject_user(self.token, rid), ok=lambda _: self.load())
 
-        if is_edit:
-            cur = self.conn.cursor()
-            val = cur.execute(f"SELECT name FROM {table_map[kind]} WHERE id=?", (rec_id,)).fetchone()
-            if val: var.set(val[0])
 
-        def save():
-            val = var.get().strip()
-            if not val: return
-            try:
-                cur = self.conn.cursor()
-                if is_edit:
-                    cur.execute(f"UPDATE {table_map[kind]} SET name=? WHERE id=?", (val, rec_id))
-                else:
-                    cur.execute(f"INSERT INTO {table_map[kind]} (name) VALUES (?)", (val,))
-                self.conn.commit()
-                self.refresh_all_data()
-                dlg.destroy()
-            except sqlite3.IntegrityError:
-                messagebox.showerror("Ошибка", "Такое имя уже существует", parent=dlg)
+class SimpleInput:
+    @staticmethod
+    def ask(root: tk.Tk, title: str, prompt: str, secret: bool = False) -> str:
+        dlg = tk.Toplevel(root); dlg.title(title); dlg.geometry("430x180"); dlg.configure(bg="white"); dlg.grab_set(); result = {"v": ""}
+        tk.Label(dlg, text=prompt, bg="white", font=("Segoe UI", 14, "bold")).pack(pady=(22, 8))
+        e = tk.Entry(dlg, show="*" if secret else "", font=("Segoe UI", 16)); e.pack(fill="x", padx=24, ipady=5); e.focus_set()
+        def ok(): result["v"] = e.get(); dlg.destroy()
+        tk.Button(dlg, text="OK", command=ok, bg="#075BFF", fg="white", bd=0, font=("Segoe UI", 13, "bold"), pady=8).pack(pady=16)
+        dlg.bind("<Return>", lambda ev: ok()); root.wait_window(dlg); return result["v"]
 
-        ttk.Button(content, text="Сохранить", style="Primary.TButton", command=save).pack(side="bottom", fill="x")
 
-    def _action_dict(self, kind, action):
-        tree = self.tree_loc if kind == "location" else self.tree_stat
-        sel = tree.selection()
-        if not sel: return
-        item_id = tree.item(sel[0])['values'][0]
-        
-        if action == "edit":
-            self._open_dict_dialog(kind, item_id)
-        elif action == "delete":
-            if messagebox.askyesno("Удаление", "Удалить запись? Ссылки в устройствах будут очищены."):
-                cur = self.conn.cursor()
-                tbl = "locations" if kind == "location" else "statuses"
-                col = "location_id" if kind == "location" else "status_id"
-                cur.execute(f"UPDATE devices SET {col}=NULL WHERE {col}=?", (item_id,))
-                cur.execute(f"DELETE FROM {tbl} WHERE id=?", (item_id,))
-                self.conn.commit()
-                self.refresh_all_data()
+class ChoiceDialog:
+    @staticmethod
+    def ask(root: tk.Tk, title: str, prompt: str, choices: list[tuple[str, str]]) -> Optional[str]:
+        dlg = tk.Toplevel(root); dlg.title(title); dlg.geometry("360x260"); dlg.configure(bg="white"); dlg.grab_set(); result: dict[str, Optional[str]] = {"v": None}
+        tk.Label(dlg, text=prompt, bg="white", font=("Segoe UI", 14, "bold")).pack(pady=16)
+        for value, label in choices:
+            tk.Button(dlg, text=label, command=lambda v=value: (result.__setitem__("v", v), dlg.destroy()), bg="#075BFF", fg="white", bd=0, font=("Segoe UI", 13, "bold"), pady=8).pack(fill="x", padx=28, pady=5)
+        root.wait_window(dlg); return result["v"]
 
-    def _edit_selected_device_simple(self):
-        sel = self.tree_dev_s.selection()
-        if sel:
-            self._open_device_dialog(self.tree_dev_s.item(sel[0])['values'][0])
 
-    def _delete_selected_device_simple(self):
-        sel = self.tree_dev_s.selection()
-        if sel:
-            d_id = self.tree_dev_s.item(sel[0])['values'][0]
-            if messagebox.askyesno("Удаление", "Удалить устройство навсегда?"):
-                self.conn.execute("DELETE FROM devices WHERE id=?", (d_id,))
-                self.conn.commit()
-                self.refresh_all_data()
-
-    # ─── ХЕЛПЕРЫ ───────────────────────────────────────────────────
-    def _toggle_fullscreen(self, event=None):
-        self.is_fullscreen = not self.is_fullscreen
-        self.root.attributes("-fullscreen", self.is_fullscreen)
-
-    def _exit_fullscreen(self, event=None):
-        self.is_fullscreen = False
-        self.root.attributes("-fullscreen", False)
+def main() -> int:
+    try:
+        app = App(); app.mainloop(); return 0
+    except Exception as exc:
+        traceback.print_exc()
+        try: messagebox.showerror(APP_NAME, str(exc))
+        except Exception: pass
+        return 1
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    try:
-        from ctypes import windll
-        windll.shcore.SetProcessDpiAwareness(1)
-    except:
-        pass
-    
-    app = TSDRegistryApp(root)
-    root.mainloop()
+    raise SystemExit(main())
