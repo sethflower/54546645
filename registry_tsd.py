@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """Windows desktop client for the BoxID-ТТН module.
 
+Складський клієнт для сканування пар BoxID + ТТН.
+
 Install: pip install requests
 Run:     python boxid_ttn_windows.py
 """
@@ -13,45 +15,64 @@ import queue
 import re
 import sqlite3
 import threading
-import time
 import tkinter as tk
-from collections import Counter, defaultdict
-from dataclasses import dataclass
+from collections import Counter, deque
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any, Callable
-from urllib.parse import urljoin
 
 import requests
 
+# --------------------------------------------------------------------------- #
+#  Constants & theme
+# --------------------------------------------------------------------------- #
 APP_NAME = "BoxID-ТТН"
 API_BASE_URL = "https://tracking-app.dclink.ua"
 TIMEOUT = 12
+
 APP_DIR = Path(os.getenv("APPDATA") or Path.home()) / "BoxID_TTN_Windows"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = APP_DIR / "boxid_ttn.sqlite3"
 CONFIG_PATH = APP_DIR / "session.json"
 
-BG = "#07153A"
-CARD = "#FFFFFF"
-TEXT = "#0B1530"
-MUTED = "#60708C"
-BLUE = "#075BFF"
+# Palette ------------------------------------------------------------------- #
+BG = "#0A1330"          # main background (dark navy)
+SIDEBAR = "#0E1A45"     # navigation panel
+SIDEBAR_HOVER = "#16266B"
+SIDEBAR_ACTIVE = "#1E5BFF"
+CARD = "#FFFFFF"        # white card
+CARD_ALT = "#F4F7FE"    # zebra / inner card
+TEXT = "#0B1530"        # dark text on white
+TEXT_LIGHT = "#E8EEFF"  # light text on dark
+MUTED = "#7B89A8"       # secondary text
+MUTED_LIGHT = "#9FB0D9"
+BLUE = "#1E5BFF"
 SOFT = "#3F8CFF"
-GREEN = "#14C9A6"
+GREEN = "#0FB981"
+GREEN_BG = "#0FB981"
 RED = "#EF4444"
+RED_BG = "#EF4444"
 AMBER = "#F59E0B"
-FIELD = "#F2F5FB"
+AMBER_BG = "#F59E0B"
+FIELD = "#EEF3FC"
+BORDER = "#D8E0F0"
 
 
+# --------------------------------------------------------------------------- #
+#  Helpers
+# --------------------------------------------------------------------------- #
 def only_digits(value: str) -> str:
     return re.sub(r"\D", "", value or "")
 
 
 def parse_dt(value: Any) -> datetime:
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+        return (
+            datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            .astimezone()
+            .replace(tzinfo=None)
+        )
     except Exception:
         return datetime.min
 
@@ -61,6 +82,9 @@ def fmt_dt(value: Any) -> str:
     return str(value) if dt == datetime.min else dt.strftime("%d.%m.%Y %H:%M:%S")
 
 
+# --------------------------------------------------------------------------- #
+#  API client
+# --------------------------------------------------------------------------- #
 class ApiError(Exception):
     pass
 
@@ -82,9 +106,16 @@ class ApiClient:
 
     def _request(self, method: str, path: str, *, auth: bool = True, **kwargs: Any) -> Any:
         try:
-            r = self.session.request(method, self._url(path), headers=self._headers(auth), timeout=TIMEOUT, **kwargs)
+            r = self.session.request(
+                method,
+                self._url(path),
+                headers=self._headers(auth),
+                timeout=TIMEOUT,
+                **kwargs,
+            )
         except requests.RequestException as exc:
             raise ApiError("Немає зв'язку з сервером") from exc
+
         if r.status_code < 200 or r.status_code >= 300:
             try:
                 body = r.json()
@@ -92,6 +123,7 @@ class ApiClient:
             except Exception:
                 msg = r.text
             raise ApiError(msg or f"Помилка сервера ({r.status_code})")
+
         if not r.text:
             return None
         try:
@@ -99,8 +131,12 @@ class ApiClient:
         except ValueError as exc:
             raise ApiError("Некоректна відповідь сервера") from exc
 
+    # -- endpoints --------------------------------------------------------- #
     def login(self, surname: str, password: str) -> dict[str, Any]:
-        data = self._request("POST", "/login", auth=False, data=json.dumps({"surname": surname, "password": password}))
+        data = self._request(
+            "POST", "/login", auth=False,
+            data=json.dumps({"surname": surname, "password": password}),
+        )
         token = str(data.get("token") or "")
         if not token:
             raise ApiError("Сервер не повернув токен")
@@ -108,10 +144,16 @@ class ApiClient:
         return data
 
     def register(self, surname: str, password: str) -> None:
-        self._request("POST", "/register", auth=False, data=json.dumps({"surname": surname, "password": password}))
+        self._request(
+            "POST", "/register", auth=False,
+            data=json.dumps({"surname": surname, "password": password}),
+        )
 
     def add_record(self, user_name: str, boxid: str, ttn: str) -> dict[str, Any]:
-        return self._request("POST", "/add_record", data=json.dumps({"user_name": user_name, "boxid": boxid, "ttn": ttn})) or {}
+        return self._request(
+            "POST", "/add_record",
+            data=json.dumps({"user_name": user_name, "boxid": boxid, "ttn": ttn}),
+        ) or {}
 
     def get_history(self) -> list[dict[str, Any]]:
         return self._request("GET", "/get_history") or []
@@ -129,6 +171,9 @@ class ApiClient:
         self._request("DELETE", "/clear_tracking")
 
 
+# --------------------------------------------------------------------------- #
+#  Offline queue
+# --------------------------------------------------------------------------- #
 class OfflineQueue:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -136,11 +181,19 @@ class OfflineQueue:
 
     def _init(self) -> None:
         with sqlite3.connect(self.db_path) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS pending_records(id INTEGER PRIMARY KEY AUTOINCREMENT, user_name TEXT, boxid TEXT, ttn TEXT, created_at TEXT)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS pending_records("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "user_name TEXT, boxid TEXT, ttn TEXT, created_at TEXT)"
+            )
 
     def add(self, user_name: str, boxid: str, ttn: str) -> None:
         with sqlite3.connect(self.db_path) as db:
-            db.execute("INSERT INTO pending_records(user_name, boxid, ttn, created_at) VALUES(?,?,?,?)", (user_name, boxid, ttn, datetime.now().isoformat()))
+            db.execute(
+                "INSERT INTO pending_records(user_name, boxid, ttn, created_at) "
+                "VALUES(?,?,?,?)",
+                (user_name, boxid, ttn, datetime.now().isoformat()),
+            )
 
     def count(self) -> int:
         with sqlite3.connect(self.db_path) as db:
@@ -149,7 +202,9 @@ class OfflineQueue:
     def sync(self, api: ApiClient) -> int:
         sent = 0
         with sqlite3.connect(self.db_path) as db:
-            rows = db.execute("SELECT id,user_name,boxid,ttn FROM pending_records ORDER BY id").fetchall()
+            rows = db.execute(
+                "SELECT id,user_name,boxid,ttn FROM pending_records ORDER BY id"
+            ).fetchall()
         for row_id, user_name, boxid, ttn in rows:
             api.add_record(user_name, boxid, ttn)
             with sqlite3.connect(self.db_path) as db:
@@ -158,171 +213,969 @@ class OfflineQueue:
         return sent
 
 
+# --------------------------------------------------------------------------- #
+#  Sound helper
+# --------------------------------------------------------------------------- #
+def play_sound(ok: bool) -> None:
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_OK if ok else winsound.MB_ICONHAND)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+#  Application
+# --------------------------------------------------------------------------- #
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("1180x760")
-        self.minsize(980, 650)
+        self.geometry("1280x820")
+        self.minsize(1080, 720)
         self.configure(bg=BG)
+
         self.api = ApiClient()
         self.offline = OfflineQueue(DB_PATH)
         self.user_name = "operator"
         self.role = "viewer"
         self.access_level = 2
+
         self.q: queue.Queue[Callable[[], None]] = queue.Queue()
+        self.nav_buttons: dict[str, tk.Label] = {}
+        self.active_page = ""
+        self.session_count = 0
+        self.session_errors = 0
+        self.local_log: deque[tuple[str, str, str, str]] = deque(maxlen=12)
+
         self._setup_style()
         self._load_session()
-        self.show_login() if not self.api.token else self.show_main()
-        self.after(80, self._drain_queue)
 
+        if self.api.token:
+            self.show_main()
+        else:
+            self.show_login()
+
+        self.after(80, self._drain_queue)
+        self.after(15000, self._auto_sync_tick)
+
+    # -- ttk styles -------------------------------------------------------- #
     def _setup_style(self) -> None:
         s = ttk.Style(self)
         s.theme_use("clam")
+
         s.configure("TFrame", background=BG)
         s.configure("Card.TFrame", background=CARD)
-        s.configure("TLabel", background=BG, foreground="white", font=("Segoe UI", 12))
-        s.configure("Card.TLabel", background=CARD, foreground=TEXT, font=("Segoe UI", 12))
-        s.configure("Title.TLabel", background=BG, foreground="white", font=("Segoe UI", 28, "bold"))
-        s.configure("Big.TButton", font=("Segoe UI", 15, "bold"), padding=14)
-        s.configure("TButton", font=("Segoe UI", 11), padding=8)
-        s.configure("Treeview", rowheight=34, font=("Segoe UI", 11))
-        s.configure("Treeview.Heading", font=("Segoe UI", 11, "bold"))
+        s.configure("CardAlt.TFrame", background=CARD_ALT)
 
+        s.configure("TLabel", background=BG, foreground=TEXT_LIGHT, font=("Segoe UI", 12))
+        s.configure("Card.TLabel", background=CARD, foreground=TEXT, font=("Segoe UI", 12))
+        s.configure("Muted.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 11))
+        s.configure("Title.TLabel", background=BG, foreground="white",
+                    font=("Segoe UI Semibold", 30, "bold"))
+
+        # Entries
+        s.configure("TEntry", fieldbackground=FIELD, borderwidth=0, relief="flat")
+        s.configure("Big.TEntry", fieldbackground=FIELD, borderwidth=0,
+                    relief="flat", padding=10)
+
+        # Buttons
+        s.configure("Accent.TButton", font=("Segoe UI Semibold", 15, "bold"),
+                    padding=14, background=BLUE, foreground="white",
+                    borderwidth=0, focuscolor=BLUE)
+        s.map("Accent.TButton", background=[("active", SOFT)])
+
+        s.configure("Ghost.TButton", font=("Segoe UI", 12), padding=12,
+                    background=CARD_ALT, foreground=TEXT, borderwidth=0)
+        s.map("Ghost.TButton", background=[("active", BORDER)])
+
+        s.configure("Small.TButton", font=("Segoe UI", 11), padding=8,
+                    background=CARD_ALT, foreground=TEXT, borderwidth=0)
+        s.map("Small.TButton", background=[("active", BORDER)])
+
+        # Treeview
+        s.configure("Treeview",
+                    background=CARD, fieldbackground=CARD, foreground=TEXT,
+                    rowheight=40, font=("Segoe UI", 11), borderwidth=0)
+        s.configure("Treeview.Heading",
+                    background=SIDEBAR, foreground="white",
+                    font=("Segoe UI Semibold", 11, "bold"), padding=8, relief="flat")
+        s.map("Treeview.Heading", background=[("active", SIDEBAR_HOVER)])
+        s.map("Treeview", background=[("selected", "#CFE0FF")],
+              foreground=[("selected", TEXT)])
+
+        s.configure("Vertical.TScrollbar", background=CARD_ALT,
+                    troughcolor=CARD, borderwidth=0, arrowcolor=MUTED)
+
+    # -- main loop helpers ------------------------------------------------- #
     def _drain_queue(self) -> None:
         while True:
-            try: self.q.get_nowait()()
-            except queue.Empty: break
+            try:
+                self.q.get_nowait()()
+            except queue.Empty:
+                break
         self.after(80, self._drain_queue)
 
-    def bg_task(self, work: Callable[[], Any], done: Callable[[Any, Exception | None], None]) -> None:
+    def bg_task(self, work: Callable[[], Any],
+                done: Callable[[Any, Exception | None], None]) -> None:
         def run() -> None:
-            try: res, err = work(), None
-            except Exception as exc: res, err = None, exc
+            try:
+                res, err = work(), None
+            except Exception as exc:
+                res, err = None, exc
             self.q.put(lambda: done(res, err))
         threading.Thread(target=run, daemon=True).start()
 
     def clear(self) -> None:
-        for w in self.winfo_children(): w.destroy()
+        for w in self.winfo_children():
+            w.destroy()
 
+    # -- session persistence ---------------------------------------------- #
     def _load_session(self) -> None:
         if CONFIG_PATH.exists():
             try:
-                data = json.loads(CONFIG_PATH.read_text("utf-8")); self.api.token = data.get("token", ""); self.user_name = data.get("user_name", "operator"); self.role = data.get("role", "viewer"); self.access_level = int(data.get("access_level", 2))
-            except Exception: pass
+                data = json.loads(CONFIG_PATH.read_text("utf-8"))
+                self.api.token = data.get("token", "")
+                self.user_name = data.get("user_name", "operator")
+                self.role = data.get("role", "viewer")
+                self.access_level = int(data.get("access_level", 2))
+            except Exception:
+                pass
 
     def _save_session(self) -> None:
-        CONFIG_PATH.write_text(json.dumps({"token": self.api.token, "user_name": self.user_name, "role": self.role, "access_level": self.access_level}, ensure_ascii=False), "utf-8")
+        CONFIG_PATH.write_text(
+            json.dumps(
+                {
+                    "token": self.api.token,
+                    "user_name": self.user_name,
+                    "role": self.role,
+                    "access_level": self.access_level,
+                },
+                ensure_ascii=False,
+            ),
+            "utf-8",
+        )
 
+    # ===================================================================== #
+    #  LOGIN SCREEN
+    # ===================================================================== #
     def show_login(self) -> None:
-        self.clear(); wrap = ttk.Frame(self); wrap.pack(expand=True, fill="both", padx=60, pady=50)
-        ttk.Label(wrap, text="BoxID-ТТН", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(wrap, text="Windows-клієнт для складу: сканування BoxID і ТТН", font=("Segoe UI", 15), foreground="#C7D2FE", background=BG).pack(anchor="w", pady=(0, 25))
-        card = ttk.Frame(wrap, style="Card.TFrame", padding=30); card.pack(anchor="center")
-        ttk.Label(card, text="Вхід оператора", style="Card.TLabel", font=("Segoe UI", 22, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 18))
-        surname = self.entry(card, 1, "Прізвище", False); password = self.entry(card, 2, "Пароль", True)
-        msg = ttk.Label(card, text="", style="Card.TLabel", foreground=RED); msg.grid(row=3, column=0, columnspan=2, sticky="w", pady=8)
+        self.clear()
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(expand=True, fill="both")
+
+        center = tk.Frame(outer, bg=BG)
+        center.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Brand
+        brand = tk.Frame(center, bg=BG)
+        brand.pack(pady=(0, 22))
+        tk.Label(brand, text="📦", bg=BG, fg="white",
+                 font=("Segoe UI Emoji", 40)).pack()
+        tk.Label(brand, text="BoxID-ТТН", bg=BG, fg="white",
+                 font=("Segoe UI Semibold", 34, "bold")).pack()
+        tk.Label(brand, text="Складський модуль сканування",
+                 bg=BG, fg=MUTED_LIGHT, font=("Segoe UI", 14)).pack(pady=(4, 0))
+
+        # Card
+        card = tk.Frame(center, bg=CARD)
+        card.pack(ipadx=40, ipady=10)
+        inner = tk.Frame(card, bg=CARD)
+        inner.pack(padx=44, pady=36)
+
+        tk.Label(inner, text="Вхід оператора", bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 22, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 20))
+
+        surname = self._login_entry(inner, 1, "Прізвище", secret=False)
+        password = self._login_entry(inner, 2, "Пароль", secret=True)
+
+        msg = tk.Label(inner, text="", bg=CARD, fg=RED, font=("Segoe UI", 12))
+        msg.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 8))
+
         def login() -> None:
-            if not surname.get().strip() or not password.get().strip(): msg.config(text="Введіть прізвище та пароль"); return
-            msg.config(text="Вхід...", foreground=MUTED)
-            self.bg_task(lambda: self.api.login(surname.get().strip(), password.get().strip()), lambda res, err: after_login(res, err))
+            if not surname.get().strip() or not password.get().strip():
+                msg.config(text="Введіть прізвище та пароль", fg=RED)
+                return
+            msg.config(text="Перевірка даних...", fg=MUTED)
+            self.bg_task(
+                lambda: self.api.login(surname.get().strip(), password.get().strip()),
+                after_login,
+            )
+
         def after_login(res: Any, err: Exception | None) -> None:
-            if err: msg.config(text=str(err), foreground=RED); return
-            self.user_name = str(res.get("surname") or surname.get().strip()); self.role = str(res.get("role") or "viewer"); self.access_level = int(res.get("access_level") if res.get("access_level") is not None else (1 if self.role == "admin" else 0 if self.role == "operator" else 2)); self._save_session(); self.show_main()
-        ttk.Button(card, text="Увійти", style="Big.TButton", command=login).grid(row=4, column=0, sticky="ew", pady=8)
-        ttk.Button(card, text="Реєстрація", command=lambda: self.show_register()).grid(row=4, column=1, sticky="ew", padx=(12,0), pady=8)
-        card.columnconfigure((0,1), weight=1)
+            if err:
+                msg.config(text=str(err), fg=RED)
+                play_sound(False)
+                return
+            self.user_name = str(res.get("surname") or surname.get().strip())
+            self.role = str(res.get("role") or "viewer")
+            lvl = res.get("access_level")
+            if lvl is not None:
+                self.access_level = int(lvl)
+            else:
+                self.access_level = 1 if self.role == "admin" else 0 if self.role == "operator" else 2
+            self._save_session()
+            self.show_main()
+
+        btn = ttk.Button(inner, text="Увійти", style="Accent.TButton", command=login)
+        btn.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 8))
+
+        reg = ttk.Button(inner, text="Реєстрація нового оператора",
+                         style="Ghost.TButton", command=self.show_register)
+        reg.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
+        inner.columnconfigure(1, weight=1)
+        surname.focus_set()
+        surname.bind("<Return>", lambda e: password.focus_set())
         password.bind("<Return>", lambda e: login())
 
-    def entry(self, parent: tk.Widget, row: int, label: str, secret: bool=False) -> ttk.Entry:
-        ttk.Label(parent, text=label, style="Card.TLabel", font=("Segoe UI", 12, "bold")).grid(row=row, column=0, sticky="w", pady=8)
-        e = ttk.Entry(parent, font=("Segoe UI", 18), show="●" if secret else "", width=28); e.grid(row=row, column=1, sticky="ew", pady=8, padx=(15,0)); return e
+    def _login_entry(self, parent: tk.Widget, row: int, label: str,
+                     secret: bool = False) -> tk.Entry:
+        tk.Label(parent, text=label, bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 12, "bold")).grid(
+            row=row, column=0, sticky="w", pady=(10, 2), columnspan=2)
+        wrapper = tk.Frame(parent, bg=FIELD, highlightthickness=1,
+                           highlightbackground=BORDER, highlightcolor=BLUE)
+        wrapper.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(20, 6))
+        e = tk.Entry(wrapper, font=("Segoe UI", 17), bd=0, relief="flat",
+                     bg=FIELD, fg=TEXT, insertbackground=TEXT,
+                     show="●" if secret else "", width=26)
+        e.pack(fill="x", padx=12, ipady=10)
+        # fix row offset (label above the field)
+        wrapper.grid_configure(row=row, pady=(34, 6))
+        parent.grid_rowconfigure(row, minsize=70)
+        return e
 
     def show_register(self) -> None:
-        self.clear(); card = ttk.Frame(self, style="Card.TFrame", padding=30); card.pack(expand=True)
-        ttk.Label(card, text="Заявка на реєстрацію", style="Card.TLabel", font=("Segoe UI", 22, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 18))
-        surname = self.entry(card, 1, "Прізвище"); p1 = self.entry(card, 2, "Пароль", True); p2 = self.entry(card, 3, "Повтор пароля", True)
-        msg = ttk.Label(card, text="", style="Card.TLabel"); msg.grid(row=4, column=0, columnspan=2, sticky="w", pady=8)
-        def reg() -> None:
-            if not surname.get().strip() or not p1.get() or not p2.get(): msg.config(text="Заповніть усі поля", foreground=RED); return
-            if len(p1.get()) < 6: msg.config(text="Пароль має містити щонайменше 6 символів", foreground=RED); return
-            if p1.get() != p2.get(): msg.config(text="Паролі не співпадають", foreground=RED); return
-            self.bg_task(lambda: self.api.register(surname.get().strip(), p1.get().strip()), lambda _r, err: msg.config(text=str(err) if err else "Заявку відправлено. Дочекайтесь підтвердження адміністратора.", foreground=RED if err else GREEN))
-        ttk.Button(card, text="Відправити заявку", style="Big.TButton", command=reg).grid(row=5, column=0, sticky="ew", pady=8)
-        ttk.Button(card, text="Назад", command=self.show_login).grid(row=5, column=1, sticky="ew", padx=(12,0), pady=8)
+        self.clear()
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(expand=True, fill="both")
+        card = tk.Frame(outer, bg=CARD)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+        inner = tk.Frame(card, bg=CARD)
+        inner.pack(padx=46, pady=40)
 
+        tk.Label(inner, text="Заявка на реєстрацію", bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 22, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 16))
+
+        surname = self._register_entry(inner, 1, "Прізвище", False)
+        p1 = self._register_entry(inner, 2, "Пароль", True)
+        p2 = self._register_entry(inner, 3, "Повтор пароля", True)
+
+        msg = tk.Label(inner, text="", bg=CARD, fg=RED, font=("Segoe UI", 12))
+        msg.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 8))
+
+        def reg() -> None:
+            if not surname.get().strip() or not p1.get() or not p2.get():
+                msg.config(text="Заповніть усі поля", fg=RED)
+                return
+            if len(p1.get()) < 6:
+                msg.config(text="Пароль має містити щонайменше 6 символів", fg=RED)
+                return
+            if p1.get() != p2.get():
+                msg.config(text="Паролі не співпадають", fg=RED)
+                return
+            msg.config(text="Відправлення...", fg=MUTED)
+            self.bg_task(
+                lambda: self.api.register(surname.get().strip(), p1.get().strip()),
+                lambda _r, err: msg.config(
+                    text=str(err) if err
+                    else "Заявку відправлено. Дочекайтесь підтвердження адміністратора.",
+                    fg=RED if err else GREEN,
+                ),
+            )
+
+        ttk.Button(inner, text="Відправити заявку", style="Accent.TButton",
+                   command=reg).grid(row=5, column=0, columnspan=2,
+                                     sticky="ew", pady=(8, 8))
+        ttk.Button(inner, text="Назад до входу", style="Ghost.TButton",
+                   command=self.show_login).grid(row=6, column=0, columnspan=2,
+                                                 sticky="ew")
+        inner.columnconfigure(1, weight=1)
+
+    def _register_entry(self, parent: tk.Widget, row: int, label: str,
+                        secret: bool) -> tk.Entry:
+        tk.Label(parent, text=label, bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 12, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(12, 2))
+        wrapper = tk.Frame(parent, bg=FIELD, highlightthickness=1,
+                           highlightbackground=BORDER, highlightcolor=BLUE)
+        wrapper.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(34, 4))
+        parent.grid_rowconfigure(row, minsize=70)
+        e = tk.Entry(wrapper, font=("Segoe UI", 16), bd=0, relief="flat",
+                     bg=FIELD, fg=TEXT, insertbackground=TEXT,
+                     show="●" if secret else "", width=26)
+        e.pack(fill="x", padx=12, ipady=9)
+        return e
+
+    # ===================================================================== #
+    #  MAIN LAYOUT (sidebar + content)
+    # ===================================================================== #
     def show_main(self) -> None:
-        self.clear(); top = ttk.Frame(self, padding=(24,16)); top.pack(fill="x")
-        ttk.Label(top, text="BoxID-ТТН", style="Title.TLabel").pack(side="left")
-        ttk.Label(top, text=f"  {self.user_name} • {self.role}  ", font=("Segoe UI", 14, "bold"), foreground="white", background=BG).pack(side="left", padx=20)
-        for txt, cmd in [("Сканування", self.scan_page), ("Історія", self.history_page), ("Помилки", self.errors_page), ("Статистика", self.stats_page), ("Вийти", self.logout)]: ttk.Button(top, text=txt, command=cmd).pack(side="right", padx=4)
-        self.body = ttk.Frame(self, padding=24); self.body.pack(fill="both", expand=True); self.scan_page(); self.try_sync()
+        self.clear()
+        self.session_count = 0
+        self.session_errors = 0
+        self.local_log.clear()
+
+        root = tk.Frame(self, bg=BG)
+        root.pack(fill="both", expand=True)
+
+        # ---- Sidebar ---- #
+        sidebar = tk.Frame(root, bg=SIDEBAR, width=260)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        # Brand block
+        brand = tk.Frame(sidebar, bg=SIDEBAR)
+        brand.pack(fill="x", pady=(26, 18), padx=22)
+        tk.Label(brand, text="📦  BoxID-ТТН", bg=SIDEBAR, fg="white",
+                 font=("Segoe UI Semibold", 20, "bold")).pack(anchor="w")
+        tk.Label(brand, text="Складський модуль", bg=SIDEBAR, fg=MUTED_LIGHT,
+                 font=("Segoe UI", 11)).pack(anchor="w", pady=(2, 0))
+
+        sep = tk.Frame(sidebar, bg=SIDEBAR_HOVER, height=1)
+        sep.pack(fill="x", padx=18, pady=(4, 14))
+
+        # User card
+        user_card = tk.Frame(sidebar, bg=SIDEBAR_HOVER)
+        user_card.pack(fill="x", padx=14, pady=(0, 18))
+        avatar = tk.Label(user_card, text=self.user_name[:1].upper() or "?",
+                          bg=BLUE, fg="white", width=3,
+                          font=("Segoe UI Semibold", 16, "bold"))
+        avatar.pack(side="left", padx=(10, 10), pady=10, ipady=4)
+        ucol = tk.Frame(user_card, bg=SIDEBAR_HOVER)
+        ucol.pack(side="left", fill="both", expand=True, pady=10)
+        tk.Label(ucol, text=self.user_name, bg=SIDEBAR_HOVER, fg="white",
+                 font=("Segoe UI Semibold", 13, "bold"), anchor="w").pack(
+            anchor="w", fill="x")
+        role_text = {"admin": "Адміністратор",
+                     "operator": "Оператор"}.get(self.role, "Перегляд")
+        tk.Label(ucol, text=role_text, bg=SIDEBAR_HOVER, fg=MUTED_LIGHT,
+                 font=("Segoe UI", 11), anchor="w").pack(anchor="w", fill="x")
+
+        # Nav items
+        nav_items = [
+            ("scan", "🔍  Сканування", self.scan_page),
+            ("history", "🗂  Історія", self.history_page),
+            ("errors", "⚠  Помилки", self.errors_page),
+            ("stats", "📊  Статистика", self.stats_page),
+        ]
+        for key, label, cmd in nav_items:
+            self._make_nav(sidebar, key, label, cmd)
+
+        # bottom area: connection + logout
+        bottom = tk.Frame(sidebar, bg=SIDEBAR)
+        bottom.pack(side="bottom", fill="x", pady=18, padx=14)
+
+        self.queue_label = tk.Label(
+            bottom, text="", bg=SIDEBAR, fg=AMBER,
+            font=("Segoe UI Semibold", 11, "bold"), anchor="w")
+        self.queue_label.pack(fill="x", pady=(0, 10))
+
+        logout_btn = tk.Label(bottom, text="⏻  Вийти", bg=SIDEBAR_HOVER,
+                              fg="white", font=("Segoe UI Semibold", 12, "bold"),
+                              padx=14, pady=12, anchor="w", cursor="hand2")
+        logout_btn.pack(fill="x")
+        logout_btn.bind("<Button-1>", lambda e: self.logout())
+        logout_btn.bind("<Enter>", lambda e: logout_btn.config(bg=RED))
+        logout_btn.bind("<Leave>", lambda e: logout_btn.config(bg=SIDEBAR_HOVER))
+
+        # ---- Content area ---- #
+        self.content = tk.Frame(root, bg=BG)
+        self.content.pack(side="left", fill="both", expand=True)
+
+        self.body = tk.Frame(self.content, bg=BG)
+        self.body.pack(fill="both", expand=True, padx=28, pady=24)
+
+        self.scan_page()
+        self._update_queue_label()
+        self.try_sync()
+
+    def _make_nav(self, parent: tk.Widget, key: str, label: str,
+                  cmd: Callable[[], None]) -> None:
+        lbl = tk.Label(parent, text=label, bg=SIDEBAR, fg=TEXT_LIGHT,
+                       font=("Segoe UI", 14), anchor="w",
+                       padx=22, pady=15, cursor="hand2")
+        lbl.pack(fill="x", padx=8, pady=2)
+        self.nav_buttons[key] = lbl
+
+        def on_click(_e=None) -> None:
+            self._set_active_nav(key)
+            cmd()
+
+        def on_enter(_e=None) -> None:
+            if self.active_page != key:
+                lbl.config(bg=SIDEBAR_HOVER)
+
+        def on_leave(_e=None) -> None:
+            if self.active_page != key:
+                lbl.config(bg=SIDEBAR)
+
+        lbl.bind("<Button-1>", on_click)
+        lbl.bind("<Enter>", on_enter)
+        lbl.bind("<Leave>", on_leave)
+
+    def _set_active_nav(self, key: str) -> None:
+        self.active_page = key
+        for k, lbl in self.nav_buttons.items():
+            if k == key:
+                lbl.config(bg=SIDEBAR_ACTIVE, fg="white",
+                           font=("Segoe UI Semibold", 14, "bold"))
+            else:
+                lbl.config(bg=SIDEBAR, fg=TEXT_LIGHT,
+                           font=("Segoe UI", 14))
 
     def body_clear(self) -> None:
-        for w in self.body.winfo_children(): w.destroy()
+        for w in self.body.winfo_children():
+            w.destroy()
 
+    def _page_header(self, title: str, subtitle: str = "") -> tk.Frame:
+        header = tk.Frame(self.body, bg=BG)
+        header.pack(fill="x", pady=(0, 18))
+        tk.Label(header, text=title, bg=BG, fg="white",
+                 font=("Segoe UI Semibold", 24, "bold")).pack(anchor="w")
+        if subtitle:
+            tk.Label(header, text=subtitle, bg=BG, fg=MUTED_LIGHT,
+                     font=("Segoe UI", 12)).pack(anchor="w", pady=(2, 0))
+        return header
+
+    def _update_queue_label(self) -> None:
+        cnt = self.offline.count()
+        if cnt:
+            self.queue_label.config(
+                text=f"📦 Офлайн-черга: {cnt}", fg=AMBER)
+        else:
+            self.queue_label.config(text="✅ Дані синхронізовано", fg=GREEN)
+
+    # ===================================================================== #
+    #  SCAN PAGE
+    # ===================================================================== #
     def scan_page(self) -> None:
-        self.body_clear(); card = ttk.Frame(self.body, style="Card.TFrame", padding=34); card.pack(expand=True, fill="both")
-        ttk.Label(card, text="Сканування пари", style="Card.TLabel", font=("Segoe UI", 26, "bold")).pack(anchor="w")
-        box = ttk.Entry(card, font=("Segoe UI", 32), width=24); ttn = ttk.Entry(card, font=("Segoe UI", 32), width=24)
-        status = tk.Label(card, text="Готово: відскануйте BoxID", bg=CARD, fg=BLUE, font=("Segoe UI", 28, "bold"), pady=20)
-        for label, entry in [("1. BoxID", box), ("2. ТТН", ttn)]: ttk.Label(card, text=label, style="Card.TLabel", font=("Segoe UI", 18, "bold")).pack(anchor="w", pady=(24,5)); entry.pack(fill="x", ipady=12)
-        status.pack(fill="x", pady=24)
-        def ok_sound(ok=True):
-            try: import winsound; winsound.MessageBeep(winsound.MB_OK if ok else winsound.MB_ICONHAND)
-            except Exception: self.bell()
-        def on_box(_=None):
-            val = only_digits(box.get()); box.delete(0,"end"); box.insert(0,val)
-            if val: ok_sound(True); status.config(text="BoxID прийнято. Скануйте ТТН", fg=BLUE); ttn.focus_set()
-        def on_ttn(_=None):
-            b, t = only_digits(box.get()), only_digits(ttn.get())
-            if not b: status.config(text="Спочатку відскануйте BoxID", fg=RED); box.focus_set(); return
-            if not t: return
-            box.delete(0,"end"); ttn.delete(0,"end"); box.focus_set(); status.config(text="⏳ Надсилання...", fg=AMBER)
+        self.active_page = "scan"
+        self._set_active_nav("scan")
+        self.body_clear()
+
+        self._page_header("Сканування пари",
+                          "Скануйте BoxID, потім ТТН. Сканер натискає Enter автоматично.")
+
+        wrap = tk.Frame(self.body, bg=BG)
+        wrap.pack(fill="both", expand=True)
+        wrap.columnconfigure(0, weight=3)
+        wrap.columnconfigure(1, weight=2)
+        wrap.rowconfigure(0, weight=1)
+
+        # ---- Left: scan card ---- #
+        card = tk.Frame(wrap, bg=CARD)
+        card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        inner = tk.Frame(card, bg=CARD)
+        inner.pack(fill="both", expand=True, padx=34, pady=30)
+
+        # Session counters
+        counters = tk.Frame(inner, bg=CARD)
+        counters.pack(fill="x", pady=(0, 14))
+        self.lbl_cnt_ok = self._counter_chip(counters, "Успішно за сесію", "0", GREEN)
+        self.lbl_cnt_err = self._counter_chip(counters, "Помилки / дублі", "0", RED)
+
+        # BoxID field
+        tk.Label(inner, text="1. BoxID", bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 16, "bold")).pack(anchor="w",
+                                                              pady=(8, 4))
+        self.box_wrap = tk.Frame(inner, bg=FIELD, highlightthickness=2,
+                                 highlightbackground=BLUE, highlightcolor=BLUE)
+        self.box_wrap.pack(fill="x")
+        box = tk.Entry(self.box_wrap, font=("Segoe UI", 30), bd=0, relief="flat",
+                       bg=FIELD, fg=TEXT, insertbackground=BLUE,
+                       justify="center")
+        box.pack(fill="x", padx=14, ipady=12)
+
+        # TTN field
+        tk.Label(inner, text="2. ТТН", bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 16, "bold")).pack(anchor="w",
+                                                              pady=(18, 4))
+        self.ttn_wrap = tk.Frame(inner, bg=FIELD, highlightthickness=2,
+                                 highlightbackground=BORDER, highlightcolor=BLUE)
+        self.ttn_wrap.pack(fill="x")
+        ttn = tk.Entry(self.ttn_wrap, font=("Segoe UI", 30), bd=0, relief="flat",
+                       bg=FIELD, fg=TEXT, insertbackground=BLUE,
+                       justify="center")
+        ttn.pack(fill="x", padx=14, ipady=12)
+
+        # Big status banner
+        self.status = tk.Label(inner, text="Готово — відскануйте BoxID",
+                               bg=BLUE, fg="white",
+                               font=("Segoe UI Semibold", 24, "bold"),
+                               pady=26)
+        self.status.pack(fill="x", pady=(22, 0))
+
+        # ---- Right: live log ---- #
+        log_card = tk.Frame(wrap, bg=CARD)
+        log_card.grid(row=0, column=1, sticky="nsew")
+        log_inner = tk.Frame(log_card, bg=CARD)
+        log_inner.pack(fill="both", expand=True, padx=20, pady=20)
+        tk.Label(log_inner, text="Останні сканування", bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 16, "bold")).pack(anchor="w",
+                                                             pady=(0, 10))
+        self.log_frame = tk.Frame(log_inner, bg=CARD)
+        self.log_frame.pack(fill="both", expand=True)
+        self._render_local_log()
+
+        # ---- field logic ---- #
+        def focus_box(active: bool) -> None:
+            self.box_wrap.config(highlightbackground=BLUE if active else BORDER)
+            self.ttn_wrap.config(highlightbackground=BLUE if not active else BORDER)
+
+        def set_status(text: str, bg: str) -> None:
+            self.status.config(text=text, bg=bg)
+
+        def on_box(_=None) -> None:
+            val = only_digits(box.get())
+            box.delete(0, "end")
+            box.insert(0, val)
+            if val:
+                play_sound(True)
+                set_status("BoxID прийнято — скануйте ТТН", SOFT)
+                focus_box(False)
+                ttn.focus_set()
+            else:
+                set_status("Порожній BoxID — спробуйте ще раз", RED_BG)
+
+        def on_ttn(_=None) -> None:
+            b = only_digits(box.get())
+            t = only_digits(ttn.get())
+            if not b:
+                set_status("Спочатку відскануйте BoxID", RED_BG)
+                play_sound(False)
+                focus_box(True)
+                box.focus_set()
+                return
+            if not t:
+                return
+            box.delete(0, "end")
+            ttn.delete(0, "end")
+            focus_box(True)
+            box.focus_set()
+            set_status("⏳ Надсилання на сервер...", AMBER_BG)
+
             def done(res: Any, err: Exception | None) -> None:
                 if err:
-                    self.offline.add(self.user_name, b, t); ok_sound(False); status.config(text=f"📦 Збережено офлайн. Черга: {self.offline.count()}", fg=AMBER)
+                    self.offline.add(self.user_name, b, t)
+                    self._update_queue_label()
+                    play_sound(False)
+                    set_status(
+                        f"📦 Збережено офлайн — черга: {self.offline.count()}",
+                        AMBER_BG)
+                    self._add_local_log("offline", b, t, "Немає зв'язку")
+                    self.session_errors += 1
                 else:
                     note = str((res or {}).get("note") or "")
-                    ok_sound(not bool(note)); status.config(text=("⚠️ Дублікат: " + note if note else "✅ Успішно додано"), fg=AMBER if note else GREEN)
-            self.bg_task(lambda: self.api.add_record(self.user_name, b, t), done)
-        box.bind("<Return>", on_box); ttn.bind("<Return>", on_ttn); box.focus_set()
+                    if note:
+                        play_sound(False)
+                        set_status(f"⚠ Дублікат: {note}", AMBER_BG)
+                        self._add_local_log("dup", b, t, note)
+                        self.session_errors += 1
+                    else:
+                        play_sound(True)
+                        set_status("✅ Успішно додано", GREEN_BG)
+                        self._add_local_log("ok", b, t, "Додано")
+                        self.session_count += 1
+                self._update_counters()
 
-    def make_tree(self, parent: tk.Widget, columns: list[str], headings: list[str]) -> ttk.Treeview:
-        tree = ttk.Treeview(parent, columns=columns, show="headings")
-        for c,h in zip(columns, headings): tree.heading(c, text=h); tree.column(c, width=150)
-        tree.pack(fill="both", expand=True); return tree
+            self.bg_task(lambda: self.api.add_record(self.user_name, b, t), done)
+
+        box.bind("<Return>", on_box)
+        ttn.bind("<Return>", on_ttn)
+        box.bind("<FocusIn>", lambda e: focus_box(True))
+        ttn.bind("<FocusIn>", lambda e: focus_box(False))
+        box.focus_set()
+        focus_box(True)
+
+    def _counter_chip(self, parent: tk.Widget, label: str, value: str,
+                      color: str) -> tk.Label:
+        chip = tk.Frame(parent, bg=CARD_ALT)
+        chip.pack(side="left", expand=True, fill="x", padx=4)
+        val = tk.Label(chip, text=value, bg=CARD_ALT, fg=color,
+                       font=("Segoe UI Semibold", 24, "bold"))
+        val.pack(pady=(10, 0))
+        tk.Label(chip, text=label, bg=CARD_ALT, fg=MUTED,
+                 font=("Segoe UI", 11)).pack(pady=(0, 10))
+        return val
+
+    def _update_counters(self) -> None:
+        try:
+            self.lbl_cnt_ok.config(text=str(self.session_count))
+            self.lbl_cnt_err.config(text=str(self.session_errors))
+        except Exception:
+            pass
+
+    def _add_local_log(self, kind: str, box: str, ttn: str, note: str) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.local_log.appendleft((kind, ts, f"{box} → {ttn}", note))
+        self._render_local_log()
+
+    def _render_local_log(self) -> None:
+        for w in self.log_frame.winfo_children():
+            w.destroy()
+        if not self.local_log:
+            tk.Label(self.log_frame, text="Поки що немає сканувань",
+                     bg=CARD, fg=MUTED, font=("Segoe UI", 12)).pack(
+                anchor="w", pady=8)
+            return
+        colors = {"ok": GREEN, "dup": AMBER, "offline": AMBER, "err": RED}
+        icons = {"ok": "✅", "dup": "⚠", "offline": "📦", "err": "✖"}
+        for kind, ts, pair, note in self.local_log:
+            row = tk.Frame(self.log_frame, bg=CARD_ALT)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=icons.get(kind, "•"), bg=CARD_ALT,
+                     fg=colors.get(kind, MUTED),
+                     font=("Segoe UI Emoji", 14)).pack(side="left", padx=(10, 8),
+                                                       pady=8)
+            col = tk.Frame(row, bg=CARD_ALT)
+            col.pack(side="left", fill="x", expand=True, pady=6)
+            tk.Label(col, text=pair, bg=CARD_ALT, fg=TEXT,
+                     font=("Segoe UI Semibold", 12, "bold"),
+                     anchor="w").pack(anchor="w", fill="x")
+            tk.Label(col, text=f"{ts} • {note}", bg=CARD_ALT, fg=MUTED,
+                     font=("Segoe UI", 10), anchor="w").pack(anchor="w", fill="x")
+
+    # ===================================================================== #
+    #  TABLE PAGES (history / errors)
+    # ===================================================================== #
+    def _make_table(self, parent: tk.Widget, columns: list[str],
+                    headings: list[str], widths: list[int]) -> ttk.Treeview:
+        container = tk.Frame(parent, bg=CARD)
+        container.pack(fill="both", expand=True)
+
+        tree = ttk.Treeview(container, columns=columns, show="headings")
+        vsb = ttk.Scrollbar(container, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+
+        for c, h, w in zip(columns, headings, widths):
+            tree.heading(c, text=h)
+            tree.column(c, width=w, anchor="w")
+
+        tree.tag_configure("odd", background=CARD)
+        tree.tag_configure("even", background=CARD_ALT)
+        tree.tag_configure("error", background="#FDECEC", foreground=RED)
+
+        vsb.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
+        return tree
 
     def history_page(self) -> None:
-        self.body_clear(); bar=ttk.Frame(self.body); bar.pack(fill="x", pady=(0,10)); ttk.Button(bar,text="Оновити",command=self.history_page).pack(side="right"); tree=self.make_tree(self.body,["dt","user","box","ttn"],["Дата","Користувач","BoxID","ТТН"])
-        self.bg_task(self.api.get_history, lambda data, err: self.fill_records(tree, data, err, False))
+        self.active_page = "history"
+        self._set_active_nav("history")
+        self.body_clear()
+        self._page_header("Історія сканувань",
+                          "Усі успішно надіслані пари BoxID — ТТН.")
+
+        bar = tk.Frame(self.body, bg=BG)
+        bar.pack(fill="x", pady=(0, 12))
+
+        search_var = tk.StringVar()
+        search = tk.Entry(bar, textvariable=search_var, font=("Segoe UI", 13),
+                          bd=0, relief="flat", bg=CARD, fg=TEXT,
+                          insertbackground=BLUE, width=30)
+        search.pack(side="left", ipady=8, padx=(0, 8))
+        search.insert(0, "")
+        tk.Label(bar, text="🔎 пошук BoxID / ТТН / користувача",
+                 bg=BG, fg=MUTED_LIGHT, font=("Segoe UI", 11)).pack(
+            side="left")
+
+        ttk.Button(bar, text="↻ Оновити", style="Small.TButton",
+                   command=self.history_page).pack(side="right")
+
+        tree = self._make_table(
+            self.body,
+            ["dt", "user", "box", "ttn"],
+            ["Дата і час", "Користувач", "BoxID", "ТТН"],
+            [220, 200, 220, 220],
+        )
+
+        self._table_raw: list[dict[str, Any]] = []
+
+        def apply_filter(*_a) -> None:
+            self._fill_table(tree, self._table_raw, errors=False,
+                             query=search_var.get())
+
+        search_var.trace_add("write", apply_filter)
+
+        def loaded(data: Any, err: Exception | None) -> None:
+            if err:
+                messagebox.showerror(APP_NAME, str(err))
+                return
+            self._table_raw = data or []
+            self._fill_table(tree, self._table_raw, errors=False, query="")
+
+        self.bg_task(self.api.get_history, loaded)
 
     def errors_page(self) -> None:
-        self.body_clear(); bar=ttk.Frame(self.body); bar.pack(fill="x", pady=(0,10)); ttk.Button(bar,text="Оновити",command=self.errors_page).pack(side="right"); tree=self.make_tree(self.body,["id","dt","user","box","ttn","msg"],["ID","Дата","Користувач","BoxID","ТТН","Помилка"])
-        self.bg_task(self.api.get_errors, lambda data, err: self.fill_records(tree, data, err, True))
+        self.active_page = "errors"
+        self._set_active_nav("errors")
+        self.body_clear()
+        self._page_header("Помилки та некоректна проклейка",
+                          "Записи з дублями, конфліктами або помилками сканування.")
 
-    def fill_records(self, tree: ttk.Treeview, data: Any, err: Exception | None, errors: bool) -> None:
-        if err: messagebox.showerror(APP_NAME, str(err)); return
-        for r in sorted(data or [], key=lambda x: parse_dt(x.get("datetime")), reverse=True):
-            vals = (r.get("id",""), fmt_dt(r.get("datetime")), r.get("user_name") or r.get("operator",""), r.get("boxid",""), r.get("ttn",""), r.get("error_message") or r.get("reason") or r.get("note") or r.get("message") or "") if errors else (fmt_dt(r.get("datetime")), r.get("user_name") or r.get("operator",""), r.get("boxid",""), r.get("ttn",""))
-            tree.insert("", "end", values=vals)
+        bar = tk.Frame(self.body, bg=BG)
+        bar.pack(fill="x", pady=(0, 12))
 
+        search_var = tk.StringVar()
+        search = tk.Entry(bar, textvariable=search_var, font=("Segoe UI", 13),
+                          bd=0, relief="flat", bg=CARD, fg=TEXT,
+                          insertbackground=BLUE, width=30)
+        search.pack(side="left", ipady=8, padx=(0, 8))
+        tk.Label(bar, text="🔎 пошук", bg=BG, fg=MUTED_LIGHT,
+                 font=("Segoe UI", 11)).pack(side="left")
+
+        ttk.Button(bar, text="↻ Оновити", style="Small.TButton",
+                   command=self.errors_page).pack(side="right")
+
+        tree = self._make_table(
+            self.body,
+            ["id", "dt", "user", "box", "ttn", "msg"],
+            ["ID", "Дата і час", "Користувач", "BoxID", "ТТН", "Опис помилки"],
+            [60, 180, 160, 170, 170, 280],
+        )
+
+        self._err_raw: list[dict[str, Any]] = []
+
+        def apply_filter(*_a) -> None:
+            self._fill_table(tree, self._err_raw, errors=True,
+                             query=search_var.get())
+
+        search_var.trace_add("write", apply_filter)
+
+        def loaded(data: Any, err: Exception | None) -> None:
+            if err:
+                messagebox.showerror(APP_NAME, str(err))
+                return
+            self._err_raw = data or []
+            self._fill_table(tree, self._err_raw, errors=True, query="")
+
+        self.bg_task(self.api.get_errors, loaded)
+
+    def _fill_table(self, tree: ttk.Treeview, data: list[dict[str, Any]],
+                    errors: bool, query: str) -> None:
+        for item in tree.get_children():
+            tree.delete(item)
+
+        q = (query or "").strip().lower()
+        rows = sorted(data or [],
+                      key=lambda x: parse_dt(x.get("datetime")), reverse=True)
+
+        index = 0
+        for r in rows:
+            user = r.get("user_name") or r.get("operator") or ""
+            box = str(r.get("boxid", ""))
+            ttn = str(r.get("ttn", ""))
+            msg = (r.get("error_message") or r.get("reason")
+                   or r.get("note") or r.get("message") or "")
+
+            if q:
+                haystack = f"{user} {box} {ttn} {msg}".lower()
+                if q not in haystack:
+                    continue
+
+            if errors:
+                vals = (r.get("id", ""), fmt_dt(r.get("datetime")),
+                        user, box, ttn, msg)
+                tag = "error"
+            else:
+                vals = (fmt_dt(r.get("datetime")), user, box, ttn)
+                tag = "even" if index % 2 else "odd"
+
+            tree.insert("", "end", values=vals, tags=(tag,))
+            index += 1
+
+        if index == 0:
+            empty_cols = len(tree["columns"])
+            placeholder = ["—"] * empty_cols
+            placeholder[1 if errors else 0] = "Немає записів"
+            tree.insert("", "end", values=placeholder, tags=("odd",))
+
+    # ===================================================================== #
+    #  STATS PAGE
+    # ===================================================================== #
     def stats_page(self) -> None:
-        self.body_clear(); label=tk.Label(self.body,text="Завантаження статистики...",bg=BG,fg="white",font=("Segoe UI",20,"bold")); label.pack(pady=40)
-        def work(): return self.api.get_history(), self.api.get_errors()
-        def done(res, err):
-            if err: label.config(text=str(err), fg=RED); return
-            hist, errs = res; c=Counter((r.get("user_name") or r.get("operator") or "Невідомий") for r in hist); ec=Counter((r.get("user_name") or r.get("operator") or "Невідомий") for r in errs)
-            top=c.most_common(1)[0] if c else ("—",0); etop=ec.most_common(1)[0] if ec else ("—",0)
-            label.config(text=f"Сканувань: {len(hist)}\nПомилок: {len(errs)}\nОператорів: {len(c)}\nЛідер сканувань: {top[0]} ({top[1]})\nЛідер помилок: {etop[0]} ({etop[1]})", fg="white", justify="left")
+        self.active_page = "stats"
+        self._set_active_nav("stats")
+        self.body_clear()
+        self._page_header("Статистика", "Загальні показники роботи складу.")
+
+        loading = tk.Label(self.body, text="Завантаження статистики...",
+                           bg=BG, fg="white",
+                           font=("Segoe UI Semibold", 18, "bold"))
+        loading.pack(pady=40)
+
+        def work() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            return self.api.get_history(), self.api.get_errors()
+
+        def done(res: Any, err: Exception | None) -> None:
+            loading.destroy()
+            if err:
+                tk.Label(self.body, text=str(err), bg=BG, fg=RED,
+                         font=("Segoe UI Semibold", 16, "bold")).pack(pady=30)
+                return
+
+            hist, errs = res
+            ops = Counter(
+                (r.get("user_name") or r.get("operator") or "Невідомий")
+                for r in hist
+            )
+            err_ops = Counter(
+                (r.get("user_name") or r.get("operator") or "Невідомий")
+                for r in errs
+            )
+            top = ops.most_common(1)[0] if ops else ("—", 0)
+            etop = err_ops.most_common(1)[0] if err_ops else ("—", 0)
+
+            total = len(hist)
+            total_err = len(errs)
+            quality = 0.0
+            if total + total_err:
+                quality = round(total / (total + total_err) * 100, 1)
+
+            # ---- KPI cards ---- #
+            cards = tk.Frame(self.body, bg=BG)
+            cards.pack(fill="x", pady=(0, 18))
+            for i in range(4):
+                cards.columnconfigure(i, weight=1)
+
+            self._stat_card(cards, 0, "📦", "Усього сканувань",
+                            str(total), BLUE)
+            self._stat_card(cards, 1, "⚠", "Помилки / дублі",
+                            str(total_err), RED)
+            self._stat_card(cards, 2, "👥", "Операторів",
+                            str(len(ops)), SOFT)
+            self._stat_card(cards, 3, "✅", "Якість, %",
+                            f"{quality}", GREEN)
+
+            # ---- Leaders ---- #
+            leaders = tk.Frame(self.body, bg=BG)
+            leaders.pack(fill="x", pady=(0, 18))
+            leaders.columnconfigure(0, weight=1)
+            leaders.columnconfigure(1, weight=1)
+
+            self._leader_card(leaders, 0, "🏆 Лідер сканувань",
+                              top[0], f"{top[1]} сканувань", GREEN)
+            self._leader_card(leaders, 1, "🔴 Найбільше помилок",
+                              etop[0], f"{etop[1]} помилок", RED)
+
+            # ---- Operators table ---- #
+            tbl_card = tk.Frame(self.body, bg=CARD)
+            tbl_card.pack(fill="both", expand=True)
+            tk.Label(tbl_card, text="Активність операторів", bg=CARD, fg=TEXT,
+                     font=("Segoe UI Semibold", 16, "bold")).pack(
+                anchor="w", padx=18, pady=(16, 8))
+
+            tree = ttk.Treeview(
+                tbl_card, columns=["op", "scans", "errs"], show="headings",
+                height=8)
+            tree.heading("op", text="Оператор")
+            tree.heading("scans", text="Сканувань")
+            tree.heading("errs", text="Помилок")
+            tree.column("op", width=260, anchor="w")
+            tree.column("scans", width=160, anchor="center")
+            tree.column("errs", width=160, anchor="center")
+            tree.tag_configure("odd", background=CARD)
+            tree.tag_configure("even", background=CARD_ALT)
+
+            all_ops = sorted(set(ops) | set(err_ops),
+                             key=lambda o: ops.get(o, 0), reverse=True)
+            for i, op in enumerate(all_ops):
+                tag = "even" if i % 2 else "odd"
+                tree.insert("", "end",
+                            values=(op, ops.get(op, 0), err_ops.get(op, 0)),
+                            tags=(tag,))
+            if not all_ops:
+                tree.insert("", "end", values=("Немає даних", "—", "—"),
+                            tags=("odd",))
+
+            tree.pack(fill="both", expand=True, padx=18, pady=(0, 16))
+
         self.bg_task(work, done)
 
+    def _stat_card(self, parent: tk.Widget, col: int, icon: str,
+                   label: str, value: str, color: str) -> None:
+        card = tk.Frame(parent, bg=CARD)
+        card.grid(row=0, column=col, sticky="nsew", padx=6)
+        inner = tk.Frame(card, bg=CARD)
+        inner.pack(fill="both", expand=True, padx=18, pady=18)
+
+        top = tk.Frame(inner, bg=CARD)
+        top.pack(fill="x")
+        tk.Label(top, text=icon, bg=CARD, fg=color,
+                 font=("Segoe UI Emoji", 22)).pack(side="left")
+        tk.Label(inner, text=value, bg=CARD, fg=color,
+                 font=("Segoe UI Semibold", 32, "bold")).pack(
+            anchor="w", pady=(6, 0))
+        tk.Label(inner, text=label, bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 12)).pack(anchor="w")
+
+    def _leader_card(self, parent: tk.Widget, col: int, title: str,
+                     name: str, sub: str, color: str) -> None:
+        card = tk.Frame(parent, bg=CARD)
+        card.grid(row=0, column=col, sticky="nsew", padx=6)
+        inner = tk.Frame(card, bg=CARD)
+        inner.pack(fill="both", expand=True, padx=20, pady=18)
+        tk.Label(inner, text=title, bg=CARD, fg=MUTED,
+                 font=("Segoe UI Semibold", 12, "bold")).pack(anchor="w")
+        tk.Label(inner, text=name, bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 22, "bold")).pack(
+            anchor="w", pady=(6, 0))
+        tk.Label(inner, text=sub, bg=CARD, fg=color,
+                 font=("Segoe UI Semibold", 13, "bold")).pack(anchor="w")
+
+    # ===================================================================== #
+    #  SYNC / LOGOUT
+    # ===================================================================== #
     def try_sync(self) -> None:
-        if self.offline.count(): self.bg_task(lambda: self.offline.sync(self.api), lambda _r,_e: None)
+        if self.offline.count():
+            def done(sent: Any, err: Exception | None) -> None:
+                self._update_queue_label()
+                if not err and sent:
+                    if self.active_page == "scan":
+                        try:
+                            self.status.config(
+                                text=f"☁ Синхронізовано {sent} запис(ів)",
+                                bg=GREEN_BG)
+                        except Exception:
+                            pass
+            self.bg_task(lambda: self.offline.sync(self.api), done)
+
+    def _auto_sync_tick(self) -> None:
+        # periodic background sync attempt
+        if getattr(self, "queue_label", None) is not None:
+            try:
+                self._update_queue_label()
+            except Exception:
+                pass
+            if self.api.token and self.offline.count():
+                self.bg_task(
+                    lambda: self.offline.sync(self.api),
+                    lambda _s, _e: self._safe_update_queue(),
+                )
+        self.after(15000, self._auto_sync_tick)
+
+    def _safe_update_queue(self) -> None:
+        try:
+            self._update_queue_label()
+        except Exception:
+            pass
 
     def logout(self) -> None:
         if messagebox.askyesno(APP_NAME, "Вийти з акаунту?"):
-            self.api.token=""; CONFIG_PATH.unlink(missing_ok=True); self.show_login()
+            self.api.token = ""
+            CONFIG_PATH.unlink(missing_ok=True)
+            self.nav_buttons.clear()
+            self.active_page = ""
+            self.show_login()
 
+
+# --------------------------------------------------------------------------- #
+#  Entry point
+# --------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    App().mainloop()
+    app = App()
+    app.mainloop()
