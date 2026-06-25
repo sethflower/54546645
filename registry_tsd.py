@@ -16,7 +16,7 @@ import re
 import sqlite3
 import threading
 import tkinter as tk
-from collections import Counter, deque
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -158,14 +158,9 @@ class ApiClient:
     def get_history(self) -> list[dict[str, Any]]:
         return self._request("GET", "/get_history") or []
 
+
     def get_errors(self) -> list[dict[str, Any]]:
         return self._request("GET", "/get_errors") or []
-
-    def delete_error(self, error_id: int) -> None:
-        self._request("DELETE", f"/delete_error/{error_id}")
-
-    def clear_errors(self) -> None:
-        self._request("DELETE", "/clear_errors")
 
     def clear_history(self) -> None:
         self._request("DELETE", "/clear_tracking")
@@ -559,8 +554,6 @@ class App(tk.Tk):
         nav_items = [
             ("scan", "🔍  Сканування", self.scan_page),
             ("history", "🗂  Історія", self.history_page),
-            ("errors", "⚠  Помилки", self.errors_page),
-            ("stats", "📊  Статистика", self.stats_page),
         ]
         for key, label, cmd in nav_items:
             self._make_nav(sidebar, key, label, cmd)
@@ -657,8 +650,8 @@ class App(tk.Tk):
         self._set_active_nav("scan")
         self.body_clear()
 
-        self._page_header("Сканування пари",
-                          "Скануйте BoxID, потім ТТН. Сканер натискає Enter автоматично.")
+        self._page_header("BoxID-ТТН",
+                          "Скануйте BoxID, потім ТТН.")
 
         wrap = tk.Frame(self.body, bg=BG)
         wrap.pack(fill="both", expand=True)
@@ -840,7 +833,7 @@ class App(tk.Tk):
                      font=("Segoe UI", 10), anchor="w").pack(anchor="w", fill="x")
 
     # ===================================================================== #
-    #  TABLE PAGES (history / errors)
+    #  TABLE PAGES (history)
     # ===================================================================== #
     def _make_table(self, parent: tk.Widget, columns: list[str],
                     headings: list[str], widths: list[int]) -> ttk.Treeview:
@@ -868,7 +861,7 @@ class App(tk.Tk):
         self._set_active_nav("history")
         self.body_clear()
         self._page_header("Історія сканувань",
-                          "Усі успішно надіслані пари BoxID — ТТН.")
+                          "Усі пари BoxID — ТТН та помилки в одному списку.")
 
         bar = tk.Frame(self.body, bg=BG)
         bar.pack(fill="x", pady=(0, 12))
@@ -879,7 +872,7 @@ class App(tk.Tk):
                           insertbackground=BLUE, width=30)
         search.pack(side="left", ipady=8, padx=(0, 8))
         search.insert(0, "")
-        tk.Label(bar, text="🔎 пошук BoxID / ТТН / користувача",
+        tk.Label(bar, text="🔎 пошук BoxID / ТТН / користувача / опису помилки",
                  bg=BG, fg=MUTED_LIGHT, font=("Segoe UI", 11)).pack(
             side="left")
 
@@ -888,9 +881,9 @@ class App(tk.Tk):
 
         tree = self._make_table(
             self.body,
-            ["dt", "user", "box", "ttn"],
-            ["Дата і час", "Користувач", "BoxID", "ТТН"],
-            [220, 200, 220, 220],
+            ["dt", "user", "box", "ttn", "msg"],
+            ["Дата і час", "Користувач", "BoxID", "ТТН", "Опис помилки"],
+            [190, 170, 180, 190, 330],
         )
 
         self._table_raw: list[dict[str, Any]] = []
@@ -901,6 +894,23 @@ class App(tk.Tk):
 
         search_var.trace_add("write", apply_filter)
 
+        def work() -> list[dict[str, Any]]:
+            history = self.api.get_history()
+            error_rows = self.api.get_errors()
+
+            combined: list[dict[str, Any]] = []
+            for row in history:
+                item = dict(row)
+                item["_row_type"] = "history"
+                combined.append(item)
+
+            for row in error_rows:
+                item = dict(row)
+                item["_row_type"] = "error"
+                combined.append(item)
+
+            return combined
+
         def loaded(data: Any, err: Exception | None) -> None:
             if err:
                 messagebox.showerror(APP_NAME, str(err))
@@ -908,52 +918,7 @@ class App(tk.Tk):
             self._table_raw = data or []
             self._fill_table(tree, self._table_raw, errors=False, query="")
 
-        self.bg_task(self.api.get_history, loaded)
-
-    def errors_page(self) -> None:
-        self.active_page = "errors"
-        self._set_active_nav("errors")
-        self.body_clear()
-        self._page_header("Помилки та некоректна проклейка",
-                          "Записи з дублями, конфліктами або помилками сканування.")
-
-        bar = tk.Frame(self.body, bg=BG)
-        bar.pack(fill="x", pady=(0, 12))
-
-        search_var = tk.StringVar()
-        search = tk.Entry(bar, textvariable=search_var, font=("Segoe UI", 13),
-                          bd=0, relief="flat", bg=CARD, fg=TEXT,
-                          insertbackground=BLUE, width=30)
-        search.pack(side="left", ipady=8, padx=(0, 8))
-        tk.Label(bar, text="🔎 пошук", bg=BG, fg=MUTED_LIGHT,
-                 font=("Segoe UI", 11)).pack(side="left")
-
-        ttk.Button(bar, text="↻ Оновити", style="Small.TButton",
-                   command=self.errors_page).pack(side="right")
-
-        tree = self._make_table(
-            self.body,
-            ["id", "dt", "user", "box", "ttn", "msg"],
-            ["ID", "Дата і час", "Користувач", "BoxID", "ТТН", "Опис помилки"],
-            [60, 180, 160, 170, 170, 280],
-        )
-
-        self._err_raw: list[dict[str, Any]] = []
-
-        def apply_filter(*_a) -> None:
-            self._fill_table(tree, self._err_raw, errors=True,
-                             query=search_var.get())
-
-        search_var.trace_add("write", apply_filter)
-
-        def loaded(data: Any, err: Exception | None) -> None:
-            if err:
-                messagebox.showerror(APP_NAME, str(err))
-                return
-            self._err_raw = data or []
-            self._fill_table(tree, self._err_raw, errors=True, query="")
-
-        self.bg_task(self.api.get_errors, loaded)
+        self.bg_task(work, loaded)
 
     def _fill_table(self, tree: ttk.Treeview, data: list[dict[str, Any]],
                     errors: bool, query: str) -> None:
@@ -982,8 +947,9 @@ class App(tk.Tk):
                         user, box, ttn, msg)
                 tag = "error"
             else:
-                vals = (fmt_dt(r.get("datetime")), user, box, ttn)
-                tag = "even" if index % 2 else "odd"
+                vals = (fmt_dt(r.get("datetime")), user, box, ttn, msg)
+                is_error_row = r.get("_row_type") == "error"
+                tag = "error" if (msg or is_error_row) else ("even" if index % 2 else "odd")
 
             tree.insert("", "end", values=vals, tags=(tag,))
             index += 1
@@ -993,139 +959,6 @@ class App(tk.Tk):
             placeholder = ["—"] * empty_cols
             placeholder[1 if errors else 0] = "Немає записів"
             tree.insert("", "end", values=placeholder, tags=("odd",))
-
-    # ===================================================================== #
-    #  STATS PAGE
-    # ===================================================================== #
-    def stats_page(self) -> None:
-        self.active_page = "stats"
-        self._set_active_nav("stats")
-        self.body_clear()
-        self._page_header("Статистика", "Загальні показники роботи складу.")
-
-        loading = tk.Label(self.body, text="Завантаження статистики...",
-                           bg=BG, fg="white",
-                           font=("Segoe UI Semibold", 18, "bold"))
-        loading.pack(pady=40)
-
-        def work() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-            return self.api.get_history(), self.api.get_errors()
-
-        def done(res: Any, err: Exception | None) -> None:
-            loading.destroy()
-            if err:
-                tk.Label(self.body, text=str(err), bg=BG, fg=RED,
-                         font=("Segoe UI Semibold", 16, "bold")).pack(pady=30)
-                return
-
-            hist, errs = res
-            ops = Counter(
-                (r.get("user_name") or r.get("operator") or "Невідомий")
-                for r in hist
-            )
-            err_ops = Counter(
-                (r.get("user_name") or r.get("operator") or "Невідомий")
-                for r in errs
-            )
-            top = ops.most_common(1)[0] if ops else ("—", 0)
-            etop = err_ops.most_common(1)[0] if err_ops else ("—", 0)
-
-            total = len(hist)
-            total_err = len(errs)
-            quality = 0.0
-            if total + total_err:
-                quality = round(total / (total + total_err) * 100, 1)
-
-            # ---- KPI cards ---- #
-            cards = tk.Frame(self.body, bg=BG)
-            cards.pack(fill="x", pady=(0, 18))
-            for i in range(4):
-                cards.columnconfigure(i, weight=1)
-
-            self._stat_card(cards, 0, "📦", "Усього сканувань",
-                            str(total), BLUE)
-            self._stat_card(cards, 1, "⚠", "Помилки / дублі",
-                            str(total_err), RED)
-            self._stat_card(cards, 2, "👥", "Операторів",
-                            str(len(ops)), SOFT)
-            self._stat_card(cards, 3, "✅", "Якість, %",
-                            f"{quality}", GREEN)
-
-            # ---- Leaders ---- #
-            leaders = tk.Frame(self.body, bg=BG)
-            leaders.pack(fill="x", pady=(0, 18))
-            leaders.columnconfigure(0, weight=1)
-            leaders.columnconfigure(1, weight=1)
-
-            self._leader_card(leaders, 0, "🏆 Лідер сканувань",
-                              top[0], f"{top[1]} сканувань", GREEN)
-            self._leader_card(leaders, 1, "🔴 Найбільше помилок",
-                              etop[0], f"{etop[1]} помилок", RED)
-
-            # ---- Operators table ---- #
-            tbl_card = tk.Frame(self.body, bg=CARD)
-            tbl_card.pack(fill="both", expand=True)
-            tk.Label(tbl_card, text="Активність операторів", bg=CARD, fg=TEXT,
-                     font=("Segoe UI Semibold", 16, "bold")).pack(
-                anchor="w", padx=18, pady=(16, 8))
-
-            tree = ttk.Treeview(
-                tbl_card, columns=["op", "scans", "errs"], show="headings",
-                height=8)
-            tree.heading("op", text="Оператор")
-            tree.heading("scans", text="Сканувань")
-            tree.heading("errs", text="Помилок")
-            tree.column("op", width=260, anchor="w")
-            tree.column("scans", width=160, anchor="center")
-            tree.column("errs", width=160, anchor="center")
-            tree.tag_configure("odd", background=CARD)
-            tree.tag_configure("even", background=CARD_ALT)
-
-            all_ops = sorted(set(ops) | set(err_ops),
-                             key=lambda o: ops.get(o, 0), reverse=True)
-            for i, op in enumerate(all_ops):
-                tag = "even" if i % 2 else "odd"
-                tree.insert("", "end",
-                            values=(op, ops.get(op, 0), err_ops.get(op, 0)),
-                            tags=(tag,))
-            if not all_ops:
-                tree.insert("", "end", values=("Немає даних", "—", "—"),
-                            tags=("odd",))
-
-            tree.pack(fill="both", expand=True, padx=18, pady=(0, 16))
-
-        self.bg_task(work, done)
-
-    def _stat_card(self, parent: tk.Widget, col: int, icon: str,
-                   label: str, value: str, color: str) -> None:
-        card = tk.Frame(parent, bg=CARD)
-        card.grid(row=0, column=col, sticky="nsew", padx=6)
-        inner = tk.Frame(card, bg=CARD)
-        inner.pack(fill="both", expand=True, padx=18, pady=18)
-
-        top = tk.Frame(inner, bg=CARD)
-        top.pack(fill="x")
-        tk.Label(top, text=icon, bg=CARD, fg=color,
-                 font=("Segoe UI Emoji", 22)).pack(side="left")
-        tk.Label(inner, text=value, bg=CARD, fg=color,
-                 font=("Segoe UI Semibold", 32, "bold")).pack(
-            anchor="w", pady=(6, 0))
-        tk.Label(inner, text=label, bg=CARD, fg=MUTED,
-                 font=("Segoe UI", 12)).pack(anchor="w")
-
-    def _leader_card(self, parent: tk.Widget, col: int, title: str,
-                     name: str, sub: str, color: str) -> None:
-        card = tk.Frame(parent, bg=CARD)
-        card.grid(row=0, column=col, sticky="nsew", padx=6)
-        inner = tk.Frame(card, bg=CARD)
-        inner.pack(fill="both", expand=True, padx=20, pady=18)
-        tk.Label(inner, text=title, bg=CARD, fg=MUTED,
-                 font=("Segoe UI Semibold", 12, "bold")).pack(anchor="w")
-        tk.Label(inner, text=name, bg=CARD, fg=TEXT,
-                 font=("Segoe UI Semibold", 22, "bold")).pack(
-            anchor="w", pady=(6, 0))
-        tk.Label(inner, text=sub, bg=CARD, fg=color,
-                 font=("Segoe UI Semibold", 13, "bold")).pack(anchor="w")
 
     # ===================================================================== #
     #  SYNC / LOGOUT
