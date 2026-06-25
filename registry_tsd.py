@@ -121,25 +121,30 @@ class RoundButton(tk.Canvas):
                  bold=True):
         self.parent_bg = parent.cget("bg")
         super().__init__(parent, highlightthickness=0, bd=0, bg=self.parent_bg)
-        self._bg = bg
-        self._hover = hover or bg
-        self._fg = fg
+
+        self._bg_color = bg
+        self._hover_color = hover or bg
+        self._fg_color = fg
         self._cmd = command
         self._radius = radius
         self._text = text
         self._font = (FONT, font_size, "bold" if bold else "normal")
-        self._h = height
+        self._btn_h = height
 
         tmp = tk.font.Font(family=FONT, size=font_size, weight="bold" if bold else "normal")
         text_w = tmp.measure(text)
-        self._w = width if width else text_w + pad_x * 2
-        self.configure(width=self._w, height=self._h)
+        self._btn_w = int(width if width else text_w + pad_x * 2)
 
-        self._draw(self._bg)
-        self.bind("<Enter>", lambda e: self._draw(self._hover))
-        self.bind("<Leave>", lambda e: self._draw(self._bg))
+        # Важно: не используем имя self._w.
+        # В Tkinter self._w — это внутреннее имя виджета.
+        # Если его перезаписать числом, Tkinter падает с ошибкой:
+        # _tkinter.TclError: invalid command name "456" / "108" / другое число.
+        self.configure(width=self._btn_w, height=self._btn_h, cursor="hand2")
+
+        self._draw(self._bg_color)
+        self.bind("<Enter>", lambda e: self._draw(self._hover_color))
+        self.bind("<Leave>", lambda e: self._draw(self._bg_color))
         self.bind("<Button-1>", self._click)
-        self.configure(cursor="hand2")
 
     def _round_rect(self, x1, y1, x2, y2, r, color):
         self.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r, start=90, extent=90, fill=color, outline=color)
@@ -151,9 +156,9 @@ class RoundButton(tk.Canvas):
 
     def _draw(self, color):
         self.delete("all")
-        self._round_rect(1, 1, self._w - 1, self._h - 1, self._radius, color)
-        self.create_text(self._w / 2, self._h / 2, text=self._text,
-                         fill=self._fg, font=self._font)
+        self._round_rect(1, 1, self._btn_w - 1, self._btn_h - 1, self._radius, color)
+        self.create_text(self._btn_w / 2, self._btn_h / 2, text=self._text,
+                         fill=self._fg_color, font=self._font)
 
     def _click(self, _):
         if self._cmd:
