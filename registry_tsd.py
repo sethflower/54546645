@@ -158,10 +158,6 @@ class ApiClient:
     def get_history(self) -> list[dict[str, Any]]:
         return self._request("GET", "/get_history") or []
 
-
-    def get_errors(self) -> list[dict[str, Any]]:
-        return self._request("GET", "/get_errors") or []
-
     def clear_history(self) -> None:
         self._request("DELETE", "/clear_tracking")
 
@@ -861,7 +857,7 @@ class App(tk.Tk):
         self._set_active_nav("history")
         self.body_clear()
         self._page_header("Історія сканувань",
-                          "Усі пари BoxID — ТТН та помилки в одному списку.")
+                          "Дані завантажуються тільки з /get_history.")
 
         bar = tk.Frame(self.body, bg=BG)
         bar.pack(fill="x", pady=(0, 12))
@@ -894,23 +890,6 @@ class App(tk.Tk):
 
         search_var.trace_add("write", apply_filter)
 
-        def work() -> list[dict[str, Any]]:
-            history = self.api.get_history()
-            error_rows = self.api.get_errors()
-
-            combined: list[dict[str, Any]] = []
-            for row in history:
-                item = dict(row)
-                item["_row_type"] = "history"
-                combined.append(item)
-
-            for row in error_rows:
-                item = dict(row)
-                item["_row_type"] = "error"
-                combined.append(item)
-
-            return combined
-
         def loaded(data: Any, err: Exception | None) -> None:
             if err:
                 messagebox.showerror(APP_NAME, str(err))
@@ -918,7 +897,7 @@ class App(tk.Tk):
             self._table_raw = data or []
             self._fill_table(tree, self._table_raw, errors=False, query="")
 
-        self.bg_task(work, loaded)
+        self.bg_task(self.api.get_history, loaded)
 
     def _fill_table(self, tree: ttk.Treeview, data: list[dict[str, Any]],
                     errors: bool, query: str) -> None:
@@ -948,8 +927,7 @@ class App(tk.Tk):
                 tag = "error"
             else:
                 vals = (fmt_dt(r.get("datetime")), user, box, ttn, msg)
-                is_error_row = r.get("_row_type") == "error"
-                tag = "error" if (msg or is_error_row) else ("even" if index % 2 else "odd")
+                tag = "error" if msg else ("even" if index % 2 else "odd")
 
             tree.insert("", "end", values=vals, tags=(tag,))
             index += 1
